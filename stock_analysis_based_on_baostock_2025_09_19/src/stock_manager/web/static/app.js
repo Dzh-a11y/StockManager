@@ -469,19 +469,28 @@ async function runScreen() {
 }
 
 let syncPollTimer = null;
-function stopSyncPolling() {
-  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+function startSyncPolling() {
+  if (syncPollTimer) return;
+  pollSyncProgress();
+  syncPollTimer = setInterval(pollSyncProgress, 1000);
 }
 function renderSyncProgress(p) {
   const track = $('#sync-progress-track');
   const fill = $('#sync-progress-fill');
   const current = $('#sync-current');
   const meta = $('#sync-progress');
+  const active = p && (p.status === 'running' || p.status === 'error');
+  if (!active) {
+    track.hidden = true;
+    current.hidden = true;
+    meta.hidden = true;
+    return;
+  }
   const total = Number(p.total || 0);
   const completed = Number(p.completed || 0);
   const pct = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   track.hidden = false;
-  track.className = p.status === 'error' ? 'progress-track progress-track--error' : (p.status === 'done' ? 'progress-track progress-track--done' : 'progress-track');
+  track.className = p.status === 'error' ? 'progress-track progress-track--error' : 'progress-track';
   fill.style.width = pct + '%';
   current.hidden = false;
   const phase = p.phase || '';
@@ -504,18 +513,11 @@ async function syncData() {
   if (!cond.dataset_id) { toast('请填写数据集。', 'warn'); return; }
   if (!cond.trading_day) { toast('请选择交易日。', 'warn'); return; }
   const progress = $('#sync-progress');
-  const track = $('#sync-progress-track');
-  const btn = $('#sync-data');
-  btn.disabled = true;
   progress.hidden = false;
   progress.textContent = '正在启动同步…';
-  track.hidden = false;
-  track.className = 'progress-track';
-  $('#sync-progress-fill').style.width = '0%';
-  $('#sync-current').hidden = true;
-  stopSyncPolling();
-  syncPollTimer = setInterval(pollSyncProgress, 600);
-  pollSyncProgress();
+  const btn = $('#sync-data');
+  btn.disabled = true;
+  startSyncPolling();
   try {
     const data = await api('POST', '/api/sync', {
       dataset_id: cond.dataset_id,
@@ -531,13 +533,8 @@ async function syncData() {
       toast('同步状态：' + data.status, 'warn');
     }
   } catch (err) {
-    track.className = 'progress-track progress-track--error';
     toast('同步失败：' + err.message, 'error');
   } finally {
-    stopSyncPolling();
-    progress.hidden = true;
-    track.hidden = true;
-    $('#sync-current').hidden = true;
     btn.disabled = false;
   }
 }
@@ -664,6 +661,7 @@ function bindEvents() {
 /* ---------- init ---------- */
 async function init() {
   bindEvents();
+  startSyncPolling();
   const today = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());

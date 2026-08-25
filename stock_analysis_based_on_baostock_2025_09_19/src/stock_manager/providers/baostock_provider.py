@@ -17,6 +17,25 @@ from stock_manager.domain import (
 )
 
 
+# Baostock's query_all_stock returns every listed security — stocks, indices,
+# ETFs, funds and bonds. These exchange code prefixes identify the real A-share
+# stocks; everything else is dropped in fetch_stocks() so screening never sees
+# indices or funds. B-shares (sh.900xxx, sz.200xxx) are intentionally excluded.
+_ASHARE_STOCK_PREFIXES: dict[str, tuple[str, ...]] = {
+    "sh": ("600", "601", "603", "605", "688", "689"),
+    "sz": ("000", "001", "002", "003", "300", "301", "302"),
+    "bj": ("43", "83", "87", "92"),
+}
+
+
+def _is_ashare_stock(code: str) -> bool:
+    """Return whether a baostock security code belongs to an A-share stock."""
+    exchange, separator, number = code.partition(".")
+    if not separator:
+        return False
+    return number.startswith(_ASHARE_STOCK_PREFIXES.get(exchange.lower(), ()))
+
+
 class BaostockProviderError(RuntimeError):
     """Raised when Baostock rejects a request or returns malformed data."""
 
@@ -126,6 +145,11 @@ class BaostockProvider:
         return tuple(date.fromisoformat(row["calendar_date"]) for row in rows if row["is_trading_day"] == "1")
 
     def fetch_stocks(self, as_of: date) -> Sequence[StockIdentity]:
+        """Return the A-share stock universe for ``as_of``.
+
+        Baostock's ``query_all_stock`` lists every listed security; only real
+        A-share stocks (by code prefix) are exposed here.
+        """
         with self._session():
             rows = self._rows(
                 self._query(lambda: self._client.query_all_stock(day=as_of.isoformat())),
@@ -144,6 +168,7 @@ class BaostockProvider:
             )
             for row in rows
             if row.get("tradeStatus", "1") in {"0", "1"}
+            and _is_ashare_stock(row["code"])
         )
 
     def fetch_daily_bars(
