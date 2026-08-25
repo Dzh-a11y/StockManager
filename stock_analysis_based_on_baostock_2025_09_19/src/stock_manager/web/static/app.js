@@ -497,11 +497,16 @@ function renderSyncProgress(p) {
   current.hidden = false;
   const phase = p.phase || '';
   const label = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红', starting: '准备中', backfill: '回补历史' }[phase] || phase;
-  current.textContent = total
-    ? '总进度 ' + pct + '%（' + completed + '/' + total + '）· 当前：' + (p.current_code || '-')
-    : '正在加载：' + (p.current_code || '-');
+  const day = p.trading_day ? (' @ ' + p.trading_day) : '';
+  if (total) {
+    current.textContent = '总进度 ' + pct + '%（' + completed + '/' + total + '）· 当前：' + (p.current_code || '-');
+  } else if (p.current_code) {
+    current.textContent = '正在加载：' + p.current_code;
+  } else {
+    current.textContent = p.message || '正在拉取第一批数据，请稍候…';
+  }
   meta.hidden = false;
-  meta.textContent = '同步 ' + (p.dataset_id || '') + ' @ ' + (p.trading_day || '') + ' · ' + label;
+  meta.textContent = '同步 ' + (p.dataset_id || '') + day + ' · ' + label;
 }
 async function pollSyncProgress() {
   try {
