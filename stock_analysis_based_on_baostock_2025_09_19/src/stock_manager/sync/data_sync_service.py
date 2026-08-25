@@ -121,12 +121,14 @@ class DataSyncService:
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        progress: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self._provider = provider
         self._repository = repository
         self._lock_directory = lock_directory
         self._config = config
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
+        self._progress = progress
         self._rate_limiter = _SerialRateLimiter(
             config.minimum_request_interval_seconds, monotonic, sleep
         )
@@ -142,6 +144,21 @@ class DataSyncService:
 
     def _provider_call(self, operation: Callable[[], T]) -> T:
         return self._rate_limiter.call(operation)
+
+    def _emit_progress(
+        self, phase: str, completed: int, total: int, current_code: str
+    ) -> None:
+        """Report overall progress through the optional service-level callback."""
+        if self._progress is None:
+            return
+        self._progress(
+            {
+                "phase": phase,
+                "completed": completed,
+                "total": total,
+                "current_code": current_code,
+            }
+        )
 
     def smoke_test_provider(
         self,
@@ -514,6 +531,8 @@ class DataSyncService:
                     )
                     self._repository.save_trading_days(trading_days, metadata)
                     self._repository.save_stocks(stocks, metadata)
+                    total_units = 3 * len(selected_codes)
+                    done_units = 0
                     for offset in range(0, len(selected_codes), batch_size):
                         chunk = selected_codes[offset : offset + batch_size]
                         bars = self._provider_call(
@@ -522,18 +541,30 @@ class DataSyncService:
                             )
                         )
                         self._repository.save_daily_bars(bars, metadata)
+                        done_units += len(chunk)
+                        self._emit_progress(
+                            "daily_bars", done_units, total_units, chunk[-1]
+                        )
                         fundamentals = self._provider_call(
                             lambda chunk=chunk: self._provider.fetch_fundamentals(
                                 chunk, as_of
                             )
                         )
                         self._repository.save_fundamentals(fundamentals, metadata)
+                        done_units += len(chunk)
+                        self._emit_progress(
+                            "fundamentals", done_units, total_units, chunk[-1]
+                        )
                         dividends = self._provider_call(
                             lambda chunk=chunk: self._provider.fetch_dividends(
                                 chunk, dividend_start, as_of
                             )
                         )
                         self._repository.save_dividends(dividends, metadata)
+                        done_units += len(chunk)
+                        self._emit_progress(
+                            "dividends", done_units, total_units, chunk[-1]
+                        )
                 finished_at = self._now()
                 success = SyncRecord(
                     dataset_id,

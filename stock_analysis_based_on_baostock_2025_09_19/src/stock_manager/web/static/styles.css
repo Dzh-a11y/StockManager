@@ -241,6 +241,49 @@ body {
 .toggle[aria-checked="true"] { background: var(--pass); }
 .toggle[aria-checked="true"]::after { transform: translateX(18px); }
 
+/* ---------- 名词解释（? 悬停提示） ---------- */
+.term__help {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--muted);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: top;
+  flex: 0 0 auto;
+}
+.term__help::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: #22272e;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  white-space: normal;
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s, visibility 0.12s;
+  z-index: 40;
+  pointer-events: none;
+}
+.term__help:hover::after { opacity: 1; visibility: visible; }
+
 /* ---------- Groups ---------- */
 .composer { padding: 8px 16px 16px; border-top: 1px solid var(--border); margin-top: 6px; }
 .composer__head {

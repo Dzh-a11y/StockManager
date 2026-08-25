@@ -22,6 +22,13 @@ function esc(value) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+function termHelp(tip) {
+  const el = document.createElement('span');
+  el.className = 'term__help';
+  el.dataset.tip = tip;
+  el.textContent = '?';
+  return el;
+}
 function toggleId(ruleId) { return 'toggle-' + ruleId; }
 function paramId(ruleId, pid) { return 'param-' + ruleId + '-' + pid; }
 function enabledRuleIds() {
@@ -170,6 +177,7 @@ function renderRules() {
     const name = document.createElement('span');
     name.className = 'rule-card__name';
     name.textContent = rule.name;
+    name.appendChild(termHelp(rule.description || rule.rule_id));
     const desc = document.createElement('span');
     desc.className = 'rule-card__desc';
     desc.textContent = rule.rule_id + ' · ' + rule.description;
@@ -197,7 +205,7 @@ function buildParamField(rule, p, value) {
   const label = document.createElement('span');
   label.className = 'field__label';
   label.textContent = p.label + ' (必填)';
-  label.title = p.description;
+  label.appendChild(termHelp(p.description || p.label));
   wrap.appendChild(label);
 
   const current = value === undefined || value === null ? p.default_value : value;
@@ -252,6 +260,7 @@ function renderGroups() {
       const b = document.createElement('button');
       b.className = 'segment' + (group.operator === op ? ' is-active' : '');
       b.textContent = op === 'all' ? '全部' : '任一';
+      b.appendChild(termHelp(op === 'all' ? '组内所有规则都通过才算通过。' : '组内任一规则通过即算通过。'));
       b.dataset.groupOp = op;
       b.type = 'button';
       b.addEventListener('click', () => { group.operator = op; renderGroups(); markDirty(); });
@@ -476,8 +485,10 @@ function renderSyncProgress(p) {
   fill.style.width = pct + '%';
   current.hidden = false;
   const phase = p.phase || '';
-  const label = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红', starting: '准备中' }[phase] || phase;
-  current.textContent = '正在加载：' + (p.current_code || '-') + (total ? '（' + completed + '/' + total + '，' + pct + '%）' : '');
+  const label = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红', starting: '准备中', backfill: '回补历史' }[phase] || phase;
+  current.textContent = total
+    ? '总进度 ' + pct + '%（' + completed + '/' + total + '）· 当前：' + (p.current_code || '-')
+    : '正在加载：' + (p.current_code || '-');
   meta.hidden = false;
   meta.textContent = '同步 ' + (p.dataset_id || '') + ' @ ' + (p.trading_day || '') + ' · ' + label;
 }

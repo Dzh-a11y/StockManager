@@ -90,9 +90,13 @@ class WebApp:
         """Kick off a one-time history backfill when sync is configured.
 
         A first-run backfill can issue tens of thousands of provider requests, so it
-        runs on a daemon thread and reports through the shared sync-progress state
-        instead of blocking the request path.
+        runs on a daemon thread and reports overall progress through the shared
+        sync-progress state instead of blocking the request path. Auto-backfill only
+        runs on the real provider path; an injected ``provider_factory`` is a test
+        seam and skips it.
         """
+        if self._provider_factory is not None:
+            return
         if self._config.sync_config_path is None or self._config.lock_directory is None:
             return
 
@@ -105,11 +109,14 @@ class WebApp:
                     self._services.repository,
                     self._config.lock_directory,
                     sync_config,
+                    progress=self._on_backfill_progress,
                 )
                 self._sync_progress.update(
                     {
                         "status": "running",
                         "phase": "backfill",
+                        "dataset_id": "market",
+                        "adjustment": "qfq",
                         "message": "启动回补历史数据",
                     }
                 )
@@ -269,7 +276,7 @@ class WebApp:
             "current_code": None,
             "message": "开始同步",
         }
-        provider = self._make_provider()
+        provider = self._make_provider(progress_callback=self._on_sync_progress)
         sync_config = load_sync_config(self._config.sync_config_path)
         service = DataSyncService(
             provider,
@@ -287,14 +294,16 @@ class WebApp:
         self._sync_progress["message"] = outcome.status.value
         return self._json(200, to_jsonable(outcome))
 
-    def _make_provider(self) -> ProviderProtocol:
+    def _make_provider(
+        self, *, progress_callback: Callable[[dict[str, object]], None] | None = None
+    ) -> ProviderProtocol:
         if self._provider_factory is not None:
             return self._provider_factory()
         from stock_manager.providers.baostock_provider import BaostockProvider
 
         return BaostockProvider(
             request_interval_seconds=self._config.provider_request_interval_seconds,
-            progress_callback=self._on_sync_progress,
+            progress_callback=progress_callback,
         )
 
     def _on_sync_progress(self, event: dict[str, object]) -> None:
@@ -310,6 +319,18 @@ class WebApp:
                 "completed": completed,
                 "total": total,
                 "current_code": code,
+            }
+        )
+
+    def _on_backfill_progress(self, event: dict[str, object]) -> None:
+        """Update shared progress from the backfill's overall (global) counters."""
+        self._sync_progress.update(
+            {
+                "status": "running",
+                "phase": event.get("phase"),
+                "completed": event.get("completed", 0),
+                "total": event.get("total", 0),
+                "current_code": event.get("current_code"),
             }
         )
 

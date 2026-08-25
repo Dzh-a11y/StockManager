@@ -573,3 +573,34 @@ def test_backfill_history_reruns_after_failed_marker(tmp_path: Path) -> None:
             codes, date(2026, 8, 15), date(2026, 8, 25), AdjustmentMethod.QFQ
         )
     ) == 250 * 11
+
+
+def test_backfill_history_reports_overall_progress(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    events: list[dict[str, object]] = []
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+        progress=events.append,
+    )
+
+    outcome = service.backfill_history(
+        "market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100
+    )
+
+    assert outcome.status is SyncStatus.SUCCESS
+    assert len(events) == 9  # 250 / 100 = 3 块 × 3 个阶段
+    assert events[0]["phase"] == "daily_bars"
+    assert events[0]["total"] == 750  # 3 阶段 × 250 只
+    assert events[0]["completed"] == 100
+    assert events[-1]["phase"] == "dividends"
+    assert events[-1]["completed"] == 750
+    assert all(event["total"] == 750 for event in events)
