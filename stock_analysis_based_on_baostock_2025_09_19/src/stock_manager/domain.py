@@ -17,6 +17,12 @@ class SyncStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class RuleStatus(str, Enum):
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
 def _require_text(value: str, field_name: str) -> None:
     if not value.strip():
         raise ValueError(f"{field_name} must not be empty")
@@ -128,6 +134,45 @@ class ScreeningResult:
 
     def __post_init__(self) -> None:
         _require_text(self.code, "code")
+
+
+@dataclass(frozen=True, slots=True)
+class RuleExecutionResult:
+    rule_id: str
+    status: RuleStatus
+    result: RuleResult | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.rule_id, "rule_id")
+        if self.status is RuleStatus.SKIPPED and self.result is not None:
+            raise ValueError("SKIPPED rule execution must not contain RuleResult")
+        if self.status is not RuleStatus.SKIPPED and self.result is None:
+            raise ValueError("evaluated rule execution requires RuleResult")
+        if self.result is not None:
+            if self.result.rule_id != self.rule_id:
+                raise ValueError("execution rule_id must match RuleResult")
+            expected = RuleStatus.PASSED if self.result.passed else RuleStatus.FAILED
+            if self.status is not expected:
+                raise ValueError("execution status must match RuleResult.passed")
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterizedScreeningResult:
+    code: str
+    name: str
+    trading_day: date
+    passed: bool
+    rule_executions: tuple[RuleExecutionResult, ...]
+    metadata: DatasetMetadata
+    template_id: str
+    template_revision: int
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+        _require_text(self.name, "name")
+        _require_text(self.template_id, "template_id")
+        if self.template_revision <= 0:
+            raise ValueError("template_revision must be positive")
 
 
 @dataclass(frozen=True, slots=True)

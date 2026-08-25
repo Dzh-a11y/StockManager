@@ -12,13 +12,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Sequence, TextIO
 
-from stock_manager.domain import AdjustmentMethod, ScreeningResult
+from stock_manager.domain import (
+    AdjustmentMethod,
+    ParameterizedScreeningResult,
+    ScreeningResult,
+)
 from stock_manager.providers.baostock_provider import (
     BaostockProvider,
     BaostockProviderError,
 )
 from stock_manager.rules import load_rules_config
+from stock_manager.rules.builtin import build_default_registry
 from stock_manager.services import ScreeningService
+from stock_manager.services.parameterized_screening_service import (
+    ParameterizedScreeningService,
+)
 from stock_manager.storage.sqlite_repo import SQLiteRepository
 from stock_manager.sync import (
     CooldownActiveError,
@@ -28,6 +36,8 @@ from stock_manager.sync import (
     load_sync_config,
 )
 from stock_manager.sync.locks import dataset_lock_path, is_file_lock_held
+from stock_manager.templates.compiler import TemplateCompiler
+from stock_manager.templates.models import parse_template
 
 
 def _iso_date(value: str) -> date:
@@ -79,6 +89,19 @@ def _build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--code", action="append", default=[])
     screen.add_argument("--format", choices=("json", "summary"), default="json")
 
+    screen_template = commands.add_parser(
+        "screen-template", help="screen local data with a version-2 template"
+    )
+    screen_template.add_argument("--db", type=Path, required=True)
+    screen_template.add_argument("--template", type=Path, required=True)
+    screen_template.add_argument("--dataset", default="market")
+    screen_template.add_argument("--date", type=_iso_date, required=True)
+    screen_template.add_argument("--adjustment", type=_adjustment, required=True)
+    screen_template.add_argument("--code", action="append", default=[])
+    screen_template.add_argument(
+        "--format", choices=("json", "summary"), default="json"
+    )
+
     sync = commands.add_parser("sync", help="synchronize through DataSyncService")
     sync.add_argument("--db", type=Path, required=True)
     sync.add_argument("--config", type=Path, required=True)
@@ -121,7 +144,28 @@ def _screen_command(args: argparse.Namespace, stdout: TextIO) -> int:
     return 0
 
 
-def _print_summary(results: Sequence[ScreeningResult], stdout: TextIO) -> None:
+def _screen_template_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    repository = _open_existing_repository(args.db)
+    try:
+        raw = json.loads(args.template.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"unable to load template from {args.template}") from error
+    registry = build_default_registry()
+    plan = TemplateCompiler(registry).compile(parse_template(raw))
+    results = ParameterizedScreeningService(repository, registry).screen(
+        plan, args.dataset, args.date, args.adjustment, tuple(args.code)
+    )
+    if args.format == "json":
+        _print_json(results, stdout)
+    else:
+        _print_summary(results, stdout)
+    return 0
+
+
+def _print_summary(
+    results: Sequence[ScreeningResult | ParameterizedScreeningResult],
+    stdout: TextIO,
+) -> None:
     passed = sum(result.passed for result in results)
     print(f"screened={len(results)} passed={passed} failed={len(results) - passed}", file=stdout)
     for result in results:
@@ -201,6 +245,8 @@ def main(
     try:
         if args.command == "screen":
             return _screen_command(args, stdout)
+        if args.command == "screen-template":
+            return _screen_template_command(args, stdout)
         if args.command == "sync":
             return _sync_command(args, stdout)
         if args.command == "status":

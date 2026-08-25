@@ -19,11 +19,17 @@ from stock_manager.domain import (
 )
 from stock_manager.cli.main import main
 from stock_manager.rules import load_rules_config
+from stock_manager.rules.builtin import build_default_registry
 from stock_manager.services import (
     DatasetUnavailableError,
     ScreeningService,
     StockNotFoundError,
 )
+from stock_manager.services.parameterized_screening_service import (
+    ParameterizedScreeningService,
+)
+from stock_manager.templates.compiler import TemplateCompiler
+from stock_manager.templates.models import parse_template
 from stock_manager.storage.sqlite_repo import SQLiteRepository
 
 
@@ -152,6 +158,41 @@ def test_screen_rejects_adjustment_different_from_rule_config(tmp_path: Path) ->
         )
 
 
+def test_parameterized_screening_uses_compiled_plan_and_reports_statuses(
+    tmp_path: Path,
+) -> None:
+    repository = _seed_repository(tmp_path)
+    registry = build_default_registry()
+    template_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "rule_templates"
+        / "system-default.json"
+    )
+    template = parse_template(json.loads(template_path.read_text(encoding="utf-8")))
+    plan = TemplateCompiler(registry).compile(template)
+
+    results = ParameterizedScreeningService(repository, registry).screen(
+        plan,
+        "market",
+        TARGET_DAY,
+        AdjustmentMethod.QFQ,
+        ("sh.600001",),
+    )
+
+    assert len(results) == 1
+    assert results[0].name == "Alpha"
+    assert results[0].passed is True
+    assert results[0].template_id == "system-default"
+    annual = next(
+        item
+        for item in results[0].rule_executions
+        if item.rule_id == "annual_min_volume"
+    )
+    assert annual.result is not None
+    assert annual.result.reason == "insufficient valid trading sessions"
+
+
 def test_cli_screen_json_is_offline_and_machine_readable(tmp_path: Path) -> None:
     repository = _seed_repository(tmp_path)
     stdout = StringIO()
@@ -180,6 +221,43 @@ def test_cli_screen_json_is_offline_and_machine_readable(tmp_path: Path) -> None
     assert stderr.getvalue() == ""
     assert payload[0]["code"] == "sh.600001"
     assert payload[0]["metadata"]["adjustment"] == "qfq"
+
+
+def test_cli_screen_template_is_offline_and_reports_template_revision(
+    tmp_path: Path,
+) -> None:
+    _seed_repository(tmp_path)
+    stdout = StringIO()
+    template_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "rule_templates"
+        / "system-default.json"
+    )
+
+    exit_code = main(
+        (
+            "screen-template",
+            "--db",
+            str(tmp_path / "market.sqlite3"),
+            "--template",
+            str(template_path),
+            "--date",
+            TARGET_DAY.isoformat(),
+            "--adjustment",
+            "qfq",
+            "--code",
+            "sh.600001",
+        ),
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload[0]["template_id"] == "system-default"
+    assert payload[0]["template_revision"] == 1
+    assert payload[0]["rule_executions"][0]["status"] == "PASSED"
 
 
 def test_cli_status_reports_latest_local_snapshot(tmp_path: Path) -> None:
