@@ -47,18 +47,26 @@ class BaostockProvider:
         client: ModuleType | Any | None = None,
         *,
         request_interval_seconds: float = 0.2,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         if request_interval_seconds < 0:
             raise ValueError("request_interval_seconds must be non-negative")
+        if max_retries < 1:
+            raise ValueError("max_retries must be positive")
+        if retry_backoff_seconds < 0:
+            raise ValueError("retry_backoff_seconds must be non-negative")
         if client is None:
             import baostock as client_module
 
             client = client_module
         self._client = client
         self._request_interval = request_interval_seconds
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff_seconds
         self._monotonic = monotonic
         self._sleep = sleep
         self._last_request_at: float | None = None
@@ -82,19 +90,48 @@ class BaostockProvider:
     def source_name(self) -> str:
         return "baostock"
 
+    def _retry(self, operation: Callable[[], Any]) -> Any:
+        """Run a baostock SDK call, retrying transient failures with backoff.
+
+        Transient means a network-level ``OSError`` or a result whose
+        ``error_code`` is non-zero (server busy, connection reset, rate limit).
+        Parsing errors raised after a successful request are permanent and are
+        not retried. On exhaustion, the last failure is re-raised (for network
+        errors) or the last bad result is returned so the caller's ``_rows``
+        raises the usual operation-specific error.
+        """
+        last_result: Any = None
+        last_network_error: OSError | None = None
+        for attempt in range(self._max_retries):
+            try:
+                result = operation()
+            except OSError as error:
+                last_result = None
+                last_network_error = error
+            else:
+                last_result = result
+                last_network_error = None
+                if getattr(result, "error_code", "0") == "0":
+                    return result
+            if attempt + 1 < self._max_retries:
+                self._sleep(self._retry_backoff * (2**attempt))
+        if last_network_error is not None:
+            raise last_network_error
+        return last_result
+
     def _query(self, operation: Callable[[], Any]) -> Any:
         now = self._monotonic()
         if self._last_request_at is not None:
             remaining = self._request_interval - (now - self._last_request_at)
             if remaining > 0:
                 self._sleep(remaining)
-        result = operation()
+        result = self._retry(operation)
         self._last_request_at = self._monotonic()
         return result
 
     @contextmanager
     def _session(self) -> Iterator[None]:
-        login_result = self._client.login()
+        login_result = self._retry(lambda: self._client.login())
         if login_result.error_code != "0":
             raise BaostockProviderError(f"Baostock login failed: {login_result.error_msg}")
         try:

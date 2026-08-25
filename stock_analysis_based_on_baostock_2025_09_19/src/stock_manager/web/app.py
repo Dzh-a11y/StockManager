@@ -103,10 +103,13 @@ class WebApp:
 
         def run_backfill() -> None:
             try:
-                provider = self._make_provider(
-                    progress_callback=self._on_backfill_batch_progress
-                )
                 sync_config = load_sync_config(self._config.sync_config_path)
+                provider = self._make_provider(
+                    request_interval_seconds=(
+                        sync_config.minimum_request_interval_seconds
+                    ),
+                    progress_callback=self._on_backfill_batch_progress,
+                )
                 service = DataSyncService(
                     provider,
                     self._services.repository,
@@ -284,8 +287,11 @@ class WebApp:
             "current_code": None,
             "message": "开始同步",
         }
-        provider = self._make_provider(progress_callback=self._on_sync_progress)
         sync_config = load_sync_config(self._config.sync_config_path)
+        provider = self._make_provider(
+            request_interval_seconds=sync_config.minimum_request_interval_seconds,
+            progress_callback=self._on_sync_progress,
+        )
         service = DataSyncService(
             provider,
             self._services.repository,
@@ -303,14 +309,17 @@ class WebApp:
         return self._json(200, to_jsonable(outcome))
 
     def _make_provider(
-        self, *, progress_callback: Callable[[dict[str, object]], None] | None = None
+        self,
+        *,
+        request_interval_seconds: float = 0.0,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> ProviderProtocol:
         if self._provider_factory is not None:
             return self._provider_factory()
         from stock_manager.providers.baostock_provider import BaostockProvider
 
         return BaostockProvider(
-            request_interval_seconds=self._config.provider_request_interval_seconds,
+            request_interval_seconds=request_interval_seconds,
             progress_callback=progress_callback,
         )
 

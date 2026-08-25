@@ -31,7 +31,9 @@ Decimal 使用文本保存，日期和带时区时间使用 ISO 8601。日线主
 
 同步开始先记录 `RUNNING`。任何 Provider、校验或仓储异常都会转换为 `SyncFailedError`，同时持久化 `FAILED` 和具体错误。失败后普通调用会抛出 `RetryRequiredError`；只有显式 `retry=True` 且冷却期结束后才能再次请求。系统不做无限自动重试。
 
-Provider 调用由串行限速器控制，交易日历、股票列表、日线、财务和分红请求之间都遵守配置间隔。Baostock 适配器内部逐股票、逐年度的实际 SDK 查询也有独立限速，不建立无上限并发池。
+Provider 适配器对瞬时失败（网络 `OSError` 或 baostock 返回非零 `error_code`）按指数退避自动重试（默认 3 次、1s/2s/4s），解析错误等永久性失败不重试。请求限速只保留 Provider 内部这一层：每一次实际 SDK 查询（逐股票、逐年度的日线/财务请求）按 `minimum_request_interval_seconds` 间隔串行限速，不建立无上限并发池；同步服务本身不再叠加限速，避免双重 sleep。
+
+历史回补 `backfill_history` 支持断点续传：重启后按代码批次检查本地 `daily_bars` 与 `fundamentals`，已完整落库的批次直接跳过，只重拉未完成部分。启动时若发现上次留下卡死的 `RUNNING` 记录（进程中断），会发出警告并接管重跑，不会从头下载整个保留窗口。
 
 ## 交易日和首次启动补齐
 

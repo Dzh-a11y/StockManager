@@ -72,7 +72,6 @@ def test_startup_sync_duplicate_guard_and_offline_screening(tmp_path: Path) -> N
         tmp_path / "locks",
         SyncConfig(time(17, 30), timedelta(0), 0, 45, 3),
         clock=lambda: datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
-        sleep=lambda seconds: None,
     )
 
     outcomes = service.sync_missing_on_startup(

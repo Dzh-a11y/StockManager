@@ -136,7 +136,6 @@ def _build_parser() -> argparse.ArgumentParser:
     web.add_argument("--port", type=int, default=8000)
     web.add_argument("--sync-config", type=Path, default=None)
     web.add_argument("--lock-dir", type=Path, default=None)
-    web.add_argument("--provider-interval", type=float, default=0.0)
     return parser
 
 
@@ -191,7 +190,9 @@ def _print_summary(
 def _sync_command(args: argparse.Namespace, stdout: TextIO) -> int:
     repository = SQLiteRepository(args.db)
     config = load_sync_config(args.config)
-    provider = BaostockProvider(request_interval_seconds=0.2)
+    provider = BaostockProvider(
+        request_interval_seconds=config.minimum_request_interval_seconds
+    )
     service = DataSyncService(provider, repository, args.lock_dir, config)
     print(
         f"syncing dataset={args.dataset} date={args.date.isoformat()}",
@@ -259,7 +260,6 @@ def _web_command(args: argparse.Namespace, stdout: TextIO) -> int:
         port=args.port,
         sync_config_path=args.sync_config,
         lock_directory=args.lock_dir,
-        provider_request_interval_seconds=args.provider_interval,
     )
     config.validate()
     print(f"serving screening workbench on http://{config.host}:{config.port}", file=stdout)

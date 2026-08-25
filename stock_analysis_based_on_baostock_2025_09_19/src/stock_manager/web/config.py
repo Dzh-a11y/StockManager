@@ -21,7 +21,6 @@ class WebConfig:
     max_request_bytes: int = 1_000_000
     sync_config_path: Path | None = None
     lock_directory: Path | None = None
-    provider_request_interval_seconds: float = 0.0
 
     def validate(self) -> None:
         """Verify startup prerequisites; do not create a missing database."""
@@ -36,8 +35,6 @@ class WebConfig:
                 raise ValueError("template root must not be a symbolic link")
         if self.sync_config_path is not None and not self.sync_config_path.is_file():
             raise ValueError("sync config path must be an existing file")
-        if self.provider_request_interval_seconds < 0:
-            raise ValueError("provider_request_interval_seconds must be non-negative")
         if not 0 <= self.port <= 65535:
             raise ValueError("port must be between 0 and 65535")
         if self.max_request_bytes <= 0:

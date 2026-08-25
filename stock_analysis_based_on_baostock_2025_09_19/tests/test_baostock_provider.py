@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -100,6 +101,99 @@ def test_internal_baostock_queries_are_rate_limited() -> None:
     assert provider._query(lambda: "first") == "first"
     assert provider._query(lambda: "second") == "second"
     assert sleeps == [0.5]
+
+
+class _ErrorResult:
+    def __init__(self, error_code: str, error_msg: str) -> None:
+        self.error_code = error_code
+        self.error_msg = error_msg
+
+
+def test_retry_config_is_validated() -> None:
+    with pytest.raises(ValueError, match="max_retries"):
+        BaostockProvider(client=object(), max_retries=0)
+    with pytest.raises(ValueError, match="retry_backoff_seconds"):
+        BaostockProvider(client=object(), retry_backoff_seconds=-1)
+
+
+def test_query_retries_transient_server_errors_with_backoff() -> None:
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> Any:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            return _ErrorResult("10001", "server busy")
+        return "ok"
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=3,
+        retry_backoff_seconds=0.5,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+    assert provider._query(operation) == "ok"
+    assert attempts["count"] == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_query_gives_up_after_max_retries() -> None:
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> Any:
+        attempts["count"] += 1
+        return _ErrorResult("10001", "server busy")
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=3,
+        retry_backoff_seconds=0.5,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+    result = provider._query(operation)
+    assert result.error_code == "10001"
+    assert attempts["count"] == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_query_retries_network_errors() -> None:
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> Any:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise OSError("connection reset")
+        return "ok"
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=3,
+        retry_backoff_seconds=0.5,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+    assert provider._query(operation) == "ok"
+    assert attempts["count"] == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_query_raises_when_network_errors_exhausted() -> None:
+    def operation() -> Any:
+        raise OSError("connection refused")
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=2,
+        retry_backoff_seconds=0.1,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: None,
+    )
+    with pytest.raises(OSError, match="connection refused"):
+        provider._query(operation)
 
 
 def test_fetch_stocks_keeps_only_ashare_stocks() -> None:

@@ -18,6 +18,7 @@ from stock_manager.domain import (
     DividendRecord,
     FundamentalSnapshot,
     StockIdentity,
+    SyncRecord,
     SyncStatus,
 )
 from stock_manager.cli.main import main
@@ -96,7 +97,6 @@ def _service(
         tmp_path / "locks",
         _config(cooldown=cooldown),
         clock=clock,
-        sleep=lambda seconds: None,
     )
     return service, repository
 
@@ -237,30 +237,40 @@ def test_successful_dataset_cannot_be_reused_with_another_adjustment(tmp_path: P
         service.sync("market", DAY, AdjustmentMethod.UNADJUSTED)
 
 
-def test_provider_calls_are_rate_limited_serially(tmp_path: Path) -> None:
-    ticks = [0.0]
-    sleeps: list[float] = []
-
-    def monotonic() -> float:
-        return ticks[0]
-
-    def sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        ticks[0] += seconds
-
+def test_cli_sync_builds_provider_with_configured_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sync.json interval is the single pacing knob, passed to the provider."""
+    intervals: list[float] = []
     provider = _provider()
-    repository = SQLiteRepository(tmp_path / "market.sqlite3")
-    service = DataSyncService(
-        provider,
-        repository,
-        tmp_path / "locks",
-        SyncConfig(time(17, 30), timedelta(0), 2.0, 30, 3),
-        clock=MutableClock(NOW),
-        monotonic=monotonic,
-        sleep=sleep,
+    monkeypatch.setattr(
+        "stock_manager.cli.main.BaostockProvider",
+        lambda request_interval_seconds: (
+            intervals.append(request_interval_seconds) or provider
+        ),
     )
-    service.sync("market", DAY, AdjustmentMethod.QFQ)
-    assert sleeps == [2.0, 2.0, 2.0]
+    stdout = StringIO()
+
+    exit_code = main(
+        (
+            "sync",
+            "--config",
+            str(Path(__file__).parents[1] / "config" / "sync.json"),
+            "--db",
+            str(tmp_path / "market.sqlite3"),
+            "--lock-dir",
+            str(tmp_path / "locks"),
+            "--date",
+            DAY.isoformat(),
+            "--adjustment",
+            "qfq",
+        ),
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert intervals == [0.2]
 
 
 def test_provider_smoke_test_exercises_all_endpoints_without_persistence(
@@ -370,7 +380,6 @@ def test_backfill_history_fetches_retention_window_and_prunes_old(
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     old_day = date(2026, 8, 1)
@@ -421,7 +430,6 @@ def test_backfill_on_startup_first_run_backfills_then_increments(tmp_path: Path)
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     first = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
@@ -455,7 +463,6 @@ def test_backfill_on_startup_reruns_full_history_after_interrupted_backfill(
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     with pytest.raises(SyncFailedError):
@@ -520,7 +527,6 @@ def test_backfill_history_saves_all_chunks_on_success(tmp_path: Path) -> None:
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     outcome = service.backfill_history(
@@ -548,7 +554,6 @@ def test_backfill_history_keeps_fetched_chunks_on_failure(tmp_path: Path) -> Non
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     with pytest.raises(SyncFailedError):
@@ -582,7 +587,6 @@ def test_backfill_history_reruns_after_failed_marker(tmp_path: Path) -> None:
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
     )
 
     with pytest.raises(SyncFailedError):
@@ -621,7 +625,6 @@ def test_backfill_history_reports_overall_progress(tmp_path: Path) -> None:
         tmp_path / "locks",
         config,
         clock=MutableClock(NOW),
-        sleep=lambda seconds: None,
         progress=events.append,
     )
 
@@ -637,3 +640,130 @@ def test_backfill_history_reports_overall_progress(tmp_path: Path) -> None:
     assert events[-1]["phase"] == "fundamentals"
     assert events[-1]["completed"] == 500
     assert all(event["total"] == 500 for event in events)
+
+
+def _seed_chunk(
+    repository: SQLiteRepository,
+    codes: Sequence[str],
+    days: Sequence[date],
+    as_of: date,
+    *,
+    with_fundamentals: bool,
+) -> None:
+    metadata = DatasetMetadata("market", as_of, "fixture", NOW, AdjustmentMethod.QFQ)
+    bars = tuple(
+        DailyBar(
+            code,
+            day,
+            Decimal("10"),
+            Decimal("11"),
+            Decimal("9"),
+            Decimal("10.5"),
+            Decimal("10"),
+            Decimal("1000"),
+            Decimal("10500"),
+            True,
+        )
+        for code in codes
+        for day in days
+    )
+    repository.save_daily_bars(bars, metadata)
+    if with_fundamentals:
+        repository.save_fundamentals(
+            tuple(
+                FundamentalSnapshot(code, as_of, as_of, Decimal("8"), Decimal("1"), "fixture")
+                for code in codes
+            ),
+            metadata,
+        )
+
+
+def test_backfill_history_resumes_from_persisted_chunks(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+
+    as_of = date(2026, 8, 25)
+    start = as_of - timedelta(days=10)
+    days = tuple(date(2026, 8, day) for day in range(15, 26))
+    first_chunk = tuple(f"sh.{600000 + i:06d}" for i in range(100))
+    _seed_chunk(repository, first_chunk, days, as_of, with_fundamentals=True)
+
+    outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    # 第一块已完整落库被跳过，只补第二、三块
+    assert provider.calls["fetch_daily_bars"] == 2
+    assert provider.calls["fetch_fundamentals"] == 2
+    codes = tuple(f"sh.{600000 + i:06d}" for i in range(250))
+    assert len(
+        repository.get_daily_bars(codes, start, as_of, AdjustmentMethod.QFQ)
+    ) == 250 * 11
+
+
+def test_backfill_history_refetches_chunk_missing_fundamentals(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+
+    as_of = date(2026, 8, 25)
+    start = as_of - timedelta(days=10)
+    days = tuple(date(2026, 8, day) for day in range(15, 26))
+    first_chunk = tuple(f"sh.{600000 + i:06d}" for i in range(100))
+    # 只落了 bars、没落 fundamentals：整块必须重拉，不能跳过
+    _seed_chunk(repository, first_chunk, days, as_of, with_fundamentals=False)
+
+    outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    # 第一块缺 fundamentals，整块必须重拉（不能跳过），即使 bars 已落库
+    assert provider.calls["fetch_daily_bars"] == 3
+    assert provider.calls["fetch_fundamentals"] == 3
+
+
+def test_backfill_history_warns_over_stale_running_record(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+    as_of = date(2026, 8, 25)
+    repository.save_sync_record(
+        SyncRecord(
+            "market", as_of, SyncStatus.RUNNING, "fixture", AdjustmentMethod.QFQ, NOW, None, None
+        )
+    )
+
+    with pytest.warns(UserWarning, match="RUNNING"):
+        outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    record = repository.get_sync_record("market", as_of)
+    assert record is not None and record.status is SyncStatus.SUCCESS
+
+
+def test_sync_warns_over_stale_running_record(tmp_path: Path) -> None:
+    provider = _provider()
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", _config(), clock=MutableClock(NOW)
+    )
+    repository.save_sync_record(
+        SyncRecord(
+            "market", DAY, SyncStatus.RUNNING, "fixture", AdjustmentMethod.QFQ, NOW, None, None
+        )
+    )
+
+    with pytest.warns(UserWarning, match="RUNNING"):
+        outcome = service.sync("market", DAY, AdjustmentMethod.QFQ)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    record = repository.get_sync_record("market", DAY)
+    assert record is not None and record.status is SyncStatus.SUCCESS

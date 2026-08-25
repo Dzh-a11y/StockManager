@@ -1,6 +1,5 @@
 """Single-entry, idempotent synchronization into the local repository."""
 
-import time
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -84,29 +83,6 @@ def latest_completed_trading_day(
     return max(eligible)
 
 
-class _SerialRateLimiter:
-    def __init__(
-        self,
-        minimum_interval_seconds: float,
-        monotonic: Callable[[], float],
-        sleep: Callable[[float], None],
-    ) -> None:
-        self._minimum_interval = minimum_interval_seconds
-        self._monotonic = monotonic
-        self._sleep = sleep
-        self._last_call_at: float | None = None
-
-    def call(self, operation: Callable[[], T]) -> T:
-        now = self._monotonic()
-        if self._last_call_at is not None:
-            remaining = self._minimum_interval - (now - self._last_call_at)
-            if remaining > 0:
-                self._sleep(remaining)
-        result = operation()
-        self._last_call_at = self._monotonic()
-        return result
-
-
 class DataSyncService:
     """The only service authorized to call a market-data Provider."""
 
@@ -118,8 +94,6 @@ class DataSyncService:
         config: SyncConfig,
         *,
         clock: Callable[[], datetime] | None = None,
-        monotonic: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
         progress: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self._provider = provider
@@ -128,9 +102,6 @@ class DataSyncService:
         self._config = config
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._progress = progress
-        self._rate_limiter = _SerialRateLimiter(
-            config.minimum_request_interval_seconds, monotonic, sleep
-        )
         provider_key = f"{lock_directory.resolve()}:{provider.source_name}:provider"
         self._provider_process_lock = process_lock(provider_key)
         self._provider_file_lock = lock_directory / f"{provider.source_name}.provider.lock"
@@ -142,7 +113,8 @@ class DataSyncService:
         return value.astimezone(SHANGHAI)
 
     def _provider_call(self, operation: Callable[[], T]) -> T:
-        return self._rate_limiter.call(operation)
+        """Invoke the provider; request pacing is the provider's own job."""
+        return operation()
 
     def _emit_progress(
         self, phase: str, completed: int, total: int, current_code: str
@@ -303,6 +275,12 @@ class DataSyncService:
             now = self._now()
             existing = self._repository.get_sync_record(dataset_id, trading_day)
             self._validate_retry(existing, retry, now, adjustment)
+            if existing is not None and existing.status is SyncStatus.RUNNING:
+                warnings.warn(
+                    "previous synchronization left a RUNNING record; it is superseded",
+                    UserWarning,
+                    stacklevel=3,
+                )
             running = SyncRecord(
                 dataset_id,
                 trading_day,
@@ -411,6 +389,31 @@ class DataSyncService:
             self.sync(dataset_id, day, adjustment, retry=False) for day in missing
         )
 
+    def _chunk_is_persisted(
+        self,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+        expected_bars_per_code: int,
+    ) -> bool:
+        """Return whether a code chunk is already fully persisted.
+
+        Backfill writes each chunk in two transactions (bars then
+        fundamentals), so a chunk is only resumable when both are complete:
+        every code must have exactly ``expected_bars_per_code`` daily bars in
+        the window and at least one fundamental snapshot as of ``end``.
+        Stocks listed or delisted inside the window have fewer bars and are
+        simply re-fetched — correctness is preserved, only the skip is lost.
+        """
+        if expected_bars_per_code <= 0 or not codes:
+            return False
+        bars = self._repository.get_daily_bars(codes, start, end, adjustment)
+        if len(bars) != len(codes) * expected_bars_per_code:
+            return False
+        fundamentals = self._repository.get_fundamentals(codes, end)
+        return len(fundamentals) == len(codes)
+
     def _prune(self, as_of: date) -> None:
         """Drop market data older than the configured retention window."""
         cutoff = as_of - timedelta(days=self._config.retention_days)
@@ -483,6 +486,13 @@ class DataSyncService:
         dataset_file_lock = dataset_lock_path(self._lock_directory, dataset_id, as_of)
         with dataset_process_lock, persistent_file_lock(dataset_file_lock):
             now = self._now()
+            existing = self._repository.get_sync_record(dataset_id, as_of)
+            if existing is not None and existing.status is SyncStatus.RUNNING:
+                warnings.warn(
+                    "previous backfill left a RUNNING record; resuming from completed chunks",
+                    UserWarning,
+                    stacklevel=3,
+                )
             running = SyncRecord(
                 dataset_id,
                 as_of,
@@ -517,8 +527,20 @@ class DataSyncService:
                     self._repository.save_stocks(stocks, metadata)
                     total_units = 2 * len(selected_codes)
                     done_units = 0
+                    expected_bars_per_code = len(trading_days)
                     for offset in range(0, len(selected_codes), batch_size):
                         chunk = selected_codes[offset : offset + batch_size]
+                        if self._chunk_is_persisted(
+                            chunk, start, as_of, adjustment, expected_bars_per_code
+                        ):
+                            done_units += 2 * len(chunk)
+                            self._emit_progress(
+                                "daily_bars", done_units, total_units, chunk[-1]
+                            )
+                            self._emit_progress(
+                                "fundamentals", done_units, total_units, chunk[-1]
+                            )
+                            continue
                         bars = self._provider_call(
                             lambda chunk=chunk: self._provider.fetch_daily_bars(
                                 chunk, start, as_of, adjustment
