@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StockManager · 筛选工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <div>
+        <h1 class="brand-title">StockManager</h1>
+        <p class="brand-subtitle">本地研发筛选工作台 · 离线优先</p>
+      </div>
+    </div>
+    <div class="topbar__meta">
+      <span id="server-status" class="badge badge--muted">连接中…</span>
+      <span class="disclaimer">仅供研究参考，不构成投资建议</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- ① 运行条件 -->
+    <section class="panel panel--conditions" aria-label="运行条件">
+      <div class="panel__head">
+        <h2 class="panel__title">运行条件</h2>
+      </div>
+      <div class="panel__body">
+        <label class="field">
+          <span class="field__label">数据集</span>
+          <input id="dataset" class="input" type="text" value="market" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field__label">交易日</span>
+          <input id="trading-day" class="input" type="date">
+        </label>
+        <label class="field">
+          <span class="field__label">复权方式</span>
+          <select id="adjustment" class="select">
+            <option value="qfq">前复权 (qfq)</option>
+            <option value="hfq">后复权 (hfq)</option>
+            <option value="unadjusted">不复权 (unadjusted)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field__label">股票代码（可选，逗号分隔）</span>
+          <input id="codes" class="input" type="text" placeholder="如 sh.600000,sz.000001" autocomplete="off">
+        </label>
+        <button id="run-screen" class="btn btn--primary btn--block" type="button">
+          <span class="btn__label">运行筛选</span>
+        </button>
+        <p id="screen-progress" class="panel__hint" hidden></p>
+      </div>
+    </section>
+
+    <!-- ② 策略编辑器 -->
+    <section class="panel panel--editor" aria-label="策略编辑器">
+      <div class="panel__head panel__head--tabs">
+        <div class="panel__title-group">
+          <h2 class="panel__title">策略编辑器</h2>
+          <span id="dirty-badge" class="badge badge--warn" hidden>未保存</span>
+        </div>
+        <label class="field field--inline">
+          <span class="field__label">模板</span>
+          <select id="template-select" class="select"></select>
+        </label>
+      </div>
+
+      <div class="editor-meta">
+        <div id="template-meta" class="template-meta"></div>
+        <div class="editor-actions">
+          <button id="reload-template" class="btn btn--ghost" type="button">重新加载</button>
+          <button id="validate-template" class="btn btn--ghost" type="button">校验</button>
+          <button id="save-template" class="btn btn--secondary" type="button">保存</button>
+          <button id="save-as-template" class="btn btn--primary" type="button">另存为</button>
+          <button id="delete-template" class="btn btn--danger" type="button">删除</button>
+        </div>
+      </div>
+
+      <div id="editor-rules" class="editor-rules"></div>
+
+      <div class="composer">
+        <div class="composer__head">
+          <h3 class="composer__title">组合逻辑</h3>
+          <div class="segmented" role="group" aria-label="顶层组合方式">
+            <button class="segment" data-compose="all" type="button">全部满足 (all)</button>
+            <button class="segment" data-compose="any" type="button">任一满足 (any)</button>
+          </div>
+        </div>
+        <div id="groups" class="groups"></div>
+        <button id="add-group" class="btn btn--ghost" type="button">+ 组合分组</button>
+        <p id="composition-error" class="panel__hint panel__hint--error" hidden></p>
+      </div>
+    </section>
+
+    <!-- ③ 筛选结果 -->
+    <section class="panel panel--results" aria-label="筛选结果">
+      <div class="panel__head">
+        <h2 class="panel__title">筛选结果</h2>
+        <span id="result-revision" class="panel__subtitle"></span>
+      </div>
+      <div id="result-body" class="panel__body">
+        <div class="empty-state">
+          <p class="empty-state__title">尚未运行筛选</p>
+          <p class="empty-state__hint">设置运行条件后点击「运行筛选」。模板临时配置不会被自动保存。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>StockManager · 仅供研究参考，不构成任何投资建议 · 数据仅读取本地 SQLite</span>
+  </footer>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

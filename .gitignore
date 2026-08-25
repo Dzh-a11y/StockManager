@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Obsidian app config (not project docs)
+.obsidian/
+
+# Local runtime data is not versioned
+data/
+*.sqlite3
+*.sqlite
+*.db
+
+# Logs / outputs
+*.log
+*.xlsx
+*.xls

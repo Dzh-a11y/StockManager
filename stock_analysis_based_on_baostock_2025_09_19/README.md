@@ -18,12 +18,12 @@ StockManager 是面向 A 股的研究型筛选平台，目标是建立可测试�
 
 ## 开发
 
-先进入包含 `pyproject.toml` 的代码仓库。不要在上一级 `/Users/douzihao/Documents/StockManager` 直接执行安装命令：
+先进入包含 `pyproject.toml` 的代码仓库。不要在上一级 `/Users/douzihao/StockManager` 直接执行安装命令：
 
 ```bash
-cd /Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19
-python -m pip install '.[dev]'
-python -m pytest
+cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
+python3 -m pip install '.[dev]'
+python3 -m pytest
 ```
 
 在 macOS 的 Python 3.14 虚拟环境中不建议使用 `pip install -e`：若 `.venv` 带 Finder 的 hidden 文件标志，Python 会忽略 editable 安装生成的 `.pth`，从而出现“安装成功但无法导入 `stock_manager`”。普通本地安装不依赖该 `.pth`。
@@ -48,3 +48,21 @@ stock-manager smoke --config config/sync.json \
 ```
 
 成功时会输出 JSON 格式的 Provider 冒烟结果。日期、股票代码和复权方式均为显式测试输入；更换日期前应先确认该日期存在于 Baostock 的历史行情覆盖范围。
+
+## P3 本地 Web 工作台
+
+P3 提供本地、离线优先的 Web 操作界面。先完成上面的可编辑安装，然后启动服务（默认只监听 127.0.0.1）：
+
+```bash
+stock-manager web \
+  --db data/market.sqlite3 \
+  --system-templates config/rule_templates \
+  --user-templates data/user-templates \
+  --static src/stock_manager/web/static \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+浏览器打开 `http://127.0.0.1:8000`。页面按「运行条件 / 策略编辑器 / 筛选结果」三栏组织，规则参数控件由 `GET /api/rules` 元数据自动生成。接口与错误映射见 `docs/P3_WEB_API.md`，规则扩展见 `docs/P3_RULE_EXTENSION.md`。
+
+如需在本地重建数据以观察结果，请先通过 `stock-manager sync` 拉取指定交易日数据；筛选始终只读取本地 SQLite。

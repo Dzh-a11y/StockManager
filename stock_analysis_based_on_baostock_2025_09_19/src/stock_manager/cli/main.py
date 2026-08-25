@@ -38,6 +38,8 @@ from stock_manager.sync import (
 from stock_manager.sync.locks import dataset_lock_path, is_file_lock_held
 from stock_manager.templates.compiler import TemplateCompiler
 from stock_manager.templates.models import parse_template
+from stock_manager.web.config import WebConfig
+from stock_manager.web.httpd import run_web
 
 
 def _iso_date(value: str) -> date:
@@ -122,6 +124,16 @@ def _build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--code", required=True)
     smoke.add_argument("--date", type=_iso_date, required=True)
     smoke.add_argument("--adjustment", type=_adjustment, required=True)
+
+    web = commands.add_parser(
+        "web", help="serve the offline-first local screening workbench"
+    )
+    web.add_argument("--db", type=Path, required=True)
+    web.add_argument("--system-templates", type=Path, default=Path("config/rule_templates"))
+    web.add_argument("--user-templates", type=Path, default=Path("data/user-templates"))
+    web.add_argument("--static", type=Path, default=Path("src/stock_manager/web/static"))
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
     return parser
 
 
@@ -234,6 +246,21 @@ def _smoke_command(args: argparse.Namespace, stdout: TextIO) -> int:
     return 0
 
 
+def _web_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    config = WebConfig(
+        database_path=args.db,
+        system_template_root=args.system_templates,
+        user_template_root=args.user_templates,
+        static_root=args.static,
+        host=args.host,
+        port=args.port,
+    )
+    config.validate()
+    print(f"serving screening workbench on http://{config.host}:{config.port}", file=stdout)
+    run_web(config)
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -251,6 +278,8 @@ def main(
             return _sync_command(args, stdout)
         if args.command == "status":
             return _status_command(args, stdout)
+        if args.command == "web":
+            return _web_command(args, stdout)
         return _smoke_command(args, stdout)
     except (
         BaostockProviderError,
