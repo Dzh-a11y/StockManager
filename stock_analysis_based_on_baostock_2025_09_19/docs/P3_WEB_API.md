@@ -139,6 +139,8 @@ stock-manager web \
 
 同步由后端调用 `DataSyncService`，浏览器不直接访问 Baostock，仍遵守单一入口、文件/进程锁、防重复与速率限制。
 
+`GET /api/sync/progress`：返回同步进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
+
 ## 错误映射
 
 | 状态 | 含义 |
