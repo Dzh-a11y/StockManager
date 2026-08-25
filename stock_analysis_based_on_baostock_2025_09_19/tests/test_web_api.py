@@ -446,10 +446,6 @@ class _FakeProvider:
         del as_of
         return [item for item in self._fundamentals if item.code in codes]
 
-    def fetch_dividends(self, codes, start, end):
-        del start, end
-        return [item for item in self._dividends if item.code in codes]
-
 
 def _fake_provider() -> _FakeProvider:
     stocks = (

@@ -33,10 +33,6 @@ class ProviderProtocol(Protocol):
         self, codes: Sequence[str], as_of: date
     ) -> Sequence[FundamentalSnapshot]: ...
 
-    def fetch_dividends(
-        self, codes: Sequence[str], start: date, end: date
-    ) -> Sequence[DividendRecord]: ...
-
 
 @runtime_checkable
 class LocalRepositoryProtocol(Protocol):

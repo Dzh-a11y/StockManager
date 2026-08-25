@@ -7,7 +7,6 @@ from datetime import date
 from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
-    DividendRecord,
     FundamentalSnapshot,
     ScreeningResult,
 )
@@ -15,7 +14,6 @@ from stock_manager.protocols import LocalRepositoryProtocol
 from stock_manager.rules import (
     RulesConfig,
     evaluate_composite,
-    evaluate_dividend_3y,
     evaluate_limit_up_3m,
     evaluate_limit_up_breakout,
     evaluate_non_st,
@@ -93,17 +91,8 @@ class ScreeningService:
             selected_codes, window_days[0], trading_day, adjustment
         )
         fundamentals = self._repository.get_fundamentals(selected_codes, trading_day)
-        dividend_start = date(
-            trading_day.year - self._config.dividend_3y.completed_calendar_years,
-            1,
-            1,
-        )
-        dividends = self._repository.get_dividends(
-            selected_codes, dividend_start, trading_day
-        )
         bars_by_code = self._group_bars(bars)
         fundamentals_by_code = {item.code: item for item in fundamentals}
-        dividends_by_code = self._group_dividends(dividends)
 
         results: list[ScreeningResult] = []
         for code in selected_codes:
@@ -115,12 +104,6 @@ class ScreeningService:
                     self._config.pe_positive.minimum_exclusive,
                 ),
                 evaluate_non_st(stock),
-                evaluate_dividend_3y(
-                    dividends_by_code.get(code, ()),
-                    trading_day,
-                    self._config.dividend_3y.completed_calendar_years,
-                    self._config.dividend_3y.minimum_records,
-                ),
                 evaluate_volume_price_5d(
                     code_bars,
                     metadata,
@@ -192,12 +175,3 @@ class ScreeningService:
             code: tuple(sorted(values, key=lambda item: item.trading_day))
             for code, values in grouped.items()
         }
-
-    @staticmethod
-    def _group_dividends(
-        items: Sequence[DividendRecord],
-    ) -> dict[str, tuple[DividendRecord, ...]]:
-        grouped: dict[str, list[DividendRecord]] = defaultdict(list)
-        for item in items:
-            grouped[item.code].append(item)
-        return {code: tuple(values) for code, values in grouped.items()}

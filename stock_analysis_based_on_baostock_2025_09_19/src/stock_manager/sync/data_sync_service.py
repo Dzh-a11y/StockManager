@@ -13,7 +13,6 @@ from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
     DatasetMetadata,
-    DividendRecord,
     FundamentalSnapshot,
     ProviderSmokeOutcome,
     StockIdentity,
@@ -170,9 +169,6 @@ class DataSyncService:
         normalized_code = code.strip()
         if not normalized_code:
             raise ValueError("code must not be empty")
-        dividend_start = date(
-            trading_day.year - self._config.dividend_lookback_years, 1, 1
-        )
         with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
             trading_days = self._provider_call(
                 lambda: self._provider.fetch_trading_days(trading_day, trading_day)
@@ -201,13 +197,6 @@ class DataSyncService:
             )
             if any(item.code != normalized_code for item in fundamentals):
                 raise ValueError("provider returned fundamentals for another stock")
-            dividends = self._provider_call(
-                lambda: self._provider.fetch_dividends(
-                    (normalized_code,), dividend_start, trading_day
-                )
-            )
-            if any(item.code != normalized_code for item in dividends):
-                raise ValueError("provider returned dividends for another stock")
         return ProviderSmokeOutcome(
             self._provider.source_name,
             normalized_code,
@@ -217,7 +206,7 @@ class DataSyncService:
             len(stocks),
             len(bars),
             len(fundamentals),
-            len(dividends),
+            0,
         )
 
     def _skip_success(
@@ -261,7 +250,6 @@ class DataSyncService:
         stocks: Sequence[StockIdentity],
         bars: Sequence[DailyBar],
         fundamentals: Sequence[FundamentalSnapshot],
-        dividends: Sequence[DividendRecord],
     ) -> None:
         stock_codes = tuple(stock.code for stock in stocks)
         if not stock_codes:
@@ -282,8 +270,6 @@ class DataSyncService:
             raise ValueError("provider did not return exactly one-day bars for all requested stocks")
         if any(item.code not in requested for item in fundamentals):
             raise ValueError("provider returned fundamentals for an unrequested stock")
-        if any(item.code not in requested for item in dividends):
-            raise ValueError("provider returned dividends for an unrequested stock")
 
     @staticmethod
     def _validate_calendar(days: Sequence[date], start: date, end: date) -> None:
@@ -347,21 +333,12 @@ class DataSyncService:
                     fundamentals = self._provider_call(
                         lambda: self._provider.fetch_fundamentals(selected_codes, trading_day)
                     )
-                    dividend_start = date(
-                        trading_day.year - self._config.dividend_lookback_years, 1, 1
-                    )
-                    dividends = self._provider_call(
-                        lambda: self._provider.fetch_dividends(
-                            selected_codes, dividend_start, trading_day
-                        )
-                    )
                     self._validate_payload(
                         trading_day,
                         selected_codes,
                         stocks,
                         bars,
                         fundamentals,
-                        dividends,
                     )
                 finished_at = self._now()
                 metadata = DatasetMetadata(
@@ -385,7 +362,7 @@ class DataSyncService:
                     stocks,
                     bars,
                     fundamentals,
-                    dividends,
+                    (),
                     trading_days,
                     metadata,
                     success,
@@ -529,9 +506,6 @@ class DataSyncService:
                     if not stocks:
                         raise ValueError("provider returned an empty stock universe")
                     selected_codes = tuple(stock.code for stock in stocks)
-                    dividend_start = date(
-                        as_of.year - self._config.dividend_lookback_years, 1, 1
-                    )
                     metadata = DatasetMetadata(
                         dataset_id,
                         as_of,
@@ -541,7 +515,7 @@ class DataSyncService:
                     )
                     self._repository.save_trading_days(trading_days, metadata)
                     self._repository.save_stocks(stocks, metadata)
-                    total_units = 3 * len(selected_codes)
+                    total_units = 2 * len(selected_codes)
                     done_units = 0
                     for offset in range(0, len(selected_codes), batch_size):
                         chunk = selected_codes[offset : offset + batch_size]
@@ -564,16 +538,6 @@ class DataSyncService:
                         done_units += len(chunk)
                         self._emit_progress(
                             "fundamentals", done_units, total_units, chunk[-1]
-                        )
-                        dividends = self._provider_call(
-                            lambda chunk=chunk: self._provider.fetch_dividends(
-                                chunk, dividend_start, as_of
-                            )
-                        )
-                        self._repository.save_dividends(dividends, metadata)
-                        done_units += len(chunk)
-                        self._emit_progress(
-                            "dividends", done_units, total_units, chunk[-1]
                         )
                 finished_at = self._now()
                 success = SyncRecord(

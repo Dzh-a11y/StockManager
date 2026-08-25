@@ -15,14 +15,12 @@ from stock_manager.rules.base import (
     WindowUnit,
 )
 from stock_manager.rules.config import (
-    DividendConfig,
     LimitUpBreakoutConfig,
     LimitUpConfig,
     PePositiveConfig,
     VolatilityConfig,
     VolumePriceConfig,
 )
-from stock_manager.rules.dividend_3y import evaluate_dividend_3y
 from stock_manager.rules.limit_up_3m import evaluate_limit_up_3m
 from stock_manager.rules.limit_up_breakout import evaluate_limit_up_breakout
 from stock_manager.rules.non_st import evaluate_non_st
@@ -91,6 +89,7 @@ def _parameter(
     value_type: ParameterType,
     default: object,
     label: str,
+    description: str,
 ) -> ParameterDefinition:
     return ParameterDefinition(
         parameter_id,
@@ -100,7 +99,7 @@ def _parameter(
         None,
         None,
         label,
-        label,
+        description,
     )
 
 
@@ -108,8 +107,16 @@ class PePositiveRule:
     definition = RuleDefinition(
         "pe_positive",
         "PE 下限",
-        "PE TTM 必须存在并严格大于下限",
-        (_parameter("minimum_exclusive", ParameterType.DECIMAL, "0", "PE 严格下限"),),
+        "PE TTM 必须存在并严格大于下限；用于排除亏损或微利股票",
+        (
+            _parameter(
+                "minimum_exclusive",
+                ParameterType.DECIMAL,
+                "0",
+                "PE 严格下限",
+                "PE(TTM) 必须严格大于该值才通过。例如 0 表示只接受盈利股票；设负值可放宽到微亏股票。",
+            ),
+        ),
     )
 
     def parse_parameters(self, raw: object) -> PePositiveConfig:
@@ -145,55 +152,33 @@ class NonStRule:
         return evaluate_non_st(context.stock)
 
 
-class DividendRule:
-    definition = RuleDefinition(
-        "dividend_3y",
-        "历史分红",
-        "检查最近若干个已完成自然年度的分红记录",
-        (
-            _parameter("completed_calendar_years", ParameterType.INTEGER, 3, "自然年度数"),
-            _parameter("minimum_records", ParameterType.INTEGER, 1, "最少分红记录"),
-        ),
-    )
-
-    def parse_parameters(self, raw: object) -> DividendConfig:
-        values = _mapping(
-            raw,
-            {"completed_calendar_years", "minimum_records"},
-            self.definition.rule_id,
-        )
-        years = _integer(values, "completed_calendar_years")
-        minimum = _nonnegative_integer(values, "minimum_records")
-        return DividendConfig(years, minimum)
-
-    def data_requirement(self, parameters: object) -> RuleDataRequirement:
-        if not isinstance(parameters, DividendConfig):
-            raise TypeError("parameters must be DividendConfig")
-        return RuleDataRequirement(
-            needs_dividends=True,
-            dividend_calendar_years=parameters.completed_calendar_years,
-        )
-
-    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
-        if not isinstance(parameters, DividendConfig):
-            raise TypeError("parameters must be DividendConfig")
-        return evaluate_dividend_3y(
-            context.dividends,
-            context.trading_day,
-            parameters.completed_calendar_years,
-            parameters.minimum_records,
-        )
-
-
 class VolumePriceRule:
     definition = RuleDefinition(
         "volume_price_5d",
         "量价信号",
         "相邻交易日同时满足量比和收盘涨幅",
         (
-            _parameter("lookback_trading_sessions", ParameterType.INTEGER, 5, "观察交易日数"),
-            _parameter("minimum_volume_ratio", ParameterType.DECIMAL, "4", "最低量比"),
-            _parameter("minimum_close_rise_percent", ParameterType.DECIMAL, "7", "最低收盘涨幅百分比"),
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                5,
+                "观察交易日数",
+                "在最近多少个交易日里寻找量价信号；窗口越大，越容易命中历史上任一天的放量上涨。",
+            ),
+            _parameter(
+                "minimum_volume_ratio",
+                ParameterType.DECIMAL,
+                "4",
+                "最低量比",
+                "信号日成交量 ÷ 前一日成交量的最小倍数，用于捕捉放量；4 表示成交量至少放大到前一天的 4 倍。",
+            ),
+            _parameter(
+                "minimum_close_rise_percent",
+                ParameterType.DECIMAL,
+                "7",
+                "最低收盘涨幅百分比",
+                "信号日收盘价相对前一日收盘价的最小涨幅（百分比）；7 表示当天至少上涨 7%。",
+            ),
         ),
     )
 
@@ -237,11 +222,41 @@ class LimitUpBreakoutRule:
         "炸板或假阴线",
         "检查涨停炸板或假阴线信号",
         (
-            _parameter("signal_lookback_trading_sessions", ParameterType.INTEGER, 5, "信号观察交易日数"),
-            _parameter("highest_lookback_trading_sessions", ParameterType.INTEGER, 90, "历史最高价观察交易日数"),
-            _parameter("limit_ratio_lower_exclusive", ParameterType.DECIMAL, "1.08", "涨停比例开区间下限"),
-            _parameter("limit_ratio_upper_exclusive", ParameterType.DECIMAL, "1.12", "涨停比例开区间上限"),
-            _parameter("close_below_high_amount", ParameterType.DECIMAL, "0.03", "收盘低于最高价金额"),
+            _parameter(
+                "signal_lookback_trading_sessions",
+                ParameterType.INTEGER,
+                5,
+                "信号观察交易日数",
+                "在最近多少个交易日内搜索涨停炸板/假阴线形态；窗口越大命中越多。",
+            ),
+            _parameter(
+                "highest_lookback_trading_sessions",
+                ParameterType.INTEGER,
+                90,
+                "历史最高价观察交易日数",
+                "取最近多少个交易日内的最高价作为突破参考；越大越严格。",
+            ),
+            _parameter(
+                "limit_ratio_lower_exclusive",
+                ParameterType.DECIMAL,
+                "1.08",
+                "涨停比例开区间下限",
+                "单日涨幅达到该比例（如 1.08 = 8%）即视为涨停；开区间，恰好等于不算。",
+            ),
+            _parameter(
+                "limit_ratio_upper_exclusive",
+                ParameterType.DECIMAL,
+                "1.12",
+                "涨停比例开区间上限",
+                "涨幅超过该比例（如 1.12 = 12%）不再视为涨停；用于排除 20% 涨跌幅的板块。",
+            ),
+            _parameter(
+                "close_below_high_amount",
+                ParameterType.DECIMAL,
+                "0.03",
+                "收盘低于最高价金额",
+                "炸板判定：涨停日收盘价较当日最高价回落超过该金额（元）即视为炸板。",
+            ),
         ),
     )
 
@@ -298,11 +313,41 @@ class LimitUpCountRule:
         "涨停次数",
         "统计窗口内涨停事件次数",
         (
-            _parameter("lookback_trading_sessions", ParameterType.INTEGER, 90, "观察交易日数"),
-            _parameter("minimum_events", ParameterType.INTEGER, 1, "最少涨停次数"),
-            _parameter("maximum_events", ParameterType.INTEGER, 3, "最多涨停次数"),
-            _parameter("limit_ratio_lower_exclusive", ParameterType.DECIMAL, "1.08", "涨停比例开区间下限"),
-            _parameter("limit_ratio_upper_exclusive", ParameterType.DECIMAL, "1.12", "涨停比例开区间上限"),
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                90,
+                "观察交易日数",
+                "统计涨停次数的时间窗口长度（交易日数）。",
+            ),
+            _parameter(
+                "minimum_events",
+                ParameterType.INTEGER,
+                1,
+                "最少涨停次数",
+                "窗口内涨停事件数下限；少于该值判定失败。",
+            ),
+            _parameter(
+                "maximum_events",
+                ParameterType.INTEGER,
+                3,
+                "最多涨停次数",
+                "窗口内涨停事件数上限；超过该值判定失败，用于避开连续暴涨的股票。",
+            ),
+            _parameter(
+                "limit_ratio_lower_exclusive",
+                ParameterType.DECIMAL,
+                "1.08",
+                "涨停比例开区间下限",
+                "单日涨幅达到该比例即视为一次涨停；开区间，恰好等于不算。",
+            ),
+            _parameter(
+                "limit_ratio_upper_exclusive",
+                ParameterType.DECIMAL,
+                "1.12",
+                "涨停比例开区间上限",
+                "涨幅超过该比例不计入涨停；用于排除 20% 涨跌幅的板块。",
+            ),
         ),
     )
 
@@ -360,9 +405,27 @@ class VolatilityRule:
         "波动倍数",
         "限制窗口最高价与最低价的倍数",
         (
-            _parameter("lookback_trading_sessions", ParameterType.INTEGER, 180, "观察交易日数"),
-            _parameter("maximum_multiple", ParameterType.DECIMAL, "2", "最大波动倍数"),
-            _parameter("minimum_required_sessions", ParameterType.INTEGER, 5, "最少有效交易日数"),
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                180,
+                "观察交易日数",
+                "计算波动倍数的观察窗口长度（交易日数）。",
+            ),
+            _parameter(
+                "maximum_multiple",
+                ParameterType.DECIMAL,
+                "2",
+                "最大波动倍数",
+                "窗口内最高价 ÷ 最低价的上限倍数；超过该倍数判定失败（波动过于剧烈）。",
+            ),
+            _parameter(
+                "minimum_required_sessions",
+                ParameterType.INTEGER,
+                5,
+                "最少有效交易日数",
+                "窗口内至少要有多少个有数据的交易日；不足（如次新股）直接判定失败。",
+            ),
         ),
     )
 
@@ -406,9 +469,27 @@ class AnnualMinVolumeRule:
         "年度最低交易量",
         "目标日是否为自然日窗口最低交易量",
         (
-            _parameter("lookback_calendar_days", ParameterType.INTEGER, 365, "自然日窗口"),
-            _parameter("minimum_required_trading_sessions", ParameterType.INTEGER, 120, "最少有效交易日数"),
-            _parameter("exclude_zero_volume", ParameterType.BOOLEAN, True, "排除零成交量"),
+            _parameter(
+                "lookback_calendar_days",
+                ParameterType.INTEGER,
+                365,
+                "自然日窗口",
+                "以自然日计算的回看窗口长度；目标日必须是该窗口内成交量最低的一天。",
+            ),
+            _parameter(
+                "minimum_required_trading_sessions",
+                ParameterType.INTEGER,
+                120,
+                "最少有效交易日数",
+                "窗口内至少要有多少个交易日的数据（排除停牌后）；不足则判定失败，避免次新股误判。",
+            ),
+            _parameter(
+                "exclude_zero_volume",
+                ParameterType.BOOLEAN,
+                True,
+                "排除零成交量",
+                "统计最低成交量时是否忽略零成交量（停牌）的交易日；关闭后停牌日也会参与比较。",
+            ),
         ),
     )
 
@@ -451,7 +532,6 @@ def build_default_registry() -> RuleRegistry:
     rules: tuple[ScreeningRule, ...] = (
         PePositiveRule(),
         NonStRule(),
-        DividendRule(),
         VolumePriceRule(),
         LimitUpBreakoutRule(),
         LimitUpCountRule(),

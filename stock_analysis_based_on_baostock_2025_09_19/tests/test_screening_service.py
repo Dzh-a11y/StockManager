@@ -118,7 +118,6 @@ def test_screen_reads_local_snapshot_and_returns_stable_order(tmp_path: Path) ->
     assert tuple(rule.rule_id for rule in results[0].rule_results) == (
         "pe_positive",
         "non_st",
-        "dividend_3y",
         "volume_price_5d",
         "limit_up_breakout",
         "limit_up_3m",

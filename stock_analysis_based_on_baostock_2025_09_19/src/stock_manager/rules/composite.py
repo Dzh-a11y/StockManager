@@ -6,7 +6,7 @@ from stock_manager.domain import RuleResult
 
 
 RULE_ID = "composite"
-FUNDAMENTAL_RULES = frozenset({"pe_positive", "non_st", "dividend_3y"})
+FUNDAMENTAL_RULES = frozenset({"pe_positive", "non_st"})
 TECHNICAL_TRIGGER_RULES = frozenset({"volume_price_5d", "limit_up_breakout"})
 TECHNICAL_REQUIRED_RULES = frozenset({"limit_up_3m", "volatility_multiple"})
 REQUIRED_RULES = FUNDAMENTAL_RULES | TECHNICAL_TRIGGER_RULES | TECHNICAL_REQUIRED_RULES

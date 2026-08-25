@@ -86,12 +86,3 @@ class FixtureProvider:
         return tuple(
             item for item in self._fundamentals if item.code in selected and item.published_on <= as_of
         )
-
-    def fetch_dividends(
-        self, codes: Sequence[str], start: date, end: date
-    ) -> Sequence[DividendRecord]:
-        self._record("fetch_dividends")
-        selected = set(codes)
-        return tuple(
-            item for item in self._dividends if item.code in selected and start <= item.ex_date <= end
-        )

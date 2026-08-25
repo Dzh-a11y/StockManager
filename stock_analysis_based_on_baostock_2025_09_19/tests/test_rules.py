@@ -11,14 +11,12 @@ from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
     DatasetMetadata,
-    DividendRecord,
     FundamentalSnapshot,
     RuleResult,
     StockIdentity,
 )
 from stock_manager.rules import (
     evaluate_composite,
-    evaluate_dividend_3y,
     evaluate_limit_up_3m,
     evaluate_limit_up_breakout,
     evaluate_non_st,
@@ -112,27 +110,6 @@ def test_non_st_uses_normalized_identity() -> None:
     st = StockIdentity("sh.600001", "示例", "SSE", True, None, None)
     assert evaluate_non_st(normal).passed is True
     assert evaluate_non_st(st).passed is False
-
-
-def test_dividend_rule_uses_three_completed_calendar_years() -> None:
-    records = (
-        DividendRecord("sh.600000", date(2023, 6, 1), Decimal("0.1"), "fixture"),
-        DividendRecord("sh.600000", date(2026, 6, 1), Decimal("0.2"), "fixture"),
-        DividendRecord("sh.600000", date(2022, 6, 1), Decimal("0.3"), "fixture"),
-    )
-    result = evaluate_dividend_3y(records, DAY, 3, 1)
-    assert result.passed is True
-    assert result.actual_value == 1
-    assert result.threshold["start_year_inclusive"] == 2023
-
-
-def test_dividend_rule_rejects_mixed_stocks() -> None:
-    records = (
-        DividendRecord("sh.600000", date(2024, 6, 1), Decimal("0.1"), "fixture"),
-        DividendRecord("sz.000001", date(2025, 6, 1), Decimal("0.2"), "fixture"),
-    )
-    with pytest.raises(ValueError, match="one stock code"):
-        evaluate_dividend_3y(records, DAY, 3, 1)
 
 
 def test_volume_price_rule_sorts_and_matches_same_adjacent_pair() -> None:
@@ -249,7 +226,6 @@ def test_composite_requires_all_fundamentals_one_trigger_and_required_technical(
     results = [
         _result("pe_positive", True),
         _result("non_st", True),
-        _result("dividend_3y", True),
         _result("volume_price_5d", False),
         _result("limit_up_breakout", True),
         _result("limit_up_3m", True),

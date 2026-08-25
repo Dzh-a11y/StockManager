@@ -113,7 +113,7 @@ def test_fetch_stocks_keeps_only_ashare_stocks() -> None:
             ["sz.159915", "1", "创业板ETF"],  # ETF
             ["sz.000001", "1", "平安银行"],  # stock
             ["sz.300750", "1", "宁德时代"],  # ChiNext stock
-            ["bj.430047", "1", "诺思兰德"],  # BSE stock
+            ["bj.430047", "1", "诺思兰德"],  # BSE stock (excluded)
             ["sz.000002", "0", "万科A"],  # suspended stock still kept
         ]
     )
@@ -123,6 +123,5 @@ def test_fetch_stocks_keeps_only_ashare_stocks() -> None:
         "sh.688001",
         "sz.000001",
         "sz.300750",
-        "bj.430047",
         "sz.000002",
     ]

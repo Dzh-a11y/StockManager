@@ -7,10 +7,6 @@
   "pe_positive": {
     "minimum_exclusive": "0"
   },
-  "dividend_3y": {
-    "completed_calendar_years": 3,
-    "minimum_records": 1
-  },
   "volume_price_5d": {
     "lookback_trading_sessions": 5,
     "minimum_volume_ratio": "4",

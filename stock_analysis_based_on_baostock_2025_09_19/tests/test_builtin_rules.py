@@ -12,7 +12,6 @@ def test_default_registry_contains_all_builtin_rules() -> None:
 
     assert ids == (
         "annual_min_volume",
-        "dividend_3y",
         "limit_up_3m",
         "limit_up_breakout",
         "non_st",
@@ -28,7 +27,7 @@ def test_system_default_template_compiles_all_rules() -> None:
 
     plan = TemplateCompiler(build_default_registry()).compile(parse_template(raw))
 
-    assert len(plan.enabled_rules) == 8
+    assert len(plan.enabled_rules) == 7
     annual = next(item for item in plan.enabled_rules if item.rule_id == "annual_min_volume")
     assert annual.data_requirement.market_history_unit is WindowUnit.CALENDAR_DAYS
     assert annual.data_requirement.history_length == 365

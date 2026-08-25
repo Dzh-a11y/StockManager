@@ -15,12 +15,6 @@ class PePositiveConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class DividendConfig:
-    completed_calendar_years: int
-    minimum_records: int
-
-
-@dataclass(frozen=True, slots=True)
 class VolumePriceConfig:
     lookback_trading_sessions: int
     minimum_volume_ratio: Decimal
@@ -58,7 +52,6 @@ class RulesConfig:
     timezone: str
     technical_adjustment: AdjustmentMethod
     pe_positive: PePositiveConfig
-    dividend_3y: DividendConfig
     volume_price_5d: VolumePriceConfig
     limit_up_breakout: LimitUpBreakoutConfig
     limit_up_3m: LimitUpConfig
@@ -113,7 +106,6 @@ def load_rules_config(path: Path) -> RulesConfig:
         raise ValueError("technical_adjustment is unsupported") from error
 
     pe = _mapping(root.get("pe_positive"), "pe_positive")
-    dividend = _mapping(root.get("dividend_3y"), "dividend_3y")
     volume = _mapping(root.get("volume_price_5d"), "volume_price_5d")
     breakout = _mapping(root.get("limit_up_breakout"), "limit_up_breakout")
     limit_up = _mapping(root.get("limit_up_3m"), "limit_up_3m")
@@ -123,10 +115,6 @@ def load_rules_config(path: Path) -> RulesConfig:
         timezone=timezone,
         technical_adjustment=adjustment,
         pe_positive=PePositiveConfig(_decimal(pe, "minimum_exclusive")),
-        dividend_3y=DividendConfig(
-            _integer(dividend, "completed_calendar_years"),
-            _integer(dividend, "minimum_records"),
-        ),
         volume_price_5d=VolumePriceConfig(
             _integer(volume, "lookback_trading_sessions"),
             _decimal(volume, "minimum_volume_ratio"),

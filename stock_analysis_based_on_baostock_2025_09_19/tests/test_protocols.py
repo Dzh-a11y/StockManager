@@ -38,11 +38,6 @@ class EmptyProvider:
     ) -> Sequence[FundamentalSnapshot]:
         return ()
 
-    def fetch_dividends(
-        self, codes: Sequence[str], start: date, end: date
-    ) -> Sequence[DividendRecord]:
-        return ()
-
 
 class EmptyRepository:
     def save_stocks(self, stocks: Sequence[StockIdentity], metadata: DatasetMetadata) -> None: ...

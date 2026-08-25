@@ -11,7 +11,6 @@
   "rules": {
     "pe_positive": {"enabled": true, "parameters": {"minimum_exclusive": "0"}},
     "non_st": {"enabled": true, "parameters": {}},
-    "dividend_3y": {"enabled": true, "parameters": {"completed_calendar_years": 3, "minimum_records": 1}},
     "volume_price_5d": {"enabled": true, "parameters": {"lookback_trading_sessions": 5, "minimum_volume_ratio": "4", "minimum_close_rise_percent": "7"}},
     "limit_up_breakout": {"enabled": true, "parameters": {"signal_lookback_trading_sessions": 5, "highest_lookback_trading_sessions": 90, "limit_ratio_lower_exclusive": "1.08", "limit_ratio_upper_exclusive": "1.12", "close_below_high_amount": "0.03"}},
     "limit_up_3m": {"enabled": true, "parameters": {"lookback_trading_sessions": 90, "minimum_events": 1, "maximum_events": 3, "limit_ratio_lower_exclusive": "1.08", "limit_ratio_upper_exclusive": "1.12"}},
@@ -21,7 +20,7 @@
   "composition": {
     "operator": "all",
     "groups": [
-      {"group_id": "fundamental", "operator": "all", "rules": ["pe_positive", "non_st", "dividend_3y"]},
+      {"group_id": "fundamental", "operator": "all", "rules": ["pe_positive", "non_st"]},
       {"group_id": "signal", "operator": "any", "rules": ["volume_price_5d", "limit_up_breakout", "annual_min_volume"]},
       {"group_id": "risk", "operator": "all", "rules": ["limit_up_3m", "volatility_multiple"]}
     ]

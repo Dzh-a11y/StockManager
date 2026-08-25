@@ -260,7 +260,7 @@ def test_provider_calls_are_rate_limited_serially(tmp_path: Path) -> None:
         sleep=sleep,
     )
     service.sync("market", DAY, AdjustmentMethod.QFQ)
-    assert sleeps == [2.0, 2.0, 2.0, 2.0]
+    assert sleeps == [2.0, 2.0, 2.0]
 
 
 def test_provider_smoke_test_exercises_all_endpoints_without_persistence(
@@ -276,7 +276,7 @@ def test_provider_smoke_test_exercises_all_endpoints_without_persistence(
     assert outcome.source == "fixture"
     assert outcome.bar_count == 1
     assert outcome.fundamental_count == 1
-    assert outcome.dividend_count == 1
+    assert outcome.dividend_count == 0
     assert all(count == 1 for count in provider.calls.values())
     assert repository.get_sync_record("market", DAY) is None
     assert repository.get_stocks(DAY) == ()
@@ -444,7 +444,7 @@ def test_backfill_on_startup_first_run_backfills_then_increments(tmp_path: Path)
 def test_backfill_on_startup_reruns_full_history_after_interrupted_backfill(
     tmp_path: Path,
 ) -> None:
-    provider = _many_codes_provider(5, fail_method="fetch_dividends")
+    provider = _many_codes_provider(5, fail_method="fetch_fundamentals")
     config = SyncConfig(
         time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
     )
@@ -630,10 +630,10 @@ def test_backfill_history_reports_overall_progress(tmp_path: Path) -> None:
     )
 
     assert outcome.status is SyncStatus.SUCCESS
-    assert len(events) == 9  # 250 / 100 = 3 块 × 3 个阶段
+    assert len(events) == 6  # 250 / 100 = 3 块 × 2 个阶段
     assert events[0]["phase"] == "daily_bars"
-    assert events[0]["total"] == 750  # 3 阶段 × 250 只
+    assert events[0]["total"] == 500  # 2 阶段 × 250 只
     assert events[0]["completed"] == 100
-    assert events[-1]["phase"] == "dividends"
-    assert events[-1]["completed"] == 750
-    assert all(event["total"] == 750 for event in events)
+    assert events[-1]["phase"] == "fundamentals"
+    assert events[-1]["completed"] == 500
+    assert all(event["total"] == 500 for event in events)

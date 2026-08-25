@@ -11,7 +11,6 @@ from typing import Any
 from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
-    DividendRecord,
     FundamentalSnapshot,
     StockIdentity,
 )
@@ -20,11 +19,11 @@ from stock_manager.domain import (
 # Baostock's query_all_stock returns every listed security — stocks, indices,
 # ETFs, funds and bonds. These exchange code prefixes identify the real A-share
 # stocks; everything else is dropped in fetch_stocks() so screening never sees
-# indices or funds. B-shares (sh.900xxx, sz.200xxx) are intentionally excluded.
+# indices or funds. B-shares (sh.900xxx, sz.200xxx) and BSE (北交所, bj.*) are
+# intentionally excluded.
 _ASHARE_STOCK_PREFIXES: dict[str, tuple[str, ...]] = {
     "sh": ("600", "601", "603", "605", "688", "689"),
     "sz": ("000", "001", "002", "003", "300", "301", "302"),
-    "bj": ("43", "83", "87", "92"),
 }
 
 
@@ -262,36 +261,3 @@ class BaostockProvider:
                         )
                     )
         return tuple(snapshots)
-
-    def fetch_dividends(
-        self, codes: Sequence[str], start: date, end: date
-    ) -> Sequence[DividendRecord]:
-        records: list[DividendRecord] = []
-        with self._session():
-            for index, code in enumerate(codes):
-                self._emit_progress("dividends", index + 1, len(codes), code)
-                for year in range(start.year, end.year + 1):
-                    rows = self._rows(
-                        self._query(
-                            lambda code=code, year=year: self._client.query_dividend_data(
-                                code=code, year=year, yearType="report"
-                            )
-                        ),
-                        f"query_dividend_data({code},{year})",
-                    )
-                    for row in rows:
-                        ex_date_text = row.get("dividOperateDate", "")
-                        cash_text = row.get("dividCashPsBeforeTax", "")
-                        if not ex_date_text or not cash_text:
-                            continue
-                        ex_date = date.fromisoformat(ex_date_text)
-                        if start <= ex_date <= end:
-                            records.append(
-                                DividendRecord(
-                                    code,
-                                    ex_date,
-                                    self._required_decimal(cash_text, "dividCashPsBeforeTax"),
-                                    self.source_name,
-                                )
-                            )
-        return tuple(records)
