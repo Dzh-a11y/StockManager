@@ -441,6 +441,39 @@ def test_backfill_on_startup_first_run_backfills_then_increments(tmp_path: Path)
     assert provider.calls["fetch_daily_bars"] == calls_before
 
 
+def test_backfill_on_startup_reruns_full_history_after_interrupted_backfill(
+    tmp_path: Path,
+) -> None:
+    provider = _many_codes_provider(5, fail_method="fetch_dividends")
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(SyncFailedError):
+        service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+
+    provider.set_failure(None)
+    outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+    assert outcome is not None and outcome.status is SyncStatus.SUCCESS
+    bars = repository.get_daily_bars(
+        ("sh.600000",),
+        date(2026, 8, 15),
+        date(2026, 8, 25),
+        AdjustmentMethod.QFQ,
+    )
+    # 中断后重启必须重跑完整历史回补（全窗口），而不是单日增量同步
+    assert len(bars) == 11
+
+
 def _many_codes_provider(
     count: int, *, fail_method: str | None = None
 ) -> FixtureProvider:
