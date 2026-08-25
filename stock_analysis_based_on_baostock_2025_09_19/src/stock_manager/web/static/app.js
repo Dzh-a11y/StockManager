@@ -479,7 +479,9 @@ function renderSyncProgress(p) {
   const fill = $('#sync-progress-fill');
   const current = $('#sync-current');
   const meta = $('#sync-progress');
+  const btn = $('#sync-data');
   const active = p && (p.status === 'running' || p.status === 'error');
+  btn.disabled = !!active;
   if (!active) {
     track.hidden = true;
     current.hidden = true;

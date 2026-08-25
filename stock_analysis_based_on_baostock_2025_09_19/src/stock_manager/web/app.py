@@ -25,6 +25,7 @@ from stock_manager.web.config import WebConfig
 from stock_manager.web.errors import (
     ApiError,
     BadRequestError,
+    ConflictError,
     NotFoundError,
     map_exception,
 )
@@ -265,6 +266,11 @@ class WebApp:
         retry = data.get("retry", False)
         if not isinstance(retry, bool):
             raise BadRequestError("retry must be a boolean")
+        if self._sync_progress.get("status") == "running":
+            phase = self._sync_progress.get("phase", "")
+            raise ConflictError(
+                f"已有同步任务正在进行（阶段：{phase or 'unknown'}），请等待完成后再试"
+            )
         self._sync_progress = {
             "status": "running",
             "dataset_id": dataset_id,

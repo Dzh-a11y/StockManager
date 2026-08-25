@@ -575,3 +575,34 @@ def test_sync_progress_endpoint_tracks_state(tmp_path: Path) -> None:
     assert progress["status"] == "done"
     assert progress["dataset_id"] == "market"
     assert progress["trading_day"] == TARGET_DAY.isoformat()
+
+
+def test_sync_endpoint_rejects_while_backfill_running(tmp_path: Path) -> None:
+    db = tmp_path / "market.sqlite3"
+    SQLiteRepository(db)
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    config = WebConfig(
+        database_path=db,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+        sync_config_path=REPO / "config" / "sync.json",
+        lock_directory=locks,
+    )
+    app = WebApp(config, provider_factory=_fake_provider)
+    app._sync_progress = {
+        "status": "running",
+        "phase": "backfill",
+        "dataset_id": "market",
+        "adjustment": "qfq",
+        "message": "启动回补历史数据",
+    }
+
+    status, payload = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
+    )
+    assert status == 409
+    assert payload["error"]["code"] == "CONFLICT"
