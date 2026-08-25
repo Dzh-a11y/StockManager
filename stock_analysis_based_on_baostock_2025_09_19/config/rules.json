@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "version": 1,
+    "timezone": "Asia/Shanghai",
+    "technical_adjustment": "qfq"
+  },
+  "pe_positive": {
+    "minimum_exclusive": "0"
+  },
+  "dividend_3y": {
+    "completed_calendar_years": 3,
+    "minimum_records": 1
+  },
+  "volume_price_5d": {
+    "lookback_trading_sessions": 5,
+    "minimum_volume_ratio": "4",
+    "minimum_close_rise_percent": "7"
+  },
+  "limit_up_breakout": {
+    "signal_lookback_trading_sessions": 5,
+    "highest_lookback_trading_sessions": 90,
+    "limit_ratio_lower_exclusive": "1.08",
+    "limit_ratio_upper_exclusive": "1.12",
+    "close_below_high_amount": "0.03"
+  },
+  "limit_up_3m": {
+    "lookback_trading_sessions": 90,
+    "minimum_events": 1,
+    "maximum_events": 3,
+    "limit_ratio_lower_exclusive": "1.08",
+    "limit_ratio_upper_exclusive": "1.12"
+  },
+  "volatility_multiple": {
+    "lookback_trading_sessions": 180,
+    "maximum_multiple": "2",
+    "minimum_required_sessions": 5
+  }
+}

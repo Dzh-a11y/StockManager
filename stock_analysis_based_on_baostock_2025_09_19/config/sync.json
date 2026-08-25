@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "version": 1,
+    "timezone": "Asia/Shanghai"
+  },
+  "policy": {
+    "cutoff_time": "17:30:00",
+    "retry_cooldown_seconds": 300,
+    "minimum_request_interval_seconds": 0.2,
+    "calendar_horizon_days": 45,
+    "dividend_lookback_years": 3
+  }
+}

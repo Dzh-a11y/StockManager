@@ -1,0 +1,202 @@
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
+
+
+class AdjustmentMethod(str, Enum):
+    UNADJUSTED = "unadjusted"
+    QFQ = "qfq"
+    HFQ = "hfq"
+
+
+class SyncStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+def _require_text(value: str, field_name: str) -> None:
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be empty")
+
+
+def _require_aware(value: datetime, field_name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True)
+class StockIdentity:
+    code: str
+    name: str
+    exchange: str
+    is_st: bool
+    listed_on: date | None
+    delisted_on: date | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+        _require_text(self.name, "name")
+        _require_text(self.exchange, "exchange")
+
+
+@dataclass(frozen=True, slots=True)
+class DailyBar:
+    code: str
+    trading_day: date
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    preclose: Decimal
+    volume: Decimal
+    amount: Decimal
+    is_trading: bool
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+        if self.high < self.low:
+            raise ValueError("high must be greater than or equal to low")
+        if self.volume < Decimal("0"):
+            raise ValueError("volume must be non-negative")
+        if self.amount < Decimal("0"):
+            raise ValueError("amount must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class FundamentalSnapshot:
+    code: str
+    report_date: date
+    published_on: date
+    pe_ttm: Decimal | None
+    pb: Decimal | None
+    source: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+        _require_text(self.source, "source")
+
+
+@dataclass(frozen=True, slots=True)
+class DividendRecord:
+    code: str
+    ex_date: date
+    cash_dividend_per_share: Decimal
+    source: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+        _require_text(self.source, "source")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMetadata:
+    dataset_id: str
+    trading_day: date
+    source: str
+    synced_at: datetime
+    adjustment: AdjustmentMethod
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.source, "source")
+        _require_aware(self.synced_at, "synced_at")
+
+
+@dataclass(frozen=True, slots=True)
+class RuleResult:
+    rule_id: str
+    passed: bool
+    actual_value: object
+    threshold: object
+    reason: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.rule_id, "rule_id")
+        _require_text(self.reason, "reason")
+
+
+@dataclass(frozen=True, slots=True)
+class ScreeningResult:
+    code: str
+    trading_day: date
+    passed: bool
+    rule_results: tuple[RuleResult, ...]
+    metadata: DatasetMetadata
+
+    def __post_init__(self) -> None:
+        _require_text(self.code, "code")
+
+
+@dataclass(frozen=True, slots=True)
+class SyncRecord:
+    dataset_id: str
+    trading_day: date
+    status: SyncStatus
+    source: str
+    adjustment: AdjustmentMethod
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.source, "source")
+        _require_aware(self.started_at, "started_at")
+        if self.finished_at is not None:
+            _require_aware(self.finished_at, "finished_at")
+        if self.status is SyncStatus.SUCCESS:
+            if self.finished_at is None:
+                raise ValueError("SUCCESS requires finished_at")
+            if self.error_message is not None:
+                raise ValueError("SUCCESS must not have error_message")
+        if self.status is SyncStatus.FAILED:
+            if self.finished_at is None:
+                raise ValueError("FAILED requires finished_at")
+            if self.error_message is None or not self.error_message.strip():
+                raise ValueError("FAILED requires a non-empty error_message")
+
+
+@dataclass(frozen=True, slots=True)
+class SyncOutcome:
+    dataset_id: str
+    trading_day: date
+    status: SyncStatus
+    skipped: bool
+    warning: str | None
+    metadata: DatasetMetadata | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        if self.skipped and (self.warning is None or not self.warning.strip()):
+            raise ValueError("a skipped sync requires a warning")
+        if not self.skipped and self.warning is not None:
+            raise ValueError("a completed sync must not carry a skip warning")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSmokeOutcome:
+    source: str
+    code: str
+    trading_day: date
+    adjustment: AdjustmentMethod
+    trading_day_count: int
+    stock_count: int
+    bar_count: int
+    fundamental_count: int
+    dividend_count: int
+
+    def __post_init__(self) -> None:
+        _require_text(self.source, "source")
+        _require_text(self.code, "code")
+        counts = (
+            self.trading_day_count,
+            self.stock_count,
+            self.bar_count,
+            self.fundamental_count,
+            self.dividend_count,
+        )
+        if any(count < 0 for count in counts):
+            raise ValueError("provider smoke counts must be non-negative")
