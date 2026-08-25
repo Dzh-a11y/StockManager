@@ -126,6 +126,7 @@ body {
 .panel__body { padding: 16px; }
 .panel__hint { font-size: 12px; color: var(--muted); }
 .panel__hint--error { color: var(--fail); }
+.section-divider { height: 1px; background: var(--border); margin: 14px 0; }
 
 /* ---------- Fields ---------- */
 .field { display: block; margin-bottom: 14px; }

@@ -127,6 +127,18 @@ stock-manager web \
 
 `SKIPPED` 规则的 `result` 为 `null`。筛选只读本地 SQLite，断网可运行；本地数据不足时返回业务错误（`404`），不调用同步服务。
 
+### 同步
+
+`POST /api/sync`（需在启动时提供 `--sync-config` 与 `--lock-dir`；未配置时返回 `400`）：
+
+```json
+{"dataset_id": "market", "trading_day": "2026-08-25", "adjustment": "qfq", "retry": false}
+```
+
+响应为 `SyncOutcome`：`dataset_id`、`trading_day`、`status`（`SUCCESS`/`FAILED`/`PENDING`/`RUNNING`）、`skipped`、`warning`、`metadata`。成功 `200`；冷却/需重试返回 `409`；同步失败返回 `500`。
+
+同步由后端调用 `DataSyncService`，浏览器不直接访问 Baostock，仍遵守单一入口、文件/进程锁、防重复与速率限制。
+
 ## 错误映射
 
 | 状态 | 含义 |
@@ -141,4 +153,4 @@ stock-manager web \
 
 ## 本地优先边界
 
-Web 模块不导入 `BaostockProvider` 或 `DataSyncService`。Web 启动时由受控配置提供 SQLite、模板根目录和静态目录；浏览器不能决定任何文件路径。模板必须经过 `parse_template` 与 `TemplateCompiler`，前端校验不能替代后端校验。
+Web 启动时由受控配置提供 SQLite、模板根目录和静态目录；浏览器不能决定任何文件路径。模板必须经过 `parse_template` 与 `TemplateCompiler`，前端校验不能替代后端校验。筛选（`POST /api/screen`）只读本地 SQLite。同步（`POST /api/sync`）由后端调用 `DataSyncService`，作为唯一允许访问 Baostock 的入口；浏览器不直接访问 Provider，仍遵守单一入口、锁、防重复与速率限制。

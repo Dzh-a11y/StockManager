@@ -9,6 +9,7 @@ from stock_manager.services.screening_service import (
 from stock_manager.services.parameterized_screening_service import (
     DatasetUnavailableError as ParameterizedDatasetUnavailableError,
 )
+from stock_manager.sync import CooldownActiveError, RetryRequiredError, SyncFailedError
 from stock_manager.templates.service import TemplateRevisionConflictError
 
 
@@ -70,6 +71,12 @@ def map_exception(error: Exception) -> ApiError:
         return ForbiddenError(_safe_message(error))
     if isinstance(error, (TemplateRevisionConflictError, FileExistsError)):
         return ConflictError(_safe_message(error))
+    if isinstance(error, CooldownActiveError):
+        return ApiError(409, "SYNC_COOLDOWN", _safe_message(error))
+    if isinstance(error, RetryRequiredError):
+        return ApiError(409, "SYNC_RETRY_REQUIRED", _safe_message(error))
+    if isinstance(error, SyncFailedError):
+        return ApiError(500, "SYNC_FAILED", _safe_message(error))
     if isinstance(error, ValueError):
         return BadRequestError(_safe_message(error))
     return InternalError()

@@ -134,6 +134,9 @@ def _build_parser() -> argparse.ArgumentParser:
     web.add_argument("--static", type=Path, default=Path("src/stock_manager/web/static"))
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8000)
+    web.add_argument("--sync-config", type=Path, default=None)
+    web.add_argument("--lock-dir", type=Path, default=None)
+    web.add_argument("--provider-interval", type=float, default=0.0)
     return parser
 
 
@@ -254,6 +257,9 @@ def _web_command(args: argparse.Namespace, stdout: TextIO) -> int:
         static_root=args.static,
         host=args.host,
         port=args.port,
+        sync_config_path=args.sync_config,
+        lock_directory=args.lock_dir,
+        provider_request_interval_seconds=args.provider_interval,
     )
     config.validate()
     print(f"serving screening workbench on http://{config.host}:{config.port}", file=stdout)

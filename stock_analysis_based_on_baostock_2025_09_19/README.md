@@ -30,6 +30,8 @@ stock-manager web \
   --system-templates config/rule_templates \
   --user-templates data/user-templates \
   --static src/stock_manager/web/static \
+  --sync-config config/sync.json \
+  --lock-dir data/locks \
   --host 127.0.0.1 \
   --port 8000
 ```

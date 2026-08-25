@@ -417,3 +417,127 @@ def test_new_rule_auto_appears_in_catalog_and_renders_and_screens(tmp_path: Path
     assert execution["rule_id"] == "always_pass"
     assert execution["status"] == "PASSED"
     assert execution["result"]["reason"] == "always passes"
+
+
+# ---------- P3.x: sync endpoint (server-side DataSyncService trigger) ----------
+class _FakeProvider:
+    source_name = "fixture"
+
+    def __init__(self, trading_day, stocks, bars, fundamentals, dividends):
+        self._day = trading_day
+        self._stocks = stocks
+        self._bars = bars
+        self._fundamentals = fundamentals
+        self._dividends = dividends
+
+    def fetch_trading_days(self, start, end):
+        del start, end
+        return [self._day]
+
+    def fetch_stocks(self, as_of):
+        del as_of
+        return self._stocks
+
+    def fetch_daily_bars(self, codes, start, end, adjustment):
+        del start, end, adjustment
+        return [bar for bar in self._bars if bar.code in codes]
+
+    def fetch_fundamentals(self, codes, as_of):
+        del as_of
+        return [item for item in self._fundamentals if item.code in codes]
+
+    def fetch_dividends(self, codes, start, end):
+        del start, end
+        return [item for item in self._dividends if item.code in codes]
+
+
+def _fake_provider() -> _FakeProvider:
+    stocks = (
+        StockIdentity("sh.600001", "Alpha", "SH", False, date(2000, 1, 1), None),
+        StockIdentity("sz.000002", "Beta", "SZ", True, date(2001, 1, 1), None),
+    )
+    bars = tuple(
+        DailyBar(
+            stock.code, TARGET_DAY, Decimal("10"), Decimal("10"), Decimal("10"),
+            Decimal("10"), Decimal("9"), Decimal("100"), Decimal("1000"), True,
+        )
+        for stock in stocks
+    )
+    fundamentals = tuple(
+        FundamentalSnapshot(
+            stock.code, date(2025, 12, 31), date(2026, 4, 1), Decimal("15"), Decimal("1"), "fixture"
+        )
+        for stock in stocks
+    )
+    return _FakeProvider(TARGET_DAY, stocks, tuple(bars), fundamentals, ())
+
+
+def _non_st_template() -> dict:
+    return {
+        "metadata": {
+            "schema_version": 2,
+            "template_id": "simple",
+            "revision": 1,
+            "name": "简单策略",
+            "description": "仅排除 ST",
+            "timezone": "Asia/Shanghai",
+            "technical_adjustment": "qfq",
+        },
+        "rules": {"non_st": {"enabled": True, "parameters": {}}},
+        "composition": {
+            "operator": "all",
+            "groups": [{"group_id": "g1", "operator": "all", "rules": ["non_st"]}],
+        },
+    }
+
+
+def test_sync_endpoint_requires_configuration(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
+    )
+    assert status == 400
+    assert payload["error"]["code"] == "BAD_REQUEST"
+
+
+def test_sync_populates_local_data_then_screen_reads_it(tmp_path: Path) -> None:
+    db = tmp_path / "market.sqlite3"
+    # Create the (empty) local schema so startup validation passes.
+    SQLiteRepository(db)
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    config = WebConfig(
+        database_path=db,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+        sync_config_path=REPO / "config" / "sync.json",
+        lock_directory=locks,
+    )
+    app = WebApp(config, provider_factory=_fake_provider)
+
+    status, payload = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
+    )
+    assert status == 200
+    assert payload["status"] == "SUCCESS"
+    assert payload["skipped"] is False
+
+    status, screen = _post(
+        app,
+        "/api/screen",
+        {
+            "template": _non_st_template(),
+            "dataset_id": "market",
+            "trading_day": TARGET_DAY.isoformat(),
+            "adjustment": "qfq",
+        },
+    )
+    assert status == 200
+    assert screen["summary"]["total"] == 2
+    passed = {item["code"] for item in screen["results"] if item["passed"]}
+    assert passed == {"sh.600001"}

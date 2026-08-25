@@ -459,6 +459,38 @@ async function runScreen() {
   }
 }
 
+async function syncData() {
+  const cond = runtimeConditions();
+  if (!cond.dataset_id) { toast('请填写数据集。', 'warn'); return; }
+  if (!cond.trading_day) { toast('请选择交易日。', 'warn'); return; }
+  const progress = $('#sync-progress');
+  progress.hidden = false;
+  progress.textContent = '正在从 Baostock 同步 ' + cond.dataset_id + ' @ ' + cond.trading_day + ' …';
+  const btn = $('#sync-data');
+  btn.disabled = true;
+  try {
+    const data = await api('POST', '/api/sync', {
+      dataset_id: cond.dataset_id,
+      trading_day: cond.trading_day,
+      adjustment: cond.adjustment,
+    });
+    if (data.skipped) {
+      toast('数据已存在，跳过拉取。', 'warn');
+    } else if (data.status === 'SUCCESS') {
+      toast('同步成功：' + cond.dataset_id + ' @ ' + cond.trading_day, 'success');
+    } else {
+      toast('同步状态：' + data.status, 'warn');
+    }
+    progress.textContent = '同步完成：' + data.status;
+  } catch (err) {
+    progress.textContent = '同步失败：' + err.message;
+    toast('同步失败：' + err.message, 'error');
+  } finally {
+    progress.hidden = true;
+    btn.disabled = false;
+  }
+}
+
 /* ---------- results ---------- */
 function renderResults() {
   const body = $('#result-body');
@@ -519,6 +551,7 @@ function buildDetail(r) {
 /* ---------- event wiring ---------- */
 function bindEvents() {
   $('#run-screen').addEventListener('click', runScreen);
+  $('#sync-data').addEventListener('click', syncData);
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
   });

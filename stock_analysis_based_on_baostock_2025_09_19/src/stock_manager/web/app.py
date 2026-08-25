@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping
+from typing import Callable, Mapping
 
 from stock_manager.domain import AdjustmentMethod
+from stock_manager.protocols import ProviderProtocol
 from stock_manager.rules.builtin import build_default_registry
 from stock_manager.rules.registry import RuleRegistry
 from stock_manager.services.parameterized_screening_service import (
     ParameterizedScreeningService,
 )
 from stock_manager.storage.sqlite_repo import SQLiteRepository
+from stock_manager.sync import DataSyncService, load_sync_config
 from stock_manager.templates.compiler import TemplateCompiler
 from stock_manager.templates.repository import JsonTemplateRepository
 from stock_manager.templates.service import TemplateService
@@ -61,9 +63,11 @@ class WebApp:
         self,
         config: WebConfig,
         registry: RuleRegistry | None = None,
+        provider_factory: Callable[[], ProviderProtocol] | None = None,
     ) -> None:
         config.validate()
         self._config = config
+        self._provider_factory = provider_factory
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
         compiler = TemplateCompiler(registry)
@@ -144,6 +148,9 @@ class WebApp:
         if method == "POST" and path == "/api/screen":
             return self._handle_screen(body)
 
+        if method == "POST" and path == "/api/sync":
+            return self._handle_sync(body)
+
         match = self._template_id_from_path(path)
         if match is not None:
             template_id = match
@@ -180,6 +187,43 @@ class WebApp:
         return self._json(
             200,
             screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
+        )
+
+    def _handle_sync(self, body: object) -> Response:
+        if self._config.sync_config_path is None or self._config.lock_directory is None:
+            raise BadRequestError("sync is not configured on this server")
+        data = self._object(body, "body")
+        unknown = set(data) - {"dataset_id", "trading_day", "adjustment", "retry"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        required = {"dataset_id", "trading_day", "adjustment"}
+        missing = required - set(data)
+        if missing:
+            raise BadRequestError(f"missing field(s): {', '.join(sorted(missing))}")
+        dataset_id = self._text(data["dataset_id"], "dataset_id")
+        trading_day = self._iso_date(data["trading_day"])
+        adjustment = self._adjustment(data["adjustment"])
+        retry = data.get("retry", False)
+        if not isinstance(retry, bool):
+            raise BadRequestError("retry must be a boolean")
+        provider = self._make_provider()
+        sync_config = load_sync_config(self._config.sync_config_path)
+        service = DataSyncService(
+            provider,
+            self._services.repository,
+            self._config.lock_directory,
+            sync_config,
+        )
+        outcome = service.sync(dataset_id, trading_day, adjustment, retry=retry)
+        return self._json(200, to_jsonable(outcome))
+
+    def _make_provider(self) -> ProviderProtocol:
+        if self._provider_factory is not None:
+            return self._provider_factory()
+        from stock_manager.providers.baostock_provider import BaostockProvider
+
+        return BaostockProvider(
+            request_interval_seconds=self._config.provider_request_interval_seconds
         )
 
     def _handle_template_update(self, template_id: str, body: object) -> Response:
