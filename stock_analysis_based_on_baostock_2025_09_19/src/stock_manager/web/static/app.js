@@ -428,14 +428,14 @@ function runtimeConditions() {
   const adjustment = $('#adjustment').value;
   const codesRaw = $('#codes').value.trim();
   const codes = codesRaw ? codesRaw.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean) : undefined;
-  return { dataset, trading_day: tradingDay, adjustment, codes };
+  return { dataset_id: dataset, trading_day: tradingDay, adjustment, codes };
 }
 
 async function runScreen() {
   const invalid = validateComposition();
   if (invalid) { toast(invalid, 'warn'); return; }
   const cond = runtimeConditions();
-  if (!cond.dataset) { toast('请填写数据集。', 'warn'); return; }
+  if (!cond.dataset_id) { toast('请填写数据集。', 'warn'); return; }
   if (!cond.trading_day) { toast('请选择交易日。', 'warn'); return; }
   const progress = $('#screen-progress');
   progress.hidden = false;
@@ -551,10 +551,26 @@ function bindEvents() {
     if (!toggle) return;
     const ruleId = toggle.closest('.rule-card').dataset.rule;
     const on = toggle.getAttribute('aria-checked') === 'true';
-    toggle.setAttribute('aria-checked', on ? 'false' : 'true');
-    toggle.closest('.rule-card').classList.toggle('rule-card--off', on);
-    if (!on) {
+    const nowOn = !on;
+    toggle.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+    toggle.closest('.rule-card').classList.toggle('rule-card--off', !nowOn);
+    if (!nowOn) {
+      // 关闭：从所有分组移除
       for (const g of state.composition.groups) { g.rule_ids = g.rule_ids.filter((id) => id !== ruleId); }
+    } else {
+      // 重新启用：若未分配到任何分组，自动放入一个分组，避免"未分配"报错
+      const assigned = state.composition.groups.some((g) => g.rule_ids.includes(ruleId));
+      if (!assigned) {
+        let target = state.composition.groups.find((g) => g.rule_ids.length > 0) || state.composition.groups[0];
+        if (!target) {
+          let n = state.composition.groups.length + 1;
+          let gid = 'group-' + n;
+          while (state.composition.groups.some((g) => g.group_id === gid)) { n += 1; gid = 'group-' + n; }
+          state.composition.groups.push({ group_id: gid, operator: 'all', rule_ids: [] });
+          target = state.composition.groups[state.composition.groups.length - 1];
+        }
+        target.rule_ids.push(ruleId);
+      }
     }
     renderGroups();
     markDirty();
