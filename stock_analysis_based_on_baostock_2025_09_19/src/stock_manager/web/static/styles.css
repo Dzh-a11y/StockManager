@@ -127,6 +127,10 @@ body {
 .panel__hint { font-size: 12px; color: var(--muted); }
 .panel__hint--error { color: var(--fail); }
 .section-divider { height: 1px; background: var(--border); margin: 14px 0; }
+.progress-track { height: 6px; background: var(--border); border-radius: 999px; overflow: hidden; margin-top: 4px; }
+.progress-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+.progress-track--done .progress-fill { background: var(--pass); }
+.progress-track--error .progress-fill { background: var(--fail); }
 
 /* ---------- Fields ---------- */
 .field { display: block; margin-bottom: 14px; }

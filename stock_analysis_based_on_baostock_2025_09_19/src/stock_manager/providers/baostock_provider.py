@@ -31,6 +31,7 @@ class BaostockProvider:
         request_interval_seconds: float = 0.2,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         if request_interval_seconds < 0:
             raise ValueError("request_interval_seconds must be non-negative")
@@ -43,6 +44,21 @@ class BaostockProvider:
         self._monotonic = monotonic
         self._sleep = sleep
         self._last_request_at: float | None = None
+        self._progress_callback = progress_callback
+
+    def _emit_progress(
+        self, phase: str, index: int, total: int, code: str
+    ) -> None:
+        if self._progress_callback is None:
+            return
+        self._progress_callback(
+            {
+                "phase": phase,
+                "index": index,
+                "total": total,
+                "current_code": code,
+            }
+        )
 
     @property
     def source_name(self) -> str:
@@ -140,7 +156,8 @@ class BaostockProvider:
         bars: list[DailyBar] = []
         fields = "date,code,open,high,low,close,preclose,volume,amount,tradestatus"
         with self._session():
-            for code in codes:
+            for index, code in enumerate(codes):
+                self._emit_progress("daily_bars", index + 1, len(codes), code)
                 rows = self._rows(
                     self._query(
                         lambda code=code: self._client.query_history_k_data_plus(
@@ -193,7 +210,8 @@ class BaostockProvider:
         snapshots: list[FundamentalSnapshot] = []
         fields = "date,code,peTTM,pbMRQ"
         with self._session():
-            for code in codes:
+            for index, code in enumerate(codes):
+                self._emit_progress("fundamentals", index + 1, len(codes), code)
                 rows = self._rows(
                     self._query(
                         lambda code=code: self._client.query_history_k_data_plus(
@@ -225,7 +243,8 @@ class BaostockProvider:
     ) -> Sequence[DividendRecord]:
         records: list[DividendRecord] = []
         with self._session():
-            for code in codes:
+            for index, code in enumerate(codes):
+                self._emit_progress("dividends", index + 1, len(codes), code)
                 for year in range(start.year, end.year + 1):
                     rows = self._rows(
                         self._query(

@@ -459,15 +459,52 @@ async function runScreen() {
   }
 }
 
+let syncPollTimer = null;
+function stopSyncPolling() {
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+}
+function renderSyncProgress(p) {
+  const track = $('#sync-progress-track');
+  const fill = $('#sync-progress-fill');
+  const current = $('#sync-current');
+  const meta = $('#sync-progress');
+  const total = Number(p.total || 0);
+  const completed = Number(p.completed || 0);
+  const pct = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  track.hidden = false;
+  track.className = p.status === 'error' ? 'progress-track progress-track--error' : (p.status === 'done' ? 'progress-track progress-track--done' : 'progress-track');
+  fill.style.width = pct + '%';
+  current.hidden = false;
+  const phase = p.phase || '';
+  const label = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红', starting: '准备中' }[phase] || phase;
+  current.textContent = '正在加载：' + (p.current_code || '-') + (total ? '（' + completed + '/' + total + '，' + pct + '%）' : '');
+  meta.hidden = false;
+  meta.textContent = '同步 ' + (p.dataset_id || '') + ' @ ' + (p.trading_day || '') + ' · ' + label;
+}
+async function pollSyncProgress() {
+  try {
+    const p = await api('GET', '/api/sync/progress');
+    renderSyncProgress(p);
+  } catch (e) { /* ignore transient poll errors */ }
+}
+
 async function syncData() {
   const cond = runtimeConditions();
   if (!cond.dataset_id) { toast('请填写数据集。', 'warn'); return; }
   if (!cond.trading_day) { toast('请选择交易日。', 'warn'); return; }
   const progress = $('#sync-progress');
-  progress.hidden = false;
-  progress.textContent = '正在从 Baostock 同步 ' + cond.dataset_id + ' @ ' + cond.trading_day + ' …';
+  const track = $('#sync-progress-track');
   const btn = $('#sync-data');
   btn.disabled = true;
+  progress.hidden = false;
+  progress.textContent = '正在启动同步…';
+  track.hidden = false;
+  track.className = 'progress-track';
+  $('#sync-progress-fill').style.width = '0%';
+  $('#sync-current').hidden = true;
+  stopSyncPolling();
+  syncPollTimer = setInterval(pollSyncProgress, 600);
+  pollSyncProgress();
   try {
     const data = await api('POST', '/api/sync', {
       dataset_id: cond.dataset_id,
@@ -482,12 +519,14 @@ async function syncData() {
     } else {
       toast('同步状态：' + data.status, 'warn');
     }
-    progress.textContent = '同步完成：' + data.status;
   } catch (err) {
-    progress.textContent = '同步失败：' + err.message;
+    track.className = 'progress-track progress-track--error';
     toast('同步失败：' + err.message, 'error');
   } finally {
+    stopSyncPolling();
     progress.hidden = true;
+    track.hidden = true;
+    $('#sync-current').hidden = true;
     btn.disabled = false;
   }
 }

@@ -541,3 +541,37 @@ def test_sync_populates_local_data_then_screen_reads_it(tmp_path: Path) -> None:
     assert screen["summary"]["total"] == 2
     passed = {item["code"] for item in screen["results"] if item["passed"]}
     assert passed == {"sh.600001"}
+
+
+
+def test_sync_progress_endpoint_tracks_state(tmp_path: Path) -> None:
+    db = tmp_path / "market.sqlite3"
+    SQLiteRepository(db)
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    config = WebConfig(
+        database_path=db,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+        sync_config_path=REPO / "config" / "sync.json",
+        lock_directory=locks,
+    )
+    app = WebApp(config, provider_factory=_fake_provider)
+
+    status, progress = _get(app, "/api/sync/progress")
+    assert status == 200
+    assert progress["status"] == "idle"
+
+    status, _ = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq", "retry": True},
+    )
+    assert status == 200
+
+    status, progress = _get(app, "/api/sync/progress")
+    assert status == 200
+    assert progress["status"] == "done"
+    assert progress["dataset_id"] == "market"
+    assert progress["trading_day"] == TARGET_DAY.isoformat()

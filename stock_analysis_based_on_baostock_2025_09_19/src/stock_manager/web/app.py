@@ -68,6 +68,7 @@ class WebApp:
         config.validate()
         self._config = config
         self._provider_factory = provider_factory
+        self._sync_progress: dict[str, object] = {"status": "idle"}
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
         compiler = TemplateCompiler(registry)
@@ -121,6 +122,8 @@ class WebApp:
                         self._services.template_repository.is_system,
                     ),
                 )
+            if path == "/api/sync/progress":
+                return self._json(200, self._sync_progress)
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -206,6 +209,17 @@ class WebApp:
         retry = data.get("retry", False)
         if not isinstance(retry, bool):
             raise BadRequestError("retry must be a boolean")
+        self._sync_progress = {
+            "status": "running",
+            "dataset_id": dataset_id,
+            "trading_day": trading_day.isoformat(),
+            "adjustment": adjustment.value,
+            "phase": "starting",
+            "completed": 0,
+            "total": 0,
+            "current_code": None,
+            "message": "开始同步",
+        }
         provider = self._make_provider()
         sync_config = load_sync_config(self._config.sync_config_path)
         service = DataSyncService(
@@ -214,7 +228,14 @@ class WebApp:
             self._config.lock_directory,
             sync_config,
         )
-        outcome = service.sync(dataset_id, trading_day, adjustment, retry=retry)
+        try:
+            outcome = service.sync(dataset_id, trading_day, adjustment, retry=retry)
+        except Exception:
+            self._sync_progress["status"] = "error"
+            self._sync_progress["message"] = "synchronization failed"
+            raise
+        self._sync_progress["status"] = "done"
+        self._sync_progress["message"] = outcome.status.value
         return self._json(200, to_jsonable(outcome))
 
     def _make_provider(self) -> ProviderProtocol:
@@ -223,7 +244,24 @@ class WebApp:
         from stock_manager.providers.baostock_provider import BaostockProvider
 
         return BaostockProvider(
-            request_interval_seconds=self._config.provider_request_interval_seconds
+            request_interval_seconds=self._config.provider_request_interval_seconds,
+            progress_callback=self._on_sync_progress,
+        )
+
+    def _on_sync_progress(self, event: dict[str, object]) -> None:
+        phase = event.get("phase")
+        index = event.get("index")
+        total = event.get("total")
+        code = event.get("current_code")
+        completed = index if isinstance(index, int) else 0
+        self._sync_progress.update(
+            {
+                "status": "running",
+                "phase": phase,
+                "completed": completed,
+                "total": total,
+                "current_code": code,
+            }
         )
 
     def _handle_template_update(self, template_id: str, body: object) -> Response:
