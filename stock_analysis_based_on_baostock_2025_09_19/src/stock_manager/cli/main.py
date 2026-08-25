@@ -191,7 +191,7 @@ def _print_summary(
 def _sync_command(args: argparse.Namespace, stdout: TextIO) -> int:
     repository = SQLiteRepository(args.db)
     config = load_sync_config(args.config)
-    provider = BaostockProvider(request_interval_seconds=0)
+    provider = BaostockProvider(request_interval_seconds=0.2)
     service = DataSyncService(provider, repository, args.lock_dir, config)
     print(
         f"syncing dataset={args.dataset} date={args.date.isoformat()}",

@@ -50,11 +50,12 @@ status: active
 
 ## 同步层：区间回补
 
-`DataSyncService.backfill_history(dataset_id, as_of, adjustment)`：
+`DataSyncService.backfill_history(dataset_id, as_of, adjustment, *, batch_size=100)`：
 
 - 计算窗口起点 `start = as_of - retention_days`。
-- 用 `fetch_daily_bars(codes, start, as_of, adjustment)` **一次区间查询**取整窗口日线（Baostock `query_history_k_data_plus` 支持日期区间），而不是按交易日循环。
-- 同步当前股票列表、财务与分红，落库后 `prune_before(start)` 清理窗口外旧数据。
+- 用 `fetch_daily_bars(codes, start, as_of, adjustment)` 区间查询取窗口日线（Baostock `query_history_k_data_plus` 支持日期区间），而不是按交易日循环。
+- **分块增量落库**：先保存交易日历与当前股票列表；随后按代码分块（默认每块 100 只）循环——每拉完一块立即写入 `daily_bars`、`fundamentals`、`dividends`，数据库行数实时增长。中途失败或中断时，已落库的块全部保留，不会整窗白拉。
+- 全部完成后 `prune_before(start)` 清理窗口外旧数据，并记录 `SUCCESS`。
 - 沿用与 `sync` 相同的锁、幂等状态与失败记录（`RUNNING`/`SUCCESS`/`FAILED`）。
 
 ## 启动编排：`backfill_on_startup`

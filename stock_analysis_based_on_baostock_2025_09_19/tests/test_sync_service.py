@@ -439,3 +439,137 @@ def test_backfill_on_startup_first_run_backfills_then_increments(tmp_path: Path)
     second = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
     assert second is None
     assert provider.calls["fetch_daily_bars"] == calls_before
+
+
+def _many_codes_provider(
+    count: int, *, fail_method: str | None = None
+) -> FixtureProvider:
+    stocks = tuple(
+        StockIdentity(f"sh.{600000 + i:06d}", f"股{i}", "SSE", False, None, None)
+        for i in range(count)
+    )
+    days = tuple(date(2026, 8, day) for day in range(15, 26))
+    bars = tuple(
+        DailyBar(
+            stock.code,
+            day,
+            Decimal("10"),
+            Decimal("11"),
+            Decimal("9"),
+            Decimal("10.5"),
+            Decimal("10"),
+            Decimal("1000"),
+            Decimal("10500"),
+            True,
+        )
+        for stock in stocks
+        for day in days
+    )
+    return FixtureProvider(
+        trading_days=days,
+        stocks=stocks,
+        bars=bars,
+        fundamentals=(),
+        dividends=(),
+        fail_method=fail_method,
+    )
+
+
+def test_backfill_history_saves_all_chunks_on_success(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    outcome = service.backfill_history(
+        "market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100
+    )
+
+    assert outcome.status is SyncStatus.SUCCESS
+    assert provider.calls["fetch_daily_bars"] == 3  # 250 codes / 100 per batch
+    codes = tuple(f"sh.{600000 + i:06d}" for i in range(250))
+    all_bars = repository.get_daily_bars(
+        codes, date(2026, 8, 15), date(2026, 8, 25), AdjustmentMethod.QFQ
+    )
+    assert len(all_bars) == 250 * 11
+
+
+def test_backfill_history_keeps_fetched_chunks_on_failure(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250, fail_method="fetch_fundamentals")
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(SyncFailedError):
+        service.backfill_history(
+            "market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100
+        )
+
+    # 第一块（sh.600000..sh.600099）的 bars 已落库，第二块未拉到
+    assert len(repository.get_stocks(date(2026, 8, 25))) == 250
+    assert len(
+        repository.get_daily_bars(
+            ("sh.600000",), date(2026, 8, 15), date(2026, 8, 25), AdjustmentMethod.QFQ
+        )
+    ) == 11
+    assert repository.get_daily_bars(
+        ("sh.600100",), date(2026, 8, 15), date(2026, 8, 25), AdjustmentMethod.QFQ
+    ) == ()
+    record = repository.get_sync_record("market", date(2026, 8, 25))
+    assert record is not None and record.status is SyncStatus.FAILED
+
+
+def test_backfill_history_reruns_after_failed_marker(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250, fail_method="fetch_fundamentals")
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    with pytest.raises(SyncFailedError):
+        service.backfill_history(
+            "market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100
+        )
+    record = repository.get_sync_record("market", date(2026, 8, 25))
+    assert record is not None and record.status is SyncStatus.FAILED
+
+    # 失败后无需显式 retry 即可重跑，且之前已落库的块被保留
+    provider.set_failure(None)
+    outcome = service.backfill_history(
+        "market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100
+    )
+    assert outcome.status is SyncStatus.SUCCESS
+    final = repository.get_sync_record("market", date(2026, 8, 25))
+    assert final is not None and final.status is SyncStatus.SUCCESS
+    codes = tuple(f"sh.{600000 + i:06d}" for i in range(250))
+    assert len(
+        repository.get_daily_bars(
+            codes, date(2026, 8, 15), date(2026, 8, 25), AdjustmentMethod.QFQ
+        )
+    ) == 250 * 11

@@ -458,11 +458,19 @@ class DataSyncService:
         as_of: date,
         adjustment: AdjustmentMethod,
         *,
-        retry: bool = False,
+        batch_size: int = 100,
     ) -> SyncOutcome:
-        """Fetch and persist the full retention window ending at ``as_of`` in one pass."""
+        """Fetch and persist the retention window ending at ``as_of`` incrementally.
+
+        Market data is written per code batch as it is fetched, so an interrupted
+        backfill keeps every batch saved before the failure instead of losing the
+        whole window. Re-running is idempotent: a previous ``FAILED`` marker does not
+        gate a fresh attempt (unlike the explicit-retry single-day ``sync``).
+        """
         if not dataset_id.strip():
             raise ValueError("dataset_id must not be empty")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         start = as_of - timedelta(days=self._config.retention_days)
         lock_key = (
             f"{self._lock_directory.resolve()}:{dataset_id}:backfill:{as_of.isoformat()}"
@@ -471,8 +479,6 @@ class DataSyncService:
         dataset_file_lock = dataset_lock_path(self._lock_directory, dataset_id, as_of)
         with dataset_process_lock, persistent_file_lock(dataset_file_lock):
             now = self._now()
-            existing = self._repository.get_sync_record(dataset_id, as_of)
-            self._validate_retry(existing, retry, now, adjustment)
             running = SyncRecord(
                 dataset_id,
                 as_of,
@@ -496,32 +502,39 @@ class DataSyncService:
                     if not stocks:
                         raise ValueError("provider returned an empty stock universe")
                     selected_codes = tuple(stock.code for stock in stocks)
-                    bars = self._provider_call(
-                        lambda: self._provider.fetch_daily_bars(
-                            selected_codes, start, as_of, adjustment
-                        )
-                    )
-                    fundamentals = self._provider_call(
-                        lambda: self._provider.fetch_fundamentals(
-                            selected_codes, as_of
-                        )
-                    )
                     dividend_start = date(
                         as_of.year - self._config.dividend_lookback_years, 1, 1
                     )
-                    dividends = self._provider_call(
-                        lambda: self._provider.fetch_dividends(
-                            selected_codes, dividend_start, as_of
-                        )
+                    metadata = DatasetMetadata(
+                        dataset_id,
+                        as_of,
+                        self._provider.source_name,
+                        self._now(),
+                        adjustment,
                     )
+                    self._repository.save_trading_days(trading_days, metadata)
+                    self._repository.save_stocks(stocks, metadata)
+                    for offset in range(0, len(selected_codes), batch_size):
+                        chunk = selected_codes[offset : offset + batch_size]
+                        bars = self._provider_call(
+                            lambda chunk=chunk: self._provider.fetch_daily_bars(
+                                chunk, start, as_of, adjustment
+                            )
+                        )
+                        self._repository.save_daily_bars(bars, metadata)
+                        fundamentals = self._provider_call(
+                            lambda chunk=chunk: self._provider.fetch_fundamentals(
+                                chunk, as_of
+                            )
+                        )
+                        self._repository.save_fundamentals(fundamentals, metadata)
+                        dividends = self._provider_call(
+                            lambda chunk=chunk: self._provider.fetch_dividends(
+                                chunk, dividend_start, as_of
+                            )
+                        )
+                        self._repository.save_dividends(dividends, metadata)
                 finished_at = self._now()
-                metadata = DatasetMetadata(
-                    dataset_id,
-                    as_of,
-                    self._provider.source_name,
-                    finished_at,
-                    adjustment,
-                )
                 success = SyncRecord(
                     dataset_id,
                     as_of,
@@ -532,15 +545,7 @@ class DataSyncService:
                     finished_at,
                     None,
                 )
-                self._repository.save_market_snapshot(
-                    stocks,
-                    bars,
-                    fundamentals,
-                    dividends,
-                    trading_days,
-                    metadata,
-                    success,
-                )
+                self._repository.save_sync_record(success)
                 self._prune(as_of)
                 return SyncOutcome(
                     dataset_id, as_of, SyncStatus.SUCCESS, False, None, metadata
