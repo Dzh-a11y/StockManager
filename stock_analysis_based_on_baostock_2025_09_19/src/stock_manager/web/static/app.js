@@ -479,6 +479,9 @@ function renderSyncProgress(p) {
   const fill = $('#sync-progress-fill');
   const current = $('#sync-current');
   const meta = $('#sync-progress');
+  const batchTrack = $('#sync-batch-track');
+  const batchFill = $('#sync-batch-fill');
+  const batchLabel = $('#sync-batch-label');
   const btn = $('#sync-data');
   const active = p && (p.status === 'running' || p.status === 'error');
   btn.disabled = !!active;
@@ -486,8 +489,24 @@ function renderSyncProgress(p) {
     track.hidden = true;
     current.hidden = true;
     meta.hidden = true;
+    batchTrack.hidden = true;
+    batchLabel.hidden = true;
     return;
   }
+  // 第一条：当前批次内（逐代码）进度
+  const bTotal = Number(p.batch_total || 0);
+  const bCompleted = Number(p.batch_completed || 0);
+  const bPct = bTotal ? Math.min(100, Math.round((bCompleted / bTotal) * 100)) : 0;
+  const batchPhase = p.batch_phase || '';
+  const batchPhaseLabel = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红' }[batchPhase] || batchPhase;
+  batchTrack.hidden = false;
+  batchTrack.className = p.status === 'error' ? 'progress-track progress-track--error' : 'progress-track';
+  batchFill.style.width = bPct + '%';
+  batchLabel.hidden = false;
+  batchLabel.textContent = bTotal
+    ? '批次：' + batchPhaseLabel + ' ' + bCompleted + '/' + bTotal + ' · ' + (p.current_code || '-')
+    : '批次：' + (p.message || '等待中…');
+  // 第二条：总进度
   const total = Number(p.total || 0);
   const completed = Number(p.completed || 0);
   const pct = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
@@ -498,13 +517,9 @@ function renderSyncProgress(p) {
   const phase = p.phase || '';
   const label = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红', starting: '准备中', backfill: '回补历史' }[phase] || phase;
   const day = p.trading_day ? (' @ ' + p.trading_day) : '';
-  if (total) {
-    current.textContent = '总进度 ' + pct + '%（' + completed + '/' + total + '）· 当前：' + (p.current_code || '-');
-  } else if (p.current_code) {
-    current.textContent = '正在加载：' + p.current_code;
-  } else {
-    current.textContent = p.message || '正在拉取第一批数据，请稍候…';
-  }
+  current.textContent = total
+    ? '总进度 ' + pct + '%（' + completed + '/' + total + '）· ' + label
+    : '总进度：' + (p.message || '准备中…');
   meta.hidden = false;
   meta.textContent = '同步 ' + (p.dataset_id || '') + day + ' · ' + label;
 }

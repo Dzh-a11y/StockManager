@@ -606,3 +606,21 @@ def test_sync_endpoint_rejects_while_backfill_running(tmp_path: Path) -> None:
     )
     assert status == 409
     assert payload["error"]["code"] == "CONFLICT"
+
+
+def test_backfill_batch_progress_callback_updates_state(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    app._sync_progress = {"status": "running", "phase": "backfill"}
+    app._on_backfill_batch_progress(
+        {
+            "phase": "daily_bars",
+            "index": 42,
+            "total": 100,
+            "current_code": "sh.600000",
+        }
+    )
+    assert app._sync_progress["batch_phase"] == "daily_bars"
+    assert app._sync_progress["batch_completed"] == 42
+    assert app._sync_progress["batch_total"] == 100
+    assert app._sync_progress["current_code"] == "sh.600000"
+    assert app._sync_progress["status"] == "running"

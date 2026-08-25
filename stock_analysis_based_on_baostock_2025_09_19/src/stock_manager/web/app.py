@@ -103,7 +103,9 @@ class WebApp:
 
         def run_backfill() -> None:
             try:
-                provider = self._make_provider()
+                provider = self._make_provider(
+                    progress_callback=self._on_backfill_batch_progress
+                )
                 sync_config = load_sync_config(self._config.sync_config_path)
                 service = DataSyncService(
                     provider,
@@ -324,6 +326,24 @@ class WebApp:
                 "phase": phase,
                 "completed": completed,
                 "total": total,
+                "current_code": code,
+                "batch_phase": phase,
+                "batch_completed": completed,
+                "batch_total": total,
+            }
+        )
+
+    def _on_backfill_batch_progress(self, event: dict[str, object]) -> None:
+        """Update within-batch (per-code) progress from the provider callback."""
+        phase = event.get("phase")
+        index = event.get("index")
+        total = event.get("total")
+        code = event.get("current_code")
+        self._sync_progress.update(
+            {
+                "batch_phase": phase,
+                "batch_completed": index if isinstance(index, int) else 0,
+                "batch_total": total if isinstance(total, int) else 0,
                 "current_code": code,
             }
         )
