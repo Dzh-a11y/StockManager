@@ -269,7 +269,7 @@ function renderGroups() {
 
     const rulesWrap = document.createElement('div');
     rulesWrap.className = 'group__rules';
-    for (const rule of state.rules) {
+    for (const rule of state.rules.filter((r) => enabled.includes(r.rule_id))) {
       const active = group.rule_ids.includes(rule.rule_id);
       const chip = document.createElement('button');
       chip.className = 'rule-chip' + (active ? ' is-active' : '');
