@@ -473,6 +473,7 @@ async function syncData() {
       dataset_id: cond.dataset_id,
       trading_day: cond.trading_day,
       adjustment: cond.adjustment,
+      retry: true,
     });
     if (data.skipped) {
       toast('数据已存在，跳过拉取。', 'warn');
