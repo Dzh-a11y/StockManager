@@ -62,6 +62,7 @@ class EmptyRepository:
     def get_dataset_metadata(self, dataset_id: str, trading_day: date, adjustment: AdjustmentMethod) -> DatasetMetadata | None: return None
     def get_latest_dataset_metadata(self, dataset_id: str, adjustment: AdjustmentMethod) -> DatasetMetadata | None: return None
     def get_trading_days(self, start: date, end: date) -> Sequence[date]: return ()
+    def prune_before(self, cutoff: date) -> None: ...
 
 
 def test_runtime_protocol_conformance() -> None:

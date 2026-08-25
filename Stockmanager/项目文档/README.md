@@ -18,10 +18,10 @@ StockManager 是面向 A 股的研究型筛选平台，目标是建立可测试�
 
 ## 开发
 
-先进入包含 `pyproject.toml` 的代码仓库。不要在上一级 `/Users/douzihao/Documents/StockManager` 直接执行安装命令：
+先进入包含 `pyproject.toml` 的代码仓库。不要在上一级 `/Users/douzihao/StockManager` 直接执行安装命令：
 
 ```bash
-cd /Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19
+cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
 python -m pip install '.[dev]'
 python -m pytest
 ```

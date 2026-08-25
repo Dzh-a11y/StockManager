@@ -9,13 +9,13 @@ status: active
 
 ## 规范路径
 
-- 项目根目录：`/Users/douzihao/Documents/StockManager`。
-- 代码仓库：`/Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
-- 项目文档：`/Users/douzihao/Documents/StockManager/Stockmanager/项目文档`。
+- 项目根目录：`/Users/douzihao/StockManager`。
+- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
+- 项目文档：`/Users/douzihao/StockManager/Stockmanager/项目文档`。
 - 本文中的仓库相对路径均以代码仓库为基准。
 
 ## 1. 现状摘要
-当前代码仓库 `/Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19` 处于 P1-0 只读盘点阶段。
+当前代码仓库 `/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19` 处于 P1-0 只读盘点阶段。
 - **代码状态**：9 个业务 Python 文件均通过 AST 语法解析，无语法错误。
 - **架构问题**：
     - `screener.py` 为混合文件（574行），前300行包含核心数据访问与筛选逻辑，后部分为 PyQt GUI，耦合严重。

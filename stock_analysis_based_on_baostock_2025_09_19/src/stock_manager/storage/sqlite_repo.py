@@ -499,3 +499,26 @@ class SQLiteRepository:
                 (start.isoformat(), end.isoformat()),
             ).fetchall()
         return tuple(date.fromisoformat(row["trading_day"]) for row in rows)
+
+    def prune_before(self, cutoff: date) -> None:
+        """Delete market data and its sync bookkeeping strictly older than ``cutoff``.
+
+        ``daily_bars`` and ``stocks`` grow one row per stock per trading day, so they
+        are the unbounded tables this retention policy is designed to bound. The
+        matching ``sync_runs`` and ``dataset_metadata`` rows are removed together so a
+        pruned day is never mistaken for a successfully-synced day later.
+        """
+        cutoff_text = cutoff.isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM daily_bars WHERE trading_day < ?", (cutoff_text,)
+            )
+            connection.execute(
+                "DELETE FROM stocks WHERE as_of < ?", (cutoff_text,)
+            )
+            connection.execute(
+                "DELETE FROM sync_runs WHERE trading_day < ?", (cutoff_text,)
+            )
+            connection.execute(
+                "DELETE FROM dataset_metadata WHERE trading_day < ?", (cutoff_text,)
+            )

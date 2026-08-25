@@ -48,6 +48,9 @@ def load_sync_config(path: Path) -> SyncConfig:
         cutoff_time = time.fromisoformat(cutoff)
     except ValueError as error:
         raise ValueError("cutoff_time must be an ISO local time string") from error
+    retention = policy.get("retention_days", 360)
+    if not isinstance(retention, int) or isinstance(retention, bool):
+        raise ValueError("retention_days must be an integer")
     return SyncConfig(
         cutoff_time=cutoff_time,
         retry_cooldown=timedelta(seconds=_integer(policy, "retry_cooldown_seconds")),
@@ -56,4 +59,5 @@ def load_sync_config(path: Path) -> SyncConfig:
         ),
         calendar_horizon_days=_integer(policy, "calendar_horizon_days"),
         dividend_lookback_years=_integer(policy, "dividend_lookback_years"),
+        retention_days=retention,
     )

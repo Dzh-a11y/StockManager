@@ -11,7 +11,7 @@ status: active
 
 `DataSyncService` 是唯一持有 `ProviderProtocol` 的业务服务。Baostock 适配器只负责远程请求和领域对象标准化；SQLite 仓储不访问网络；规则层不依赖 Provider 或仓储。后续筛选服务只能读取 `LocalRepositoryProtocol`。
 
-默认同步策略位于 `config/sync.json`，明确记录版本、`Asia/Shanghai`、17:30 数据截止时间、五分钟失败重试冷却、Provider 请求最小间隔、交易日历覆盖天数和分红回看年度。配置由严格加载器转换为 `SyncConfig`，错误类型或时区会显式失败。
+默认同步策略位于 `config/sync.json`，明确记录版本、`Asia/Shanghai`、17:30 数据截止时间、五分钟失败重试冷却、Provider 请求最小间隔、交易日历覆盖天数、分红回看年度，以及本地历史保留天数 `retention_days`（默认 360 天，可配置）。配置由严格加载器转换为 `SyncConfig`，错误类型或时区会显式失败。
 
 ## SQLite 结构
 
@@ -36,6 +36,14 @@ Provider 调用由串行限速器控制，交易日历、股票列表、日线�
 ## 交易日和首次启动补齐
 
 交易日判断基于本地 A 股交易日历和 `Asia/Shanghai` 截止时间，不使用“自然日前一天”。首次启动检查先按覆盖日期幂等更新交易日历，再计算最新已完成交易日，并按顺序同步本地缺失交易日。已经成功的日期不会重复拉取；历史失败不会自动重试。
+
+全新安装（本地没有任何 `dataset_metadata`）时，Web 启动会触发一次历史回补：`backfill_history` 用 Provider 的日期区间查询一次拉取 `retention_days` 窗口内的日线（而不是按交易日循环），并同步当前股票列表、财务与分红。已有安装只补齐其最近成功同步日之后的缺失交易日。
+
+## 历史保留与清理
+
+本地数据库只保留 `retention_days` 窗口内的市场数据。每次成功同步或回补后，`prune_before` 删除 `daily_bars` 与 `stocks` 中早于窗口起点的行，并同步删除对应 `sync_runs` 与 `dataset_metadata`，避免已删除的日期被误判为“已成功同步”。`fundamentals`、`dividends` 与 `trading_days` 增长缓慢或另有用途，不在清理范围。
+
+完整的回补与保留设计见补充文档 [`P1_5_RETENTION_BACKFILL.md`](P1_5_RETENTION_BACKFILL.md)。
 
 ## 数据完整性
 

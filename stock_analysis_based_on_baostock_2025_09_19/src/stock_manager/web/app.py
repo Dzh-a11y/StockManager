@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Mapping
@@ -83,6 +84,54 @@ class WebApp:
             template_service=TemplateService(template_repository, compiler),
             screening_service=ParameterizedScreeningService(repository, registry),
         )
+        self._start_backfill_if_needed()
+
+    def _start_backfill_if_needed(self) -> None:
+        """Kick off a one-time history backfill when sync is configured.
+
+        A first-run backfill can issue tens of thousands of provider requests, so it
+        runs on a daemon thread and reports through the shared sync-progress state
+        instead of blocking the request path.
+        """
+        if self._config.sync_config_path is None or self._config.lock_directory is None:
+            return
+
+        def run_backfill() -> None:
+            try:
+                provider = self._make_provider()
+                sync_config = load_sync_config(self._config.sync_config_path)
+                service = DataSyncService(
+                    provider,
+                    self._services.repository,
+                    self._config.lock_directory,
+                    sync_config,
+                )
+                self._sync_progress.update(
+                    {
+                        "status": "running",
+                        "phase": "backfill",
+                        "message": "启动回补历史数据",
+                    }
+                )
+                outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+                if outcome is not None:
+                    self._sync_progress.update(
+                        {"status": "done", "message": outcome.status.value}
+                    )
+                else:
+                    self._sync_progress.update(
+                        {"status": "idle", "message": "历史数据已是最新"}
+                    )
+            except Exception as error:  # noqa: BLE001 - bounded at startup
+                self._sync_progress.update(
+                    {"status": "error", "message": str(error)}
+                )
+
+        threading.Thread(
+            target=run_backfill,
+            name="stockmanager-startup-backfill",
+            daemon=True,
+        ).start()
 
     def route(
         self,

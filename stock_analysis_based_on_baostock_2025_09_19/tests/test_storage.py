@@ -114,3 +114,41 @@ def test_snapshot_rejects_mismatched_success_identity_without_writes(tmp_path: P
     else:
         raise AssertionError("mismatched success identity must fail")
     assert repository.get_stocks(DAY) == ()
+
+
+def test_prune_before_removes_old_market_data_and_keeps_recent(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    old_day = date(2026, 1, 1)
+    old_metadata = DatasetMetadata(
+        "market", old_day, "fixture", NOW, AdjustmentMethod.QFQ
+    )
+    old_bar = DailyBar(
+        "sh.600000",
+        old_day,
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        Decimal("1"),
+        True,
+    )
+
+    repository.save_daily_bars((old_bar,), old_metadata)
+    repository.save_daily_bars((_bar(),), _metadata())
+    repository.save_stocks((_stock(),), old_metadata)
+    repository.save_stocks((_stock(),), _metadata())
+
+    repository.prune_before(date(2026, 8, 1))
+
+    assert repository.get_daily_bars(
+        ("sh.600000",), old_day, old_day, AdjustmentMethod.QFQ
+    ) == ()
+    assert repository.get_daily_bars(
+        ("sh.600000",), DAY, DAY, AdjustmentMethod.QFQ
+    ) == (_bar(),)
+    assert repository.get_stocks(old_day) == ()
+    assert repository.get_stocks(DAY) == (_stock(),)
+    assert repository.get_dataset_metadata("market", old_day, AdjustmentMethod.QFQ) is None
+    assert repository.get_dataset_metadata("market", DAY, AdjustmentMethod.QFQ) == _metadata()

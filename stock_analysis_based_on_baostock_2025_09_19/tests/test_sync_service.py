@@ -319,6 +319,8 @@ def test_sync_config_rejects_invalid_rate_and_cutoff() -> None:
         SyncConfig(time(17, 30), timedelta(minutes=5), -1, 30, 3)
     with pytest.raises(ValueError, match="tzinfo"):
         SyncConfig(time(17, 30, tzinfo=SHANGHAI), timedelta(minutes=5), 0, 30, 3)
+    with pytest.raises(ValueError, match="retention_days"):
+        SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=0)
 
 
 def test_default_sync_config_is_versioned_and_explicit() -> None:
@@ -327,3 +329,113 @@ def test_default_sync_config_is_versioned_and_explicit() -> None:
     assert config.cutoff_time == time(17, 30)
     assert config.retry_cooldown == timedelta(minutes=5)
     assert config.minimum_request_interval_seconds == 0.2
+    assert config.retention_days == 360
+
+
+def _range_provider() -> tuple[FixtureProvider, StockIdentity, tuple[date, ...]]:
+    stock = StockIdentity("sh.600000", "浦发银行", "SSE", False, None, None)
+    days = tuple(date(2026, 8, day) for day in range(15, 26))
+    bars = tuple(
+        DailyBar(
+            stock.code,
+            day,
+            Decimal("10"),
+            Decimal("11"),
+            Decimal("9"),
+            Decimal("10.5"),
+            Decimal("10"),
+            Decimal("1000"),
+            Decimal("10500"),
+            True,
+        )
+        for day in days
+    )
+    provider = FixtureProvider(
+        trading_days=days, stocks=(stock,), bars=bars, fundamentals=(), dividends=()
+    )
+    return provider, stock, days
+
+
+def test_backfill_history_fetches_retention_window_and_prunes_old(
+    tmp_path: Path,
+) -> None:
+    provider, stock, _days = _range_provider()
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    old_day = date(2026, 8, 1)
+    repository.save_daily_bars(
+        (
+            DailyBar(
+                stock.code,
+                old_day,
+                Decimal("1"),
+                Decimal("1"),
+                Decimal("1"),
+                Decimal("1"),
+                Decimal("1"),
+                Decimal("1"),
+                Decimal("1"),
+                True,
+            ),
+        ),
+        DatasetMetadata("market", old_day, "fixture", NOW, AdjustmentMethod.QFQ),
+    )
+
+    outcome = service.backfill_history("market", date(2026, 8, 25), AdjustmentMethod.QFQ)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    assert len(
+        repository.get_daily_bars(
+            ("sh.600000",),
+            date(2026, 8, 15),
+            date(2026, 8, 25),
+            AdjustmentMethod.QFQ,
+        )
+    ) == 11
+    assert repository.get_daily_bars(
+        ("sh.600000",), old_day, old_day, AdjustmentMethod.QFQ
+    ) == ()
+    assert provider.calls["fetch_daily_bars"] == 1
+
+
+def test_backfill_on_startup_first_run_backfills_then_increments(tmp_path: Path) -> None:
+    provider, _stock, _days = _range_provider()
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        config,
+        clock=MutableClock(NOW),
+        sleep=lambda seconds: None,
+    )
+
+    first = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+    assert first is not None and first.status is SyncStatus.SUCCESS
+    assert len(
+        repository.get_daily_bars(
+            ("sh.600000",),
+            date(2026, 8, 15),
+            date(2026, 8, 25),
+            AdjustmentMethod.QFQ,
+        )
+    ) == 11
+
+    calls_before = provider.calls["fetch_daily_bars"]
+    second = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+    assert second is None
+    assert provider.calls["fetch_daily_bars"] == calls_before

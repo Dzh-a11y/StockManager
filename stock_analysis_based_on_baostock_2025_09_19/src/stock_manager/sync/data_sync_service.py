@@ -48,6 +48,7 @@ class SyncConfig:
     minimum_request_interval_seconds: float
     calendar_horizon_days: int
     dividend_lookback_years: int
+    retention_days: int = 360
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -60,6 +61,8 @@ class SyncConfig:
             raise ValueError("calendar_horizon_days must be positive")
         if self.dividend_lookback_years <= 0:
             raise ValueError("dividend_lookback_years must be positive")
+        if self.retention_days <= 0:
+            raise ValueError("retention_days must be positive")
 
 
 def latest_completed_trading_day(
@@ -370,6 +373,7 @@ class DataSyncService:
                     metadata,
                     success,
                 )
+                self._prune(trading_day)
                 return SyncOutcome(dataset_id, trading_day, SyncStatus.SUCCESS, False, None, metadata)
             except Exception as error:
                 failed_at = self._now()
@@ -412,6 +416,152 @@ class DataSyncService:
         return tuple(
             self.sync(dataset_id, day, adjustment, retry=False) for day in missing
         )
+
+    def _prune(self, as_of: date) -> None:
+        """Drop market data older than the configured retention window."""
+        cutoff = as_of - timedelta(days=self._config.retention_days)
+        self._repository.prune_before(cutoff)
+
+    def _latest_completed_trading_day(self) -> date:
+        """Resolve the newest completed A-share trading day from the local calendar."""
+        now = self._now()
+        calendar_start = now.date() - timedelta(days=self._config.retention_days)
+        coverage_end = now.date() + timedelta(days=self._config.calendar_horizon_days)
+        self.sync_trading_calendar(calendar_start, coverage_end)
+        days = self._repository.get_trading_days(calendar_start, now.date())
+        return latest_completed_trading_day(now, days, self._config.cutoff_time)
+
+    def backfill_on_startup(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> SyncOutcome | None:
+        """Ensure the local repository covers the retention window on startup.
+
+        A fresh install has no dataset metadata, so the full retention window is
+        backfilled with a single range fetch. An existing install only catches up
+        the trading days after its latest successful sync.
+        """
+        if not dataset_id.strip():
+            raise ValueError("dataset_id must not be empty")
+        latest = self._repository.get_latest_dataset_metadata(dataset_id, adjustment)
+        if latest is not None:
+            outcomes = self.sync_missing_on_startup(
+                dataset_id, latest.trading_day, adjustment
+            )
+            return outcomes[-1] if outcomes else None
+        return self.backfill_history(
+            dataset_id, self._latest_completed_trading_day(), adjustment
+        )
+
+    def backfill_history(
+        self,
+        dataset_id: str,
+        as_of: date,
+        adjustment: AdjustmentMethod,
+        *,
+        retry: bool = False,
+    ) -> SyncOutcome:
+        """Fetch and persist the full retention window ending at ``as_of`` in one pass."""
+        if not dataset_id.strip():
+            raise ValueError("dataset_id must not be empty")
+        start = as_of - timedelta(days=self._config.retention_days)
+        lock_key = (
+            f"{self._lock_directory.resolve()}:{dataset_id}:backfill:{as_of.isoformat()}"
+        )
+        dataset_process_lock = process_lock(lock_key)
+        dataset_file_lock = dataset_lock_path(self._lock_directory, dataset_id, as_of)
+        with dataset_process_lock, persistent_file_lock(dataset_file_lock):
+            now = self._now()
+            existing = self._repository.get_sync_record(dataset_id, as_of)
+            self._validate_retry(existing, retry, now, adjustment)
+            running = SyncRecord(
+                dataset_id,
+                as_of,
+                SyncStatus.RUNNING,
+                self._provider.source_name,
+                adjustment,
+                now,
+                None,
+                None,
+            )
+            self._repository.save_sync_record(running)
+            try:
+                with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
+                    trading_days = self._provider_call(
+                        lambda: self._provider.fetch_trading_days(start, as_of)
+                    )
+                    self._validate_calendar(trading_days, start, as_of)
+                    stocks = self._provider_call(
+                        lambda: self._provider.fetch_stocks(as_of)
+                    )
+                    if not stocks:
+                        raise ValueError("provider returned an empty stock universe")
+                    selected_codes = tuple(stock.code for stock in stocks)
+                    bars = self._provider_call(
+                        lambda: self._provider.fetch_daily_bars(
+                            selected_codes, start, as_of, adjustment
+                        )
+                    )
+                    fundamentals = self._provider_call(
+                        lambda: self._provider.fetch_fundamentals(
+                            selected_codes, as_of
+                        )
+                    )
+                    dividend_start = date(
+                        as_of.year - self._config.dividend_lookback_years, 1, 1
+                    )
+                    dividends = self._provider_call(
+                        lambda: self._provider.fetch_dividends(
+                            selected_codes, dividend_start, as_of
+                        )
+                    )
+                finished_at = self._now()
+                metadata = DatasetMetadata(
+                    dataset_id,
+                    as_of,
+                    self._provider.source_name,
+                    finished_at,
+                    adjustment,
+                )
+                success = SyncRecord(
+                    dataset_id,
+                    as_of,
+                    SyncStatus.SUCCESS,
+                    self._provider.source_name,
+                    adjustment,
+                    now,
+                    finished_at,
+                    None,
+                )
+                self._repository.save_market_snapshot(
+                    stocks,
+                    bars,
+                    fundamentals,
+                    dividends,
+                    trading_days,
+                    metadata,
+                    success,
+                )
+                self._prune(as_of)
+                return SyncOutcome(
+                    dataset_id, as_of, SyncStatus.SUCCESS, False, None, metadata
+                )
+            except Exception as error:
+                failed_at = self._now()
+                self._repository.save_sync_record(
+                    SyncRecord(
+                        dataset_id,
+                        as_of,
+                        SyncStatus.FAILED,
+                        self._provider.source_name,
+                        adjustment,
+                        now,
+                        failed_at,
+                        str(error),
+                    )
+                )
+                raise SyncFailedError(
+                    f"backfill failed for {dataset_id} through {as_of.isoformat()}"
+                ) from error
 
     def sync_trading_calendar(
         self, start: date, coverage_end: date, *, retry: bool = False

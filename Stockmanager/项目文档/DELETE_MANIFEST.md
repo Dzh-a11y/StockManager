@@ -9,7 +9,7 @@ status: active
 
 **状态说明**：以下所有条目均为**候选**，P1-1 执行前需架构审查代理复核。本清单不包含任何删除命令，避免误执行。
 
-**路径基准**：本清单中所有相对路径均相对于代码仓库 `/Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19`；项目根目录为 `/Users/douzihao/Documents/StockManager`。
+**路径基准**：本清单中所有相对路径均相对于代码仓库 `/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`；项目根目录为 `/Users/douzihao/StockManager`。
 
 ## 1. PyInstaller 构建物
 
@@ -195,9 +195,9 @@ status: active
 
 | 路径 | 状态 | 保护理由 |
 | :--- | :--- | :--- |
-| `.idea/misc.xml` | `modified` | 用户已修改，含项目配置 |
-| `.idea/stock_analysis_based_on_baostock_2025_09_19.iml` | `modified` | 用户已修改，含模块配置 |
-| `.idea/workspace.xml` | `modified` | 用户已修改，含工作区状态 |
+| `.idea/StockManager.iml` | `untracked` | 用户已修改，含项目配置 |
+| `.idea/stock-manager.iml` | `untracked` | 用户已修改，含模块配置 |
+| `.idea/workspace.xml` | `untracked` | 用户已修改，含工作区状态 |
 | `.idea/modules.xml` | `untracked` | 未跟踪文件，先不处理，避免干扰用户 IDE 环境 |
 
 ### 7.3 虚拟环境
@@ -212,7 +212,7 @@ status: active
 
 - [ ] **无 .py 文件删除**：确认删除清单中不包含任何 `.py` 文件。所有业务 Python 文件均在“明确排除与受保护项”中列出。
 - [ ] **无 .idea/.venv 操作**：确认删除清单中不包含 `.idea` 目录下的任何文件，也不包含 `.venv` 目录。
-- [ ] **用户改动保留**：确认 `.idea/misc.xml`、`.idea/stock_analysis_based_on_baostock_2025_09_19.iml`、`.idea/workspace.xml` 的未提交修改未被覆盖或重置。
+- [ ] **用户改动保留**：确认 `.idea/StockManager.iml`、`.idea/stock-manager.iml`、`.idea/workspace.xml` 的未提交修改未被覆盖或重置。
 - [ ] **日志不含唯一诊断证据**：确认待删除的日志文件中不包含任何未解决的 bug 诊断信息、关键错误堆栈或唯一的历史运行数据。如有，需先归档或提取关键信息。
 - [ ] **Git 状态核对**：删除后，立即运行 `git status`，确认：
   - 所有待删除文件显示为 `deleted`。
