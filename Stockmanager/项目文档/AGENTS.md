@@ -35,13 +35,13 @@ status: active
 
 项目规范路径如下：
 
-- 项目根目录：`/Users/douzihao/Documents/StockManager`。
-- 代码仓库：`/Users/douzihao/Documents/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
-- Obsidian Vault：`/Users/douzihao/Documents/StockManager/Stockmanager`。
-- 项目文档目录：`/Users/douzihao/Documents/StockManager/Stockmanager/项目文档`。
+- 项目根目录：`/Users/douzihao/StockManager`。
+- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
+- Obsidian Vault：`/Users/douzihao/StockManager/Stockmanager`。
+- 项目文档目录：`/Users/douzihao/StockManager/Stockmanager/项目文档`。
 - 所有仓库相对路径均以上述代码仓库为基准解析。
 
-- Obsidian Vault `/Users/douzihao/Documents/StockManager/Stockmanager` 是开发时默认的项目知识与技术文档来源。
+- Obsidian Vault `/Users/douzihao/StockManager/Stockmanager` 是开发时默认的项目知识与技术文档来源。
 - 每次开发开始前，必须优先读取 Vault 的 `项目文档` 目录。
 - Obsidian 只保存项目资料、设计、需求、决策和开发记录，**不是**股票行情或财务数据 Provider。
 - 当前股票市场数据源仍为 Baostock，Provider 接口必须保持可替换。
@@ -134,6 +134,20 @@ status: active
 - 使用短期功能分支进行开发，不假设必须存在 `dev` 分支。
 - 提交信息遵循 Conventional Commits，例如 `feat:`、`fix:`、`docs:`、`test:`。
 - 每次提交必须聚焦一个明确目的，并清楚描述变更内容。
+
+### 6.1 版本控制原则
+
+项目版本号采用语义化版本格式 `MAJOR.MINOR.PATCH`，并遵循以下递增规则：
+
+- **主版本（MAJOR）**：发生不兼容的破坏性变更时递增。
+- **次版本（MINOR）**：**加入新规则/新功能**（向后兼容）时递增，即 `+0.1.0`。
+- **修订版本（PATCH）**：**加入新 UI 内容**（向后兼容）时递增，即 `+0.0.1`。
+
+修改版本号时必须同步更新以下位置并保持一致：
+
+- `pyproject.toml` 中的 `version` 字段。
+- `src/stock_manager/__init__.py` 中的 `__version__`。
+- `tests/test_package_structure.py` 中的版本断言。
 
 ## 7. AI 协作分工与流程
 
@@ -234,7 +248,7 @@ Qwen 默认不知道 `AGENTS.md`、Obsidian Vault、仓库源码、历史对话�
 
 ### 10.2 Obsidian 同步
 
-- 文档新增或修改后，必须同步到 Obsidian Vault：`/Users/douzihao/Documents/StockManager/Stockmanager`。
+- 文档新增或修改后，必须同步到 Obsidian Vault：`/Users/douzihao/StockManager/Stockmanager`。
 - Vault 内统一存放在 `项目文档` 目录，并尽量保持源项目的相对目录结构。
 - 同名文档已经存在时必须更新原副本，禁止反复创建带日期后缀的重复副本。
 - 文档同步是完成定义的一部分；没有完成同步，不得将任务标记为完成。
