@@ -7,8 +7,9 @@ import os
 import signal
 import threading
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Callable, Mapping
+from zoneinfo import ZoneInfo
 
 from stock_manager.domain import AdjustmentMethod
 from stock_manager.protocols import ProviderProtocol
@@ -18,7 +19,12 @@ from stock_manager.services.parameterized_screening_service import (
     ParameterizedScreeningService,
 )
 from stock_manager.storage.sqlite_repo import SQLiteRepository
-from stock_manager.sync import DataSyncService, load_sync_config
+from stock_manager.sync import (
+    DataSyncService,
+    latest_completed_trading_day,
+    load_sync_config,
+)
+from stock_manager.sync.data_sync_service import SHANGHAI
 from stock_manager.templates.compiler import TemplateCompiler
 from stock_manager.templates.repository import JsonTemplateRepository
 from stock_manager.templates.service import TemplateService
@@ -69,11 +75,13 @@ class WebApp:
         registry: RuleRegistry | None = None,
         provider_factory: Callable[[], ProviderProtocol] | None = None,
         shutdown_handler: Callable[[], None] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         config.validate()
         self._config = config
         self._provider_factory = provider_factory
         self._shutdown_handler = shutdown_handler
+        self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._sync_progress: dict[str, object] = {"status": "idle"}
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
@@ -190,6 +198,8 @@ class WebApp:
                 )
             if path == "/api/sync/progress":
                 return self._json(200, self._sync_progress)
+            if path == "/api/sync/window":
+                return self._json(200, self._sync_window())
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -261,6 +271,34 @@ class WebApp:
             screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
         )
 
+    def _sync_window(self) -> dict[str, object]:
+        """Describe which trading days may be manually synced right now.
+
+        Mirrors the startup ``sync_missing_on_startup`` policy: a day is only
+        available once it has closed at the configured ``cutoff_time`` in
+        ``Asia/Shanghai``. The frontend uses this to disable the sync button
+        for days whose market data does not exist yet.
+        """
+        if self._config.sync_config_path is None or self._config.lock_directory is None:
+            return {"available": False, "reason": "not_configured"}
+        sync_config = load_sync_config(self._config.sync_config_path)
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            now = now.replace(tzinfo=SHANGHAI)
+        days = self._services.repository.get_trading_days(
+            now.date() - timedelta(days=45), now.date()
+        )
+        if not days:
+            return {"available": False, "reason": "no_calendar"}
+        latest = latest_completed_trading_day(now, days, sync_config.cutoff_time)
+        return {
+            "available": True,
+            "latest_completed_trading_day": latest.isoformat(),
+            "cutoff_time": sync_config.cutoff_time.isoformat(),
+            "timezone": "Asia/Shanghai",
+            "now": now.isoformat(),
+        }
+
     def _handle_sync(self, body: object) -> Response:
         if self._config.sync_config_path is None or self._config.lock_directory is None:
             raise BadRequestError("sync is not configured on this server")
@@ -283,6 +321,14 @@ class WebApp:
             raise ConflictError(
                 f"已有同步任务正在进行（阶段：{phase or 'unknown'}），请等待完成后再试"
             )
+        window = self._sync_window()
+        if window["available"]:
+            latest = date.fromisoformat(str(window["latest_completed_trading_day"]))
+            if trading_day > latest:
+                raise ConflictError(
+                    f"{trading_day.isoformat()} 的行情数据尚未就绪"
+                    f"（当日 {window['cutoff_time']} 后开放，或选择更早的交易日）"
+                )
         self._sync_progress = {
             "status": "running",
             "dataset_id": dataset_id,

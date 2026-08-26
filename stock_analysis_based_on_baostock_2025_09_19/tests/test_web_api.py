@@ -498,6 +498,64 @@ def test_sync_endpoint_requires_configuration(tmp_path: Path) -> None:
     assert payload["error"]["code"] == "BAD_REQUEST"
 
 
+def _sync_app(tmp_path: Path, clock_value: datetime) -> WebApp:
+    database_path = tmp_path / "market.sqlite3"
+    _seed_repository(database_path)
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    config = WebConfig(
+        database_path=database_path,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+        sync_config_path=REPO / "config" / "sync.json",
+        lock_directory=locks,
+    )
+    return WebApp(
+        config, provider_factory=_fake_provider, clock=lambda: clock_value
+    )
+
+
+def test_sync_window_endpoint_reports_available_days(tmp_path: Path) -> None:
+    app = _sync_app(tmp_path, datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI))
+
+    status, payload = _get(app, "/api/sync/window")
+
+    assert status == 200
+    assert payload["available"] is True
+    assert payload["latest_completed_trading_day"] == "2026-08-25"
+    assert payload["cutoff_time"] == "17:30:00"
+    assert payload["timezone"] == "Asia/Shanghai"
+
+
+def test_sync_rejects_day_before_cutoff(tmp_path: Path) -> None:
+    # 08-25 10:00 还没到 17:30 截止,当天数据不算"已就绪"
+    app = _sync_app(tmp_path, datetime(2026, 8, 25, 10, 0, tzinfo=SHANGHAI))
+
+    status, payload = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
+    )
+
+    assert status == 409
+    assert "尚未就绪" in payload["error"]["message"]
+
+
+def test_sync_allows_completed_day(tmp_path: Path) -> None:
+    # 08-25 18:00 已过 17:30 截止,当天可以同步
+    app = _sync_app(tmp_path, datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI))
+
+    status, payload = _post(
+        app,
+        "/api/sync",
+        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
+    )
+
+    assert status == 200
+    assert payload["status"] == "SUCCESS"
+
+
 def test_shutdown_endpoint_requires_confirmation(tmp_path: Path) -> None:
     app = _app(tmp_path)
     status, payload = _post(app, "/api/shutdown", {})

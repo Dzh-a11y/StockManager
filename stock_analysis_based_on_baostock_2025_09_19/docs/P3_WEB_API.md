@@ -139,6 +139,10 @@ stock-manager web \
 
 同步由后端调用 `DataSyncService`，浏览器不直接访问 Baostock，仍遵守单一入口、文件/进程锁、防重复与速率限制。
 
+手动同步受"已完成交易日"守卫限制：请求的交易日必须不晚于最新已完成交易日（`Asia/Shanghai` 当日 `17:30` 截止，见 `sync.json` 的 `cutoff_time`）。未到截止的当天或未来日期返回 `409`（"行情数据尚未就绪"），前端据此禁用同步按钮并提示。
+
+`GET /api/sync/window`：返回可同步窗口，`{"available":true,"latest_completed_trading_day":"2026-08-25","cutoff_time":"17:30:00","timezone":"Asia/Shanghai","now":...}`；未配置同步或本地日历为空时返回 `{"available":false,"reason":"not_configured|no_calendar"}`。前端在页面加载时调用，用于禁用/启用同步按钮并设置日期上限。
+
 `GET /api/sync/progress`：返回同步进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
 ### 停止服务
