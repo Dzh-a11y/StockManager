@@ -72,5 +72,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
+# 本地构建的 app 需 ad-hoc 签名才能在 Finder 中双击打开(无需开发者证书)。
+# 签名前清掉 Finder 扩展属性,否则 codesign 会报 "detritus not allowed"。
+xattr -cr "$APP" 2>/dev/null || true
+codesign --force --deep --sign - "$APP"
+
 echo "已生成: $APP"
 echo "双击它即可启动工作台并自动打开浏览器(服务已在跑时只会重新打开浏览器)。"
+echo "若首次双击被拦:右键 -> 打开;或终端执行: xattr -d com.apple.quarantine \"$APP\""
