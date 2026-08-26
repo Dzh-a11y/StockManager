@@ -6,6 +6,9 @@
   3. 服务就绪后自动打开浏览器。
 
 数据全部存放在 exe 所在目录,因此 exe 可以被复制到任意文件夹运行。
+
+注意:下面的 stock_manager 导入必须在模块顶层——PyInstaller 只静态分析顶层
+导入,函数内的惰性导入不会被收集,会导致运行时 "No module named stock_manager"。
 """
 
 from __future__ import annotations
@@ -17,6 +20,13 @@ import time
 import urllib.request
 import webbrowser
 from pathlib import Path
+
+# 顶层导入整个应用图:让 PyInstaller 把 stock_manager 全部子模块及传递依赖
+# (storage/sync/providers/rules/services/web/templates/baostock/tzdata)打进去。
+from stock_manager.cli import main as _cli_entry  # noqa: F401
+from stock_manager.storage.sqlite_repo import SQLiteRepository
+from stock_manager.web.config import WebConfig
+from stock_manager.web.httpd import run_web
 
 PORT = 8000
 URL = f"http://127.0.0.1:{PORT}"
@@ -56,8 +66,6 @@ def prepare(app_dir_path: Path, resource_dir_path: Path) -> None:
 
     if not (data / "market.sqlite3").exists():
         # Web 启动要求数据库文件存在;这里建空库(backfill 会自动填充)
-        from stock_manager.storage.sqlite_repo import SQLiteRepository
-
         SQLiteRepository(data / "market.sqlite3")
 
     _copy_if_missing(
@@ -85,9 +93,6 @@ def _wait_until_running_and_open(timeout: float = 20.0) -> None:
 def main() -> int:
     root = app_dir()
     prepare(root, resource_dir())
-
-    from stock_manager.web.config import WebConfig
-    from stock_manager.web.httpd import run_web
 
     config = WebConfig(
         database_path=root / "data" / "market.sqlite3",

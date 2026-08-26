@@ -20,7 +20,7 @@ echo 使用解释器: %VENVPY%
 "%VENVPY%" -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 echo 正在打包(onefile, 无控制台窗口)...
-"%VENVPY%" -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
+"%VENVPY%" -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
 if errorlevel 1 goto :fail
 goto :built
 
@@ -31,7 +31,7 @@ if errorlevel 1 goto :fail
 py -3 -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 echo 正在打包(onefile, 无控制台窗口)...
-py -3 -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
+py -3 -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
 if errorlevel 1 goto :fail
 goto :built
 
