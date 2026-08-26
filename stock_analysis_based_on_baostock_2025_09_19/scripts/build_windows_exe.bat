@@ -25,8 +25,10 @@ if errorlevel 1 goto :fail
 goto :built
 
 :without_venv
-echo 未找到 .venv,改用 py -3(先安装项目依赖)...
-py -3 -m pip install -e .
+echo 未找到 .venv,改用 py -3(安装运行依赖)。
+echo baostock 核心依赖 pandas 且只能在 Python 3.11 用轮子安装,
+echo 这里用 --only-binary 强制轮子,绝不触发源码编译...
+py -3 -m pip install --only-binary=:all: "pandas<3" baostock tzdata
 if errorlevel 1 goto :fail
 py -3 -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
