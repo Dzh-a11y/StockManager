@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # 1) 三平台自动测试:每次推送都验证 Windows/macOS/Linux 都能安装依赖并跑通测试,
+  #    跨平台问题(如 pandas 轮子、文件锁、编码)在部署前就被发现。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: stock_analysis_based_on_baostock_2025_09_19
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project (incl. baostock/pandas<3/tzdata)
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  # 2) Windows 云端构建单文件 exe:你直接在 GitHub 下载,不用在自己机器上装 Python/依赖。
+  build-exe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: stock_analysis_based_on_baostock_2025_09_19
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies (wheel-only, 避免源码编译)
+        run: python -m pip install --only-binary=:all: "pandas<3" baostock tzdata pyinstaller
+      - name: Build onefile exe
+        run: python -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockManager-windows-exe
+          path: stock_analysis_based_on_baostock_2025_09_19/dist/StockManager.exe
