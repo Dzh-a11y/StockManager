@@ -821,3 +821,97 @@ def test_sync_warns_over_stale_running_record(tmp_path: Path) -> None:
     assert outcome.status is SyncStatus.SUCCESS
     record = repository.get_sync_record("market", DAY)
     assert record is not None and record.status is SyncStatus.SUCCESS
+
+
+class _RecordingProvider(FixtureProvider):
+    """Fixture provider that records every fetch_daily_bars range."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.bar_ranges: list[tuple[date, date]] = []
+
+    def fetch_daily_bars(
+        self,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> Sequence[DailyBar]:
+        self.bar_ranges.append((start, end))
+        return super().fetch_daily_bars(codes, start, end, adjustment)
+
+
+def test_backfill_history_incremental_tail_only_fetches_new_days(
+    tmp_path: Path,
+) -> None:
+    provider = _many_codes_provider(250)
+    recording = _RecordingProvider(
+        trading_days=provider._trading_days,
+        stocks=provider._stocks,
+        bars=provider._bars,
+        fundamentals=provider._fundamentals,
+        dividends=provider._dividends,
+    )
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        recording, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+
+    first = service.backfill_history("market", date(2026, 8, 25), AdjustmentMethod.QFQ, batch_size=100)
+    assert first.status is SyncStatus.SUCCESS
+
+    before = len(recording.bar_ranges)
+    second = service.backfill_history("market", date(2026, 8, 26), AdjustmentMethod.QFQ, batch_size=100)
+    assert second.status is SyncStatus.SUCCESS
+
+    # 第二次只拉 08-26 起的尾部,而不是整个保留窗口
+    assert recording.bar_ranges[-1] == (date(2026, 8, 26), date(2026, 8, 26))
+    assert all(rng[0] == date(2026, 8, 26) for rng in recording.bar_ranges[before:])
+    assert repository.latest_backfill_cover_date("market", AdjustmentMethod.QFQ) == date(2026, 8, 26)
+
+
+def test_sync_missing_auto_retries_failed_day_after_cooldown(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    provider = _provider()
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        _config(),
+        clock=clock,
+    )
+    # DAY 上次同步失败,finished_at 在 10 分钟前(冷却 5 分钟已过)
+    finished = NOW - timedelta(minutes=10)
+    repository.save_sync_record(
+        SyncRecord("market", DAY, SyncStatus.FAILED, "fixture", AdjustmentMethod.QFQ, finished, finished, "boom")
+    )
+
+    outcomes = service.sync_missing_on_startup("market", DAY, AdjustmentMethod.QFQ)
+
+    assert tuple(o.trading_day for o in outcomes) == (DAY,)
+    assert outcomes[0].status is SyncStatus.SUCCESS
+
+
+def test_sync_missing_skips_failed_day_inside_cooldown(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    provider = _provider()
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        _config(),
+        clock=clock,
+    )
+    repository.save_sync_record(
+        SyncRecord(
+            "market", DAY, SyncStatus.FAILED, "fixture", AdjustmentMethod.QFQ, NOW, NOW, "boom"
+        )
+    )
+
+    with pytest.warns(UserWarning, match="冷却"):
+        outcomes = service.sync_missing_on_startup("market", DAY, AdjustmentMethod.QFQ)
+
+    assert outcomes == ()

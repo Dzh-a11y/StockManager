@@ -94,6 +94,12 @@ class LocalRepositoryProtocol(Protocol):
         adjustment: AdjustmentMethod,
     ) -> dict[int, tuple[str, ...]]: ...
 
+    def latest_backfill_cover_date(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+    ) -> date | None: ...
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: ...
 
     def get_daily_bars(

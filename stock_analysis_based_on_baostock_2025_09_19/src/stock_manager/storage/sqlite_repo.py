@@ -383,6 +383,25 @@ class SQLiteRepository:
             int(row["chunk_index"]): tuple(row["codes"].split(",")) for row in rows
         }
 
+    def latest_backfill_cover_date(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+    ) -> date | None:
+        """Return the newest backfill as_of recorded in checkpoints, if any.
+
+        This is the "covered through" marker for incremental tail backfills:
+        a later run only needs to fetch trading days after this date.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT MAX(trading_day) AS cover FROM backfill_chunks
+                   WHERE dataset_id = ? AND adjustment = ?""",
+                (dataset_id, adjustment.value),
+            ).fetchone()
+        cover = row["cover"]
+        return None if cover is None else date.fromisoformat(cover)
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]:
         with self._connect() as connection:
             row = connection.execute(

@@ -385,9 +385,32 @@ class DataSyncService:
                 or record.status is not SyncStatus.SUCCESS
             )
         ]
-        return tuple(
-            self.sync(dataset_id, day, adjustment, retry=False) for day in missing
-        )
+        outcomes: list[SyncOutcome] = []
+        for day in missing:
+            record = self._repository.get_sync_record(dataset_id, day)
+            # FAILED 且冷却期已过 → 自动带 retry 重试,不再卡住启动;
+            # FAILED 但冷却未过 → 跳过该日,等下次(不中止其余日)。
+            auto_retry = (
+                record is not None
+                and record.status is SyncStatus.FAILED
+                and record.finished_at is not None
+                and record.finished_at + self._config.retry_cooldown <= self._now()
+            )
+            if (
+                record is not None
+                and record.status is SyncStatus.FAILED
+                and not auto_retry
+            ):
+                warnings.warn(
+                    f"{day.isoformat()} 上次同步失败且在冷却期内,本次跳过",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                continue
+            outcomes.append(
+                self.sync(dataset_id, day, adjustment, retry=auto_retry)
+            )
+        return tuple(outcomes)
 
     def _prune(self, as_of: date) -> None:
         """Drop market data older than the configured retention window."""
@@ -500,6 +523,18 @@ class DataSyncService:
                     )
                     self._repository.save_trading_days(trading_days, metadata)
                     self._repository.save_stocks(stocks, metadata)
+                    # 增量尾部:上次回补已覆盖到 covered_end,本次只拉其后的新交易日,
+                    # 不再重拉整个保留窗口(旧数据与 checkpoint 均保留)。
+                    covered_end = self._repository.latest_backfill_cover_date(
+                        dataset_id, adjustment
+                    )
+                    bars_start = start
+                    if covered_end is not None and start <= covered_end < as_of:
+                        bars_start = min(covered_end + timedelta(days=1), as_of)
+                        print(
+                            f"增量回补:上次覆盖到 {covered_end.isoformat()},"
+                            f"本次只拉 {bars_start.isoformat()} 起的交易日"
+                        )
                     total_units = 2 * len(selected_codes)
                     done_units = 0
                     completed = self._repository.completed_chunk_codes(
@@ -519,7 +554,7 @@ class DataSyncService:
                             continue
                         bars = self._provider_call(
                             lambda chunk=chunk: self._provider.fetch_daily_bars(
-                                chunk, start, as_of, adjustment
+                                chunk, bars_start, as_of, adjustment
                             )
                         )
                         self._repository.save_daily_bars(bars, metadata)
