@@ -338,7 +338,7 @@ class WebApp:
             "completed": 0,
             "total": 0,
             "current_code": None,
-            "message": "开始同步",
+            "message": "开始回补",
         }
         sync_config = load_sync_config(self._config.sync_config_path)
         provider = self._make_provider(
@@ -352,7 +352,9 @@ class WebApp:
             sync_config,
         )
         try:
-            outcome = service.sync(dataset_id, trading_day, adjustment, retry=retry)
+            # 与启动时的一次性 360 天拉取走同一机制:全窗口分批回补 + checkpoint
+            # 续传 + 失败标记不设门槛(不存在逐日 sync 的 RetryRequiredError 卡死)。
+            outcome = service.backfill_history(dataset_id, trading_day, adjustment)
         except Exception:
             self._sync_progress["status"] = "error"
             self._sync_progress["message"] = "synchronization failed"
