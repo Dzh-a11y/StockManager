@@ -19,9 +19,19 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# 可执行入口(把项目根路径写死进去)
+# 可执行入口(把项目根路径写死进去;日志写 data/launcher.log,失败时打开日志)
 exe="$APP/Contents/MacOS/$APP_NAME"
-printf '#!/usr/bin/env bash\ncd "%s"\nexec /usr/bin/env python3 scripts/launcher.py start\n' "$ROOT" > "$exe"
+cat > "$exe" <<EOF
+#!/usr/bin/env bash
+cd "${ROOT}"
+mkdir -p data
+LOG="data/launcher.log"
+if /usr/bin/env python3 scripts/launcher.py start >> "\${LOG}" 2>&1; then
+  exit 0
+fi
+echo "启动失败,日志: \${LOG}" >> "\${LOG}"
+/usr/bin/env open "\${LOG}"
+EOF
 chmod +x "$exe"
 
 # 图标

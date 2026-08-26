@@ -84,28 +84,57 @@ def _remove_pid() -> None:
         pass
 
 
+_RUNTIME_DEPS = "import stock_manager, baostock, tzdata"
+
+
 def _ensure_environment() -> bool:
-    """Create the virtualenv / install deps if missing. Return True when ready."""
+    """Create the virtualenv and auto-install dependencies if missing.
+
+    Idempotent: on a machine where everything is already installed it returns
+    fast without touching pip. First run builds ``.venv`` and runs
+    ``pip install -e '.[dev]'``, so the desktop icon "just works" on a fresh
+    checkout. Prints progress and the exact command on any failure.
+    """
     if not VENV_DIR.exists():
         print("未找到虚拟环境,正在创建 .venv ...")
-        subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=False)
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(VENV_DIR)], check=False
+        )
+        if result.returncode != 0:
+            print("虚拟环境创建失败。请安装 Python 3.11+ 后重试,或手动执行: "
+                  f'"{sys.executable}" -m venv .venv')
+            return False
     python = venv_python()
     if not python.exists():
         print("虚拟环境创建失败,请手动执行: python3 -m venv .venv")
         return False
-    import_check = subprocess.run(
-        [str(python), "-c", "import stock_manager"], cwd=ROOT
+
+    # ensure pip exists in the virtualenv
+    pip_check = subprocess.run(
+        [str(python), "-m", "pip", "--version"], cwd=ROOT, capture_output=True
     )
-    if import_check.returncode != 0:
-        print("正在安装依赖(首次可能需要一两分钟)...")
-        result = subprocess.run(
-            [str(python), "-m", "pip", "install", "-e", ".[dev]"], cwd=ROOT
-        )
-        if result.returncode != 0:
-            print("依赖安装失败,请检查网络后重试,或手动执行: "
-                  f"\"{python}\" -m pip install -e '.[dev]'")
-            return False
+    if pip_check.returncode != 0:
+        print("正在初始化 pip ...")
+        subprocess.run([str(python), "-m", "ensurepip", "--upgrade"], cwd=ROOT, check=False)
+
+    # 校验包 + 所有运行时依赖都能导入;缺任意一个就重新安装
+    dep_check = subprocess.run([str(python), "-c", _RUNTIME_DEPS], cwd=ROOT)
+    if dep_check.returncode == 0:
+        return True
+
+    print("首次运行,正在下载并安装依赖(通常需要一两分钟,请耐心等待)...")
+    print(f'    命令: "{python}" -m pip install -e ".[dev]"')
+    result = subprocess.run(
+        [str(python), "-m", "pip", "install", "-e", ".[dev]"], cwd=ROOT
+    )
+    if result.returncode != 0:
+        print("依赖安装失败。请检查网络后重试,或手动执行:")
+        print(f'    "{python}" -m pip install -e ".[dev]"')
+        print("(若提示 Python 版本过低,请安装 Python 3.11 及以上)")
+        return False
+    print("依赖安装完成。")
     return True
+
 
 
 def _spawn_server(log_handle) -> int:
