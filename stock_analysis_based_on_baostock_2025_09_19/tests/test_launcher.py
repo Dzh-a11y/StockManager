@@ -60,3 +60,37 @@ def test_ensure_environment_rejects_python_below_311(launcher, monkeypatch) -> N
 
     monkeypatch.setattr(launcher.sys, "version_info", _OldVersion())
     assert launcher._ensure_environment() is False
+
+
+def test_desktop_shortcut_is_noop_off_windows(launcher, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(launcher.os, "name", "posix")
+    monkeypatch.setattr(
+        launcher.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+    )
+    launcher._ensure_desktop_shortcut()
+    assert calls == []
+
+
+def test_desktop_shortcut_builds_powershell_command_on_windows(
+    launcher, monkeypatch, tmp_path
+) -> None:
+    calls: list = []
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    monkeypatch.setattr(launcher.os, "name", "nt")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *args, **kwargs: (calls.append(args), type("R", (), {"returncode": 0})())[1],
+    )
+
+    launcher._ensure_desktop_shortcut()
+
+    assert calls
+    argv = calls[0][0]
+    assert argv[0] == "powershell"
+    command = " ".join(argv)
+    assert "StockManager.lnk" in command
+    assert "StockManager.bat" in command

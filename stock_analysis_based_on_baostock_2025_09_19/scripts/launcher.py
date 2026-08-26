@@ -171,6 +171,38 @@ def _wait_until(timeout: float, predicate) -> bool:
     return predicate()
 
 
+def _ensure_desktop_shortcut() -> None:
+    """On Windows, (re)create the desktop shortcut with the app icon.
+
+    Lets a brand-new user just double-click the launcher once: after the first
+    successful start a "StockManager" icon appears on the desktop, so they
+    never need to type a PowerShell command. No-op on macOS/Linux.
+    """
+    if os.name != "nt":
+        return
+    bat = ROOT / "scripts" / "StockManager.bat"
+    if not bat.exists():
+        return
+    desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+    if not os.path.isdir(desktop):
+        return
+    ico = ROOT / "assets" / "icon" / "icon.ico"
+    icon_location = f"{ico},0" if ico.exists() else ""
+    script = (
+        "$w=New-Object -ComObject WScript.Shell;"
+        f"$s=$w.CreateShortcut('{desktop}\\StockManager.lnk');"
+        f"$s.TargetPath='{bat}';"
+        f"$s.WorkingDirectory='{ROOT}';"
+        f"$s.IconLocation='{icon_location}';"
+        "$s.Save()"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        check=False,
+    )
+
+
 def start() -> int:
     """Ensure the server is running, then open the browser. Idempotent."""
     if server_running():
@@ -179,6 +211,7 @@ def start() -> int:
         return 0
     if not _ensure_environment():
         return 1
+    _ensure_desktop_shortcut()
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOG_FILE.open("ab") as log_handle:
         pid = _spawn_server(log_handle)
