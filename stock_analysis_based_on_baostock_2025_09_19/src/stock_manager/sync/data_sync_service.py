@@ -429,33 +429,21 @@ class DataSyncService:
     def backfill_on_startup(
         self, dataset_id: str, adjustment: AdjustmentMethod
     ) -> SyncOutcome | None:
-        """Ensure the local repository covers the retention window on startup.
+        """Ensure the local repository is current on startup.
 
-        A fresh install has no dataset metadata, so the full retention window is
-        backfilled with a single range fetch. An existing install only catches up
-        the trading days after its latest successful sync. If the latest dataset
-        day has no SUCCESS record (an interrupted backfill or a failed sync), the
-        full history backfill is (re)started instead of falling back to a
-        single-day incremental sync that would never build history.
+        Always goes through :meth:`backfill_history` — the same mechanism as the
+        manual sync button: per-100-stock chunk checkpoints, incremental tail
+        (only new trading days since the last checkpoint are fetched), FAILED
+        immune re-runs and stale-RUNNING takeover. Returns ``None`` when the
+        dataset is already synced through the latest completed trading day.
         """
         if not dataset_id.strip():
             raise ValueError("dataset_id must not be empty")
-        latest = self._repository.get_latest_dataset_metadata(dataset_id, adjustment)
-        if latest is not None:
-            record = self._repository.get_sync_record(
-                dataset_id, latest.trading_day
-            )
-            if record is not None and record.status is SyncStatus.SUCCESS:
-                outcomes = self.sync_missing_on_startup(
-                    dataset_id, latest.trading_day, adjustment
-                )
-                return outcomes[-1] if outcomes else None
-            return self.backfill_history(
-                dataset_id, latest.trading_day, adjustment
-            )
-        return self.backfill_history(
-            dataset_id, self._latest_completed_trading_day(), adjustment
-        )
+        target = self._latest_completed_trading_day()
+        record = self._repository.get_sync_record(dataset_id, target)
+        if record is not None and record.status is SyncStatus.SUCCESS:
+            return None
+        return self.backfill_history(dataset_id, target, adjustment)
 
     def backfill_history(
         self,
