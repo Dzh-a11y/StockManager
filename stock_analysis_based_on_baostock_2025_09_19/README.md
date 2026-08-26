@@ -22,7 +22,24 @@ cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
 python3 -m pip install '.[dev]'
 ```
 
-启动本地服务（默认只监听 127.0.0.1）：
+### 一键启动（推荐）
+
+**桌面图标(双击即用)**:
+- macOS:把 `scripts/StockManager.command` 放到桌面或程序坞,双击即启动并自动打开浏览器
+- Windows:把 `scripts/StockManager.bat` 放到桌面,双击即启动并自动打开浏览器
+- 服务已在运行时再点会直接打开浏览器(幂等,不会重复启动)
+
+**命令行方式**:
+```bash
+python3 scripts/launcher.py start    # 启动并打开浏览器
+python3 scripts/launcher.py status   # 查看状态
+python3 scripts/launcher.py restart  # 重启
+python3 scripts/launcher.py stop     # 停止
+```
+
+启动器会自动:检测/创建 `.venv`、安装依赖、检查端口(已在跑则跳过)、写日志到 `data/server.log`、等待就绪后打开浏览器。
+
+### 手动启动(等价,适合排障)
 
 ```bash
 stock-manager web \
@@ -34,14 +51,6 @@ stock-manager web \
   --lock-dir data/locks \
   --host 127.0.0.1 \
   --port 8000
-```
-
-### 一键启停脚本（推荐）
-
-```bash
-./scripts/start.sh     # 后台启动,日志写入 data/server.log
-./scripts/status.sh    # 查看运行状态与健康检查
-./scripts/stop.sh      # 停止(仅停止脚本启动的实例)
 ```
 
 浏览器打开 `http://127.0.0.1:8000` 进入筛选工作台。
