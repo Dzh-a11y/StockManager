@@ -95,6 +95,13 @@ def _ensure_environment() -> bool:
     ``pip install -e '.[dev]'``, so the desktop icon "just works" on a fresh
     checkout. Prints progress and the exact command on any failure.
     """
+    if sys.version_info < (3, 11):
+        print(
+            f"当前 Python 版本过低({sys.version_info.major}.{sys.version_info.minor}),"
+            "需要 3.11 及以上。"
+        )
+        print("请安装 Python 3.11+ 后重新点击本图标。")
+        return False
     if not VENV_DIR.exists():
         print("未找到虚拟环境,正在创建 .venv ...")
         result = subprocess.run(

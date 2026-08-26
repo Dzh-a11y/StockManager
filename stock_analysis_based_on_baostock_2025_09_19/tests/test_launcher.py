@@ -49,3 +49,14 @@ def test_server_running_is_false_on_closed_port(launcher, monkeypatch) -> None:
     # point the probe at a recently-closed port
     monkeypatch.setattr(launcher, "URL", f"http://127.0.0.1:{port}")
     assert launcher.server_running() is False
+
+
+def test_ensure_environment_rejects_python_below_311(launcher, monkeypatch) -> None:
+    class _OldVersion:
+        major, minor = 3, 9
+
+        def __lt__(self, other):  # drives "sys.version_info < (3, 11)"
+            return (self.major, self.minor) < (other[0], other[1])
+
+    monkeypatch.setattr(launcher.sys, "version_info", _OldVersion())
+    assert launcher._ensure_environment() is False
