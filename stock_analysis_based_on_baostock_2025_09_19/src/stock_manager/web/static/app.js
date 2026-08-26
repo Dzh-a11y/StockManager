@@ -489,7 +489,10 @@ function updateSyncButton() {
   const reason = syncButtonDisabledReason();
   const busy = btn.dataset.busy === 'true';
   btn.disabled = busy || reason !== null;
-  if (reason && !busy) {
+  if (busy) {
+    hint.hidden = false;
+    hint.textContent = '已有同步任务正在进行,请等待完成后再试…';
+  } else if (reason) {
     hint.hidden = false;
     hint.textContent = reason;
   } else {
