@@ -36,4 +36,12 @@ stock-manager web \
   --port 8000
 ```
 
+### 一键启停脚本（推荐）
+
+```bash
+./scripts/start.sh     # 后台启动,日志写入 data/server.log
+./scripts/status.sh    # 查看运行状态与健康检查
+./scripts/stop.sh      # 停止(仅停止脚本启动的实例)
+```
+
 浏览器打开 `http://127.0.0.1:8000` 进入筛选工作台。
