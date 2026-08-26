@@ -132,10 +132,10 @@ class WebApp:
                 self._sync_progress.update(
                     {
                         "status": "running",
-                        "phase": "backfill",
+                        "phase": "starting",
                         "dataset_id": "market",
                         "adjustment": "qfq",
-                        "message": "启动回补历史数据",
+                        "message": "正在同步数据…",
                     }
                 )
                 outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
