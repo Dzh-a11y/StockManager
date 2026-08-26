@@ -1,5 +1,7 @@
 """Offline tests for the cross-platform launcher helpers."""
 
+from __future__ import annotations
+
 import importlib.util
 import socket
 from pathlib import Path

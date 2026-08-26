@@ -1,5 +1,7 @@
 """Template API serialization helpers (P3-3)."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 from stock_manager.templates.models import (

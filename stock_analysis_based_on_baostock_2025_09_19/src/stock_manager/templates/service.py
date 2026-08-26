@@ -1,5 +1,7 @@
 """Validated lifecycle operations for user-owned screening templates."""
 
+from __future__ import annotations
+
 from dataclasses import replace
 
 from stock_manager.templates.compiler import TemplateCompiler

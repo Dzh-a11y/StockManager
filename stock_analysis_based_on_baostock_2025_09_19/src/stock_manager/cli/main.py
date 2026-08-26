@@ -1,5 +1,7 @@
 """Stable command-line interface for StockManager."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import sqlite3

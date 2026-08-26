@@ -1,5 +1,7 @@
 """Positive PE TTM rule."""
 
+from __future__ import annotations
+
 from decimal import Decimal
 
 from stock_manager.domain import FundamentalSnapshot, RuleResult

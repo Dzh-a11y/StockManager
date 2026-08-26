@@ -1,5 +1,7 @@
 """Shared validation for pure technical rules."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 
 from stock_manager.domain import AdjustmentMethod, DailyBar, DatasetMetadata

@@ -1,5 +1,7 @@
 """Rule catalog serialization (P3-1): expose registry metadata to the frontend."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 
 from stock_manager.rules.base import RuleDefinition

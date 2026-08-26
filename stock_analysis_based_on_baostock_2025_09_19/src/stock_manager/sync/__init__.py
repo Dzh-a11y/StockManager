@@ -1,5 +1,7 @@
 """Protected market-data synchronization services."""
 
+from __future__ import annotations
+
 from stock_manager.sync.data_sync_service import (
     CooldownActiveError,
     DataSyncService,

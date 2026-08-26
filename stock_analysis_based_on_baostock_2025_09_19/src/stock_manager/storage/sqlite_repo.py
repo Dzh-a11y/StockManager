@@ -1,5 +1,7 @@
 """SQLite implementation of the local repository contract."""
 
+from __future__ import annotations
+
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager

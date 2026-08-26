@@ -1,5 +1,7 @@
 """Deterministic JSON-safe serialization for domain and web payloads."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime

@@ -1,5 +1,7 @@
 """Recent limit-up count rule."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from decimal import Decimal
 

@@ -1,5 +1,7 @@
 """Screen API response builder (P3-4)."""
 
+from __future__ import annotations
+
 from datetime import date
 
 from stock_manager.domain import (

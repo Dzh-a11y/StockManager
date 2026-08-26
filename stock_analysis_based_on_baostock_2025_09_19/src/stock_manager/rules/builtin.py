@@ -1,5 +1,7 @@
 """Trusted adapters that expose the pure built-in rules through one contract."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 

@@ -1,5 +1,7 @@
 """Strict loader for synchronization policy configuration."""
 
+from __future__ import annotations
+
 import json
 from datetime import time, timedelta
 from pathlib import Path

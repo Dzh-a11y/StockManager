@@ -1,5 +1,7 @@
 """Execute registered rules against prefetched immutable context."""
 
+from __future__ import annotations
+
 from types import MappingProxyType
 
 from stock_manager.domain import RuleExecutionResult, RuleStatus

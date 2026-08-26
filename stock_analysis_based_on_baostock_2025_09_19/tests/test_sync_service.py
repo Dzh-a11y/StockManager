@@ -1,5 +1,7 @@
 """Offline synchronization, idempotency, locking, and retry tests."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta

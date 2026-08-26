@@ -1,5 +1,7 @@
 """Strict version-2 screening-template models."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType

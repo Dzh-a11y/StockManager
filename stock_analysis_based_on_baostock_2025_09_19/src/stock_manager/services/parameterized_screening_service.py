@@ -1,5 +1,7 @@
 """Plan-driven, offline screening orchestration."""
 
+from __future__ import annotations
+
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date

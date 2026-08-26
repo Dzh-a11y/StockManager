@@ -1,5 +1,7 @@
 """Offline tests for the PyInstaller exe entry point (dev-mode helpers)."""
 
+from __future__ import annotations
+
 import importlib.util
 from pathlib import Path
 

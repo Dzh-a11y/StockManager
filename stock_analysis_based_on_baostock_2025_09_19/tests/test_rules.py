@@ -1,5 +1,7 @@
 """Unit tests for the P1-4 pure rule engine."""
 
+from __future__ import annotations
+
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path

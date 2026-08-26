@@ -1,5 +1,7 @@
 """Single-entry, idempotent synchronization into the local repository."""
 
+from __future__ import annotations
+
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass

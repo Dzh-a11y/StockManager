@@ -1,5 +1,7 @@
 """Explicit registry for trusted backend rules."""
 
+from __future__ import annotations
+
 from collections.abc import Iterable
 
 from stock_manager.rules.base import RuleDefinition, ScreeningRule

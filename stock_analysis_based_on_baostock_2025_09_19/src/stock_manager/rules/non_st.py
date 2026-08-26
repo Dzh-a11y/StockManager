@@ -1,5 +1,7 @@
 """Non-ST stock rule."""
 
+from __future__ import annotations
+
 from stock_manager.domain import RuleResult, StockIdentity
 
 

@@ -1,5 +1,7 @@
 """Compile validated templates into immutable screening plans."""
 
+from __future__ import annotations
+
 from collections import Counter
 
 from stock_manager.rules.registry import RuleRegistry

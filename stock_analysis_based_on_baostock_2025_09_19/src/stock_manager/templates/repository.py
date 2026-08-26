@@ -1,5 +1,7 @@
 """Safe JSON-file persistence for system and user screening templates."""
 
+from __future__ import annotations
+
 import json
 import os
 import re

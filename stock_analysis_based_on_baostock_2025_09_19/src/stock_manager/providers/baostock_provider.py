@@ -1,5 +1,7 @@
 """Baostock adapter that normalizes remote rows into domain objects."""
 
+from __future__ import annotations
+
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager

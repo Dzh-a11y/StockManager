@@ -1,5 +1,7 @@
 """Application services that orchestrate local repositories and pure rules."""
 
+from __future__ import annotations
+
 from stock_manager.services.parameterized_screening_service import (
     ParameterizedScreeningService,
 )

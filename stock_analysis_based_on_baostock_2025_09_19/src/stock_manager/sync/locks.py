@@ -6,6 +6,8 @@ Windows. Both semantics are the same: an exclusive, blocking lock on one lock
 file whose existence is kept for diagnostics.
 """
 
+from __future__ import annotations
+
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager

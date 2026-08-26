@@ -1,5 +1,7 @@
 """Offline end-to-end acceptance tests for the new screening core."""
 
+from __future__ import annotations
+
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path

@@ -1,5 +1,7 @@
 """Volume and price rise rule."""
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from decimal import Decimal
 

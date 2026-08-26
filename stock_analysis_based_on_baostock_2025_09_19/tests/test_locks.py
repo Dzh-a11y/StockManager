@@ -1,5 +1,7 @@
 """Cross-platform file lock behavior tests."""
 
+from __future__ import annotations
+
 from datetime import date
 from pathlib import Path
 from threading import Event, Thread

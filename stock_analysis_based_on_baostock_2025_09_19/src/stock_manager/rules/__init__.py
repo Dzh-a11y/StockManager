@@ -1,5 +1,7 @@
 """Pure, offline screening rules."""
 
+from __future__ import annotations
+
 from stock_manager.rules.annual_min_volume import evaluate_annual_min_volume
 from stock_manager.rules.builtin import build_default_registry
 from stock_manager.rules.composite import evaluate_composite

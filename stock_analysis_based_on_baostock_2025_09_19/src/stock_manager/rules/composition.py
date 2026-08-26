@@ -1,5 +1,7 @@
 """Generic composition of registered rule execution statuses."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal

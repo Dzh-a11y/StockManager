@@ -1,5 +1,7 @@
 """Offline provider used by unit and integration tests."""
 
+from __future__ import annotations
+
 import threading
 from collections import Counter
 from collections.abc import Sequence
