@@ -26,7 +26,7 @@ python3 -m pip install '.[dev]'
 
 **桌面图标(双击即用)**:
 - macOS:把 `scripts/StockManager.command` 放到桌面或程序坞,双击即启动并自动打开浏览器;或运行 `scripts/make_app.sh` 生成带图标的 `StockManager.app`
-- Windows:把 `scripts/StockManager.bat` 放到桌面,双击即启动并自动打开浏览器
+- Windows:先运行一次 `powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1` 在桌面生成带图标的快捷方式,之后双击 `StockManager` 快捷方式即可(也可直接双击 `scripts\StockManager.bat`)
 - 服务已在运行时再点会直接打开浏览器(幂等,不会重复启动)
 
 **首次双击会自动安装依赖**(两个平台都支持):自动检测 Python 3.11+ → 创建 `.venv` → `pip install -e '.[dev]'`(下载 baostock/tzdata 等,约 1-2 分钟)→ 启动服务 → 打开浏览器。之后再次点击秒进,不再安装。

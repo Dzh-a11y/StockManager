@@ -12,11 +12,16 @@ rem 项目根 = 本脚本所在目录的上一级(scripts\..)。改成固定路�
 set "ROOT=%~dp0.."
 cd /d "%ROOT%"
 
-rem ---- 找一个 Python 3.11+ 解释器 ----
+rem ---- 优先用项目自带 venv 的 python(与 mac 一致);否则找一个 Python 3.11+ ----
 set "PYTHON="
-py -3 -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=py -3"
-if not defined PYTHON python -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=python"
-if not defined PYTHON python3 -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=python3"
+set "VENVPY=%ROOT%\.venv\Scripts\python.exe"
+if exist "%VENVPY%" (
+  set "PYTHON=%VENVPY%"
+) else (
+  py -3 -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=py -3"
+  if not defined PYTHON python -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=python"
+  if not defined PYTHON python3 -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul && set "PYTHON=python3"
+)
 if not defined PYTHON (
   echo 未找到 Python 3.11 及以上版本。
   echo 请到 https://www.python.org/downloads/ 安装,并勾选 "Add Python to PATH"。
