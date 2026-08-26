@@ -8,7 +8,9 @@ version = "1.2.4"
 description = "A testable research-oriented A-share stock screening core"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["baostock>=0.8.9", "tzdata>=2024.1"]
+# baostock 声明依赖 pandas>=0.18,但仅 demo 脚本使用,核心运行不需要。
+# 钉住 pandas<3:3.x 在 Python 3.11 的 Windows 上无预编译轮子,会触发源码编译失败。
+dependencies = ["baostock>=0.8.9", "pandas<3", "tzdata>=2024.1"]
 
 [project.scripts]
 stock-manager = "stock_manager.cli.main:main"
