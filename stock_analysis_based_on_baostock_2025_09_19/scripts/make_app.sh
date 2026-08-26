@@ -10,6 +10,19 @@ APP="$ROOT/$APP_NAME.app"
 ICON="$ROOT/assets/icon/icon.icns"
 VERSION="$("$ROOT/.venv/bin/python" -c 'import stock_manager; print(stock_manager.__version__)' 2>/dev/null || echo 0.0.0)"
 
+# 探测本机一个 Python 3.11+ 的 bin 目录,放入 LaunchServices 的 PATH。
+# LaunchServices 启动的应用不继承终端 PATH,这里手动把新版 Python 放到最前,
+# 这样 .app 里的 /usr/bin/env python3 会命中 3.11+ 而不是 macOS 自带的 3.9。
+PY_BIN_DIR=""
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 \
+     && "$c" -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" 2>/dev/null; then
+    PY_BIN_DIR="$(dirname "$(command -v "$c")")"
+    break
+  fi
+done
+[ -n "$PY_BIN_DIR" ] || PY_BIN_DIR="/Library/Frameworks/Python.framework/Versions/Current/bin"
+
 if [[ ! -f "$ICON" ]]; then
   echo "缺少图标,请先运行: python scripts/make_icon.py"
   exit 1
@@ -51,6 +64,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>StockManager</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSEnvironment</key>
+  <dict>
+    <key>PATH</key>
+    <string>${PY_BIN_DIR}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
 </dict></plist>
 PLIST
 
