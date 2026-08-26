@@ -152,3 +152,43 @@ def test_prune_before_removes_old_market_data_and_keeps_recent(tmp_path: Path) -
     assert repository.get_stocks(DAY) == (_stock(),)
     assert repository.get_dataset_metadata("market", old_day, AdjustmentMethod.QFQ) is None
     assert repository.get_dataset_metadata("market", DAY, AdjustmentMethod.QFQ) == _metadata()
+
+
+def test_backfill_chunk_checkpoint_round_trip_and_idempotency(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    codes = ("sz.000001", "sh.600000", "sh.600001")
+
+    assert repository.completed_chunk_codes("market", DAY, AdjustmentMethod.QFQ) == {}
+
+    repository.mark_chunk_complete("market", DAY, AdjustmentMethod.QFQ, 0, codes)
+    repository.mark_chunk_complete("market", DAY, AdjustmentMethod.QFQ, 1, ("sz.300750",))
+
+    completed = repository.completed_chunk_codes("market", DAY, AdjustmentMethod.QFQ)
+    assert completed == {
+        0: ("sh.600000", "sh.600001", "sz.000001"),  # 按代码字典序存储
+        1: ("sz.300750",),
+    }
+
+    # 幂等:重复标记同批次不会产生重复行
+    repository.mark_chunk_complete("market", DAY, AdjustmentMethod.QFQ, 0, codes)
+    assert repository.completed_chunk_codes("market", DAY, AdjustmentMethod.QFQ) == completed
+
+    # 不同复权方式/交易日是独立键
+    assert (
+        repository.completed_chunk_codes("market", DAY, AdjustmentMethod.UNADJUSTED)
+        == {}
+    )
+
+
+def test_prune_before_removes_stale_backfill_checkpoints(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    old_day = date(2026, 1, 1)
+    repository.mark_chunk_complete("market", old_day, AdjustmentMethod.QFQ, 0, ("sh.600000",))
+    repository.mark_chunk_complete("market", DAY, AdjustmentMethod.QFQ, 0, ("sh.600000",))
+
+    repository.prune_before(date(2026, 8, 1))
+
+    assert repository.completed_chunk_codes("market", old_day, AdjustmentMethod.QFQ) == {}
+    assert repository.completed_chunk_codes("market", DAY, AdjustmentMethod.QFQ) == {
+        0: ("sh.600000",)
+    }

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import threading
 from dataclasses import dataclass
 from datetime import date
@@ -66,10 +68,12 @@ class WebApp:
         config: WebConfig,
         registry: RuleRegistry | None = None,
         provider_factory: Callable[[], ProviderProtocol] | None = None,
+        shutdown_handler: Callable[[], None] | None = None,
     ) -> None:
         config.validate()
         self._config = config
         self._provider_factory = provider_factory
+        self._shutdown_handler = shutdown_handler
         self._sync_progress: dict[str, object] = {"status": "idle"}
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
@@ -216,6 +220,9 @@ class WebApp:
         if method == "POST" and path == "/api/sync":
             return self._handle_sync(body)
 
+        if method == "POST" and path == "/api/shutdown":
+            return self._handle_shutdown(body)
+
         match = self._template_id_from_path(path)
         if match is not None:
             template_id = match
@@ -307,6 +314,30 @@ class WebApp:
         self._sync_progress["status"] = "done"
         self._sync_progress["message"] = outcome.status.value
         return self._json(200, to_jsonable(outcome))
+
+    def _handle_shutdown(self, body: object) -> Response:
+        """Stop the local server process after explicit confirmation.
+
+        The default action schedules a SIGTERM to this process with a short
+        delay so the HTTP response is flushed before the process exits; the
+        frontend never needs a shell to restart the service. The action is
+        injectable so tests can observe it without killing the test runner.
+        """
+        data = self._object(body, "body")
+        unknown = set(data) - {"confirm"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        confirm = data.get("confirm", False)
+        if not isinstance(confirm, bool) or not confirm:
+            raise BadRequestError("confirm must be true to shut down the server")
+        handler = self._shutdown_handler
+        if handler is None:
+            def terminate() -> None:
+                threading.Timer(0.5, os.kill, args=(os.getpid(), signal.SIGTERM)).start()
+
+            handler = terminate
+        handler()
+        return self._json(200, {"status": "shutting_down"})
 
     def _make_provider(
         self,

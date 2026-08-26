@@ -78,6 +78,22 @@ class LocalRepositoryProtocol(Protocol):
         success_record: SyncRecord,
     ) -> None: ...
 
+    def mark_chunk_complete(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+        chunk_index: int,
+        codes: Sequence[str],
+    ) -> None: ...
+
+    def completed_chunk_codes(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+    ) -> dict[int, tuple[str, ...]]: ...
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: ...
 
     def get_daily_bars(

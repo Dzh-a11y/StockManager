@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS dataset_metadata (
     adjustment TEXT NOT NULL,
     PRIMARY KEY (dataset_id, trading_day, adjustment)
 );
+CREATE TABLE IF NOT EXISTS backfill_chunks (
+    dataset_id TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    codes TEXT NOT NULL,
+    PRIMARY KEY (dataset_id, trading_day, adjustment, chunk_index)
+);
 """
 
 
@@ -325,6 +333,56 @@ class SQLiteRepository:
             self._save_metadata(connection, metadata)
             self._save_sync_record(connection, success_record)
 
+    @staticmethod
+    def _chunk_codes_key(codes: Sequence[str]) -> str:
+        return ",".join(sorted(codes))
+
+    def mark_chunk_complete(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+        chunk_index: int,
+        codes: Sequence[str],
+    ) -> None:
+        """Record that a backfill code chunk was fully persisted.
+
+        The sorted code list is stored so a later resume only trusts the
+        checkpoint when the current chunk contains exactly the same codes;
+        this stays correct even if the provider's stock-list ordering shifts.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO backfill_chunks
+                   (dataset_id, trading_day, adjustment, chunk_index, codes)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    dataset_id,
+                    trading_day.isoformat(),
+                    adjustment.value,
+                    chunk_index,
+                    self._chunk_codes_key(codes),
+                ),
+            )
+
+    def completed_chunk_codes(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+    ) -> dict[int, tuple[str, ...]]:
+        """Return backfill checkpoints as ``{chunk_index: sorted codes}``."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT chunk_index, codes FROM backfill_chunks
+                   WHERE dataset_id = ? AND trading_day = ? AND adjustment = ?
+                   ORDER BY chunk_index""",
+                (dataset_id, trading_day.isoformat(), adjustment.value),
+            ).fetchall()
+        return {
+            int(row["chunk_index"]): tuple(row["codes"].split(",")) for row in rows
+        }
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]:
         with self._connect() as connection:
             row = connection.execute(
@@ -505,8 +563,9 @@ class SQLiteRepository:
 
         ``daily_bars`` and ``stocks`` grow one row per stock per trading day, so they
         are the unbounded tables this retention policy is designed to bound. The
-        matching ``sync_runs`` and ``dataset_metadata`` rows are removed together so a
-        pruned day is never mistaken for a successfully-synced day later.
+        matching ``sync_runs``, ``dataset_metadata`` and ``backfill_chunks`` rows are
+        removed together so a pruned day is never mistaken for a successfully-synced
+        day later.
         """
         cutoff_text = cutoff.isoformat()
         with self._connect() as connection:
@@ -521,4 +580,7 @@ class SQLiteRepository:
             )
             connection.execute(
                 "DELETE FROM dataset_metadata WHERE trading_day < ?", (cutoff_text,)
+            )
+            connection.execute(
+                "DELETE FROM backfill_chunks WHERE trading_day < ?", (cutoff_text,)
             )

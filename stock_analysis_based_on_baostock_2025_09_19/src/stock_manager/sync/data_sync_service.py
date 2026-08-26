@@ -389,31 +389,6 @@ class DataSyncService:
             self.sync(dataset_id, day, adjustment, retry=False) for day in missing
         )
 
-    def _chunk_is_persisted(
-        self,
-        codes: Sequence[str],
-        start: date,
-        end: date,
-        adjustment: AdjustmentMethod,
-        expected_bars_per_code: int,
-    ) -> bool:
-        """Return whether a code chunk is already fully persisted.
-
-        Backfill writes each chunk in two transactions (bars then
-        fundamentals), so a chunk is only resumable when both are complete:
-        every code must have exactly ``expected_bars_per_code`` daily bars in
-        the window and at least one fundamental snapshot as of ``end``.
-        Stocks listed or delisted inside the window have fewer bars and are
-        simply re-fetched — correctness is preserved, only the skip is lost.
-        """
-        if expected_bars_per_code <= 0 or not codes:
-            return False
-        bars = self._repository.get_daily_bars(codes, start, end, adjustment)
-        if len(bars) != len(codes) * expected_bars_per_code:
-            return False
-        fundamentals = self._repository.get_fundamentals(codes, end)
-        return len(fundamentals) == len(codes)
-
     def _prune(self, as_of: date) -> None:
         """Drop market data older than the configured retention window."""
         cutoff = as_of - timedelta(days=self._config.retention_days)
@@ -527,12 +502,13 @@ class DataSyncService:
                     self._repository.save_stocks(stocks, metadata)
                     total_units = 2 * len(selected_codes)
                     done_units = 0
-                    expected_bars_per_code = len(trading_days)
+                    completed = self._repository.completed_chunk_codes(
+                        dataset_id, as_of, adjustment
+                    )
                     for offset in range(0, len(selected_codes), batch_size):
+                        chunk_index = offset // batch_size
                         chunk = selected_codes[offset : offset + batch_size]
-                        if self._chunk_is_persisted(
-                            chunk, start, as_of, adjustment, expected_bars_per_code
-                        ):
+                        if completed.get(chunk_index) == tuple(sorted(chunk)):
                             done_units += 2 * len(chunk)
                             self._emit_progress(
                                 "daily_bars", done_units, total_units, chunk[-1]
@@ -560,6 +536,9 @@ class DataSyncService:
                         done_units += len(chunk)
                         self._emit_progress(
                             "fundamentals", done_units, total_units, chunk[-1]
+                        )
+                        self._repository.mark_chunk_complete(
+                            dataset_id, as_of, adjustment, chunk_index, chunk
                         )
                 finished_at = self._now()
                 success = SyncRecord(

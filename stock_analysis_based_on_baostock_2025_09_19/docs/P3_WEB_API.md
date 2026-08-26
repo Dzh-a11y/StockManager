@@ -141,6 +141,10 @@ stock-manager web \
 
 `GET /api/sync/progress`：返回同步进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
+### 停止服务
+
+`POST /api/shutdown`：请求体 `{"confirm": true}`。确认后向本进程发送 `SIGTERM`（延迟 0.5 秒以确保响应先返回），用于在界面内直接结束服务进程，无需进入终端。未确认（`confirm` 缺失或非 `true`）返回 `400`。停止后需重新执行 `stock-manager web` 启动命令。
+
 ## 错误映射
 
 | 状态 | 含义 |

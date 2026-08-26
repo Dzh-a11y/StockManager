@@ -648,34 +648,45 @@ def _seed_chunk(
     days: Sequence[date],
     as_of: date,
     *,
-    with_fundamentals: bool,
+    checkpoint: bool = True,
+    short_code: str | None = None,
+    short_days: int = 3,
 ) -> None:
+    """Simulate a chunk fully persisted by a previous backfill run.
+
+    ``short_code`` mimics a stock listed inside the retention window: it only
+    has bars for the last ``short_days`` trading days. The chunk-level
+    checkpoint is what resume trusts, so short history must not matter.
+    """
     metadata = DatasetMetadata("market", as_of, "fixture", NOW, AdjustmentMethod.QFQ)
-    bars = tuple(
-        DailyBar(
-            code,
-            day,
-            Decimal("10"),
-            Decimal("11"),
-            Decimal("9"),
-            Decimal("10.5"),
-            Decimal("10"),
-            Decimal("1000"),
-            Decimal("10500"),
-            True,
-        )
-        for code in codes
-        for day in days
+    bars = []
+    for code in codes:
+        code_days = days[-short_days:] if code == short_code else days
+        for day in code_days:
+            bars.append(
+                DailyBar(
+                    code,
+                    day,
+                    Decimal("10"),
+                    Decimal("11"),
+                    Decimal("9"),
+                    Decimal("10.5"),
+                    Decimal("10"),
+                    Decimal("1000"),
+                    Decimal("10500"),
+                    True,
+                )
+            )
+    repository.save_daily_bars(tuple(bars), metadata)
+    repository.save_fundamentals(
+        tuple(
+            FundamentalSnapshot(code, as_of, as_of, Decimal("8"), Decimal("1"), "fixture")
+            for code in codes
+        ),
+        metadata,
     )
-    repository.save_daily_bars(bars, metadata)
-    if with_fundamentals:
-        repository.save_fundamentals(
-            tuple(
-                FundamentalSnapshot(code, as_of, as_of, Decimal("8"), Decimal("1"), "fixture")
-                for code in codes
-            ),
-            metadata,
-        )
+    if checkpoint:
+        repository.mark_chunk_complete("market", as_of, AdjustmentMethod.QFQ, 0, codes)
 
 
 def test_backfill_history_resumes_from_persisted_chunks(tmp_path: Path) -> None:
@@ -690,12 +701,12 @@ def test_backfill_history_resumes_from_persisted_chunks(tmp_path: Path) -> None:
     start = as_of - timedelta(days=10)
     days = tuple(date(2026, 8, day) for day in range(15, 26))
     first_chunk = tuple(f"sh.{600000 + i:06d}" for i in range(100))
-    _seed_chunk(repository, first_chunk, days, as_of, with_fundamentals=True)
+    _seed_chunk(repository, first_chunk, days, as_of)
 
     outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
 
     assert outcome.status is SyncStatus.SUCCESS
-    # 第一块已完整落库被跳过，只补第二、三块
+    # 第一块有 checkpoint，被跳过，只补第二、三块
     assert provider.calls["fetch_daily_bars"] == 2
     assert provider.calls["fetch_fundamentals"] == 2
     codes = tuple(f"sh.{600000 + i:06d}" for i in range(250))
@@ -704,7 +715,7 @@ def test_backfill_history_resumes_from_persisted_chunks(tmp_path: Path) -> None:
     ) == 250 * 11
 
 
-def test_backfill_history_refetches_chunk_missing_fundamentals(tmp_path: Path) -> None:
+def test_backfill_history_refetches_chunk_without_checkpoint(tmp_path: Path) -> None:
     provider = _many_codes_provider(250)
     config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
     repository = SQLiteRepository(tmp_path / "market.sqlite3")
@@ -713,16 +724,59 @@ def test_backfill_history_refetches_chunk_missing_fundamentals(tmp_path: Path) -
     )
 
     as_of = date(2026, 8, 25)
-    start = as_of - timedelta(days=10)
     days = tuple(date(2026, 8, day) for day in range(15, 26))
     first_chunk = tuple(f"sh.{600000 + i:06d}" for i in range(100))
-    # 只落了 bars、没落 fundamentals：整块必须重拉，不能跳过
-    _seed_chunk(repository, first_chunk, days, as_of, with_fundamentals=False)
+    # 数据在库里但没写 checkpoint（旧版本落的数据）：整块必须重拉
+    _seed_chunk(repository, first_chunk, days, as_of, checkpoint=False)
 
     outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
 
     assert outcome.status is SyncStatus.SUCCESS
-    # 第一块缺 fundamentals，整块必须重拉（不能跳过），即使 bars 已落库
+    assert provider.calls["fetch_daily_bars"] == 3
+    assert provider.calls["fetch_fundamentals"] == 3
+
+
+def test_backfill_history_skips_chunk_with_short_history_stock(tmp_path: Path) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+
+    as_of = date(2026, 8, 25)
+    days = tuple(date(2026, 8, day) for day in range(15, 26))
+    first_chunk = tuple(f"sh.{600000 + i:06d}" for i in range(100))
+    # 批次内含一只"次新股"（只下了最后 3 天），但批次有 checkpoint → 仍跳过
+    _seed_chunk(
+        repository, first_chunk, days, as_of, short_code=first_chunk[0], short_days=3
+    )
+
+    outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
+
+    assert outcome.status is SyncStatus.SUCCESS
+    assert provider.calls["fetch_daily_bars"] == 2
+    assert provider.calls["fetch_fundamentals"] == 2
+
+
+def test_backfill_history_refetches_chunk_when_checkpoint_codes_differ(
+    tmp_path: Path,
+) -> None:
+    provider = _many_codes_provider(250)
+    config = SyncConfig(time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10)
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    service = DataSyncService(
+        provider, repository, tmp_path / "locks", config, clock=MutableClock(NOW)
+    )
+
+    as_of = date(2026, 8, 25)
+    # checkpoint 里记录的代码与当前批次不一致（股票列表顺序/构成变化）→ 不能跳过
+    wrong_codes = tuple(f"sh.{700000 + i:06d}" for i in range(100))
+    repository.mark_chunk_complete("market", as_of, AdjustmentMethod.QFQ, 0, wrong_codes)
+
+    outcome = service.backfill_history("market", as_of, AdjustmentMethod.QFQ, batch_size=100)
+
+    assert outcome.status is SyncStatus.SUCCESS
     assert provider.calls["fetch_daily_bars"] == 3
     assert provider.calls["fetch_fundamentals"] == 3
 

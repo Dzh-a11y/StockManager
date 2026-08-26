@@ -561,6 +561,19 @@ async function syncData() {
   }
 }
 
+async function shutdownServer() {
+  if (!window.confirm('确定停止本服务进程吗？停止后需要重新启动才能继续使用。')) return;
+  const status = $('#shutdown-status');
+  status.hidden = false;
+  status.textContent = '正在停止服务…';
+  try {
+    await api('POST', '/api/shutdown', { confirm: true });
+  } catch (err) {
+    // 服务可能在响应前就退出，连接错误同样视为已停止
+  }
+  status.textContent = '服务已停止，请关闭本页面。';
+}
+
 /* ---------- results ---------- */
 function renderResults() {
   const body = $('#result-body');
@@ -622,6 +635,7 @@ function buildDetail(r) {
 function bindEvents() {
   $('#run-screen').addEventListener('click', runScreen);
   $('#sync-data').addEventListener('click', syncData);
+  $('#shutdown-server').addEventListener('click', shutdownServer);
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
   });

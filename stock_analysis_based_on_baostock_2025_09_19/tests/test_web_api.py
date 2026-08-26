@@ -498,6 +498,34 @@ def test_sync_endpoint_requires_configuration(tmp_path: Path) -> None:
     assert payload["error"]["code"] == "BAD_REQUEST"
 
 
+def test_shutdown_endpoint_requires_confirmation(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _post(app, "/api/shutdown", {})
+    assert status == 400
+    assert payload["error"]["code"] == "BAD_REQUEST"
+    status, _payload = _post(app, "/api/shutdown", {"confirm": False})
+    assert status == 400
+
+
+def test_shutdown_endpoint_invokes_handler_after_confirmation(tmp_path: Path) -> None:
+    database_path = tmp_path / "market.sqlite3"
+    _seed_repository(database_path)
+    calls: list[bool] = []
+    config = WebConfig(
+        database_path=database_path,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+    )
+    app = WebApp(config, shutdown_handler=lambda: calls.append(True))
+
+    status, payload = _post(app, "/api/shutdown", {"confirm": True})
+
+    assert status == 200
+    assert payload == {"status": "shutting_down"}
+    assert calls == [True]
+
+
 def test_sync_populates_local_data_then_screen_reads_it(tmp_path: Path) -> None:
     db = tmp_path / "market.sqlite3"
     # Create the (empty) local schema so startup validation passes.
