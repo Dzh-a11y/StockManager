@@ -12,6 +12,7 @@ dist/
 .idea/
 .vscode/
 *.swp
+.DS_Store
 
 # Obsidian app config (not project docs)
 .obsidian/
@@ -21,6 +22,10 @@ data/
 *.sqlite3
 *.sqlite
 *.db
+
+# Generated desktop app bundle / icon intermediates
+StockManager.app/
+*.iconset/
 
 # Logs / outputs
 *.log
