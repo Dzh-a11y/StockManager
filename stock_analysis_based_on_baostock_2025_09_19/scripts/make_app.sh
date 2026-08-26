@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 构建 macOS 桌面应用 StockManager.app(双击图标即启动工作台,并自动打开浏览器)
 # 用法: ./scripts/make_app.sh   → 在项目根生成 StockManager.app
-#        ./scripts/make_app.sh /Applications   → 复制到指定目录
+#
+# 用 osacompile 生成 AppleScript 应用:它的可执行文件是真正的 Mach-O,
+# 能被 launchd/RBS 可靠启动(用 bash 脚本当 .app 主执行文件会 "launchd job spawn failed")。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,70 +12,36 @@ APP="$ROOT/$APP_NAME.app"
 ICON="$ROOT/assets/icon/icon.icns"
 VERSION="$("$ROOT/.venv/bin/python" -c 'import stock_manager; print(stock_manager.__version__)' 2>/dev/null || echo 0.0.0)"
 
-# 探测本机一个 Python 3.11+ 的 bin 目录,放入 LaunchServices 的 PATH。
-# LaunchServices 启动的应用不继承终端 PATH,这里手动把新版 Python 放到最前,
-# 这样 .app 里的 /usr/bin/env python3 会命中 3.11+ 而不是 macOS 自带的 3.9。
-PY_BIN_DIR=""
-for c in python3 python; do
-  if command -v "$c" >/dev/null 2>&1 \
-     && "$c" -c "import sys;sys.exit(0 if sys.version_info>=(3,11) else 1)" 2>/dev/null; then
-    PY_BIN_DIR="$(dirname "$(command -v "$c")")"
-    break
-  fi
-done
-[ -n "$PY_BIN_DIR" ] || PY_BIN_DIR="/Library/Frameworks/Python.framework/Versions/Current/bin"
-
 if [[ ! -f "$ICON" ]]; then
   echo "缺少图标,请先运行: python scripts/make_icon.py"
   exit 1
 fi
 
-# 重建
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# 可执行入口(把项目根路径写死进去;日志写 data/launcher.log,失败时打开日志)
-exe="$APP/Contents/MacOS/$APP_NAME"
-cat > "$exe" <<EOF
-#!/usr/bin/env bash
-cd "${ROOT}"
-mkdir -p data
-LOG="data/launcher.log"
-if /usr/bin/env python3 scripts/launcher.py start >> "\${LOG}" 2>&1; then
-  exit 0
-fi
-echo "启动失败,日志: \${LOG}" >> "\${LOG}"
-/usr/bin/env open "\${LOG}"
-EOF
-chmod +x "$exe"
+# AppleScript 应用:运行启动器,输出写 data/launcher.log,失败时打开日志
+PY="$ROOT/.venv/bin/python"
+run_cmd="cd '$ROOT' && mkdir -p data && ('$PY' scripts/launcher.py start >> data/launcher.log 2>&1 || /usr/bin/open data/launcher.log)"
+osacompile -o "$APP" -e "do shell script \"$run_cmd\""
 
-# 图标
+# 图标:替换默认 applet.icns
+rm -f "$APP/Contents/Resources/applet.icns"
 cp "$ICON" "$APP/Contents/Resources/icon.icns"
 
-# Info.plist
-cat > "$APP/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>StockManager</string>
-  <key>CFBundleDisplayName</key><string>StockManager</string>
-  <key>CFBundleIdentifier</key><string>local.stockmanager.workbench</string>
-  <key>CFBundleVersion</key><string>${VERSION}</string>
-  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleIconFile</key><string>icon</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>StockManager</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>LSEnvironment</key>
-  <dict>
-    <key>PATH</key>
-    <string>${PY_BIN_DIR}:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-</dict></plist>
-PLIST
+# 元信息
+PB="/usr/libexec/PlistBuddy"
+PLIST="$APP/Contents/Info.plist"
+add_or_set() {
+  "$PB" -c "Add :$1 $2 $3" "$PLIST" 2>/dev/null || "$PB" -c "Set :$1 $3" "$PLIST"
+}
+add_or_set CFBundleIdentifier string local.stockmanager.workbench
+add_or_set CFBundleIconFile string icon
+add_or_set CFBundleVersion string "$VERSION"
+add_or_set CFBundleShortVersionString string "$VERSION"
+add_or_set CFBundleName string "$APP_NAME"
+add_or_set CFBundleDisplayName string "$APP_NAME"
 
-# 本地构建的 app 需 ad-hoc 签名才能在 Finder 中双击打开(无需开发者证书)。
-# 签名前清掉 Finder 扩展属性,否则 codesign 会报 "detritus not allowed"。
+# 本地构建需 ad-hoc 签名;签名前清掉 Finder 扩展属性以免 codesign 报 detritus
 xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP"
 
