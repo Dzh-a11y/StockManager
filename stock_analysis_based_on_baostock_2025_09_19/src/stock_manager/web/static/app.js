@@ -440,6 +440,42 @@ function runtimeConditions() {
   return { dataset_id: dataset, trading_day: tradingDay, adjustment, codes };
 }
 
+let screenPollTimer = null;
+function renderScreenProgress(p) {
+  const track = $('#screen-progress-track');
+  const fill = $('#screen-progress-fill');
+  const current = $('#screen-current');
+  const active = p && p.status === 'running';
+  if (!active) {
+    track.hidden = true;
+    current.hidden = true;
+    return;
+  }
+  const total = Number(p.total || 0);
+  const done = Number(p.done || 0);
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  track.hidden = false;
+  fill.style.width = pct + '%';
+  current.hidden = false;
+  current.textContent = total
+    ? '第 ' + done + '/' + total + ' 只 · ' + (p.current_code || '-')
+    : (p.message || '正在筛选…');
+}
+async function pollScreenProgress() {
+  try {
+    const p = await api('GET', '/api/screen/progress');
+    renderScreenProgress(p);
+  } catch (e) { /* ignore transient poll errors */ }
+}
+function startScreenPolling() {
+  if (screenPollTimer) return;
+  pollScreenProgress();
+  screenPollTimer = setInterval(pollScreenProgress, 500);
+}
+function stopScreenPolling() {
+  if (screenPollTimer) { clearInterval(screenPollTimer); screenPollTimer = null; }
+}
+
 async function runScreen() {
   const invalid = validateComposition();
   if (invalid) { toast(invalid, 'warn'); return; }
@@ -451,6 +487,7 @@ async function runScreen() {
   progress.textContent = '正在运行筛选…';
   const btn = $('#run-screen');
   btn.disabled = true;
+  startScreenPolling();
   try {
     const data = await api('POST', '/api/screen', { template: buildPayload(), ...cond });
     state.result = data;
@@ -464,6 +501,9 @@ async function runScreen() {
     toast('筛选失败：' + err.message, 'error');
   } finally {
     progress.hidden = true;
+    stopScreenPolling();
+    $('#screen-progress-track').hidden = true;
+    $('#screen-current').hidden = true;
     btn.disabled = false;
   }
 }

@@ -81,6 +81,7 @@ class WebApp:
         self._shutdown_handler = shutdown_handler
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._sync_progress: dict[str, object] = {"status": "idle"}
+        self._screen_progress: dict[str, object] = {"status": "idle"}
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
         compiler = TemplateCompiler(registry)
@@ -196,6 +197,8 @@ class WebApp:
                 )
             if path == "/api/sync/progress":
                 return self._json(200, self._sync_progress)
+            if path == "/api/screen/progress":
+                return self._json(200, self._screen_progress)
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -251,9 +254,32 @@ class WebApp:
         template = parse_template_wrapper({"template": data["template"]})
         plan = self._services.compiler.compile(template)
         codes = self._codes(data.get("codes"))
-        results = self._services.screening_service.screen(
-            plan, dataset_id, trading_day, adjustment, codes
-        )
+        self._screen_progress = {
+            "status": "running",
+            "dataset_id": dataset_id,
+            "trading_day": trading_day.isoformat(),
+            "adjustment": adjustment.value,
+            "phase": "screening",
+            "done": 0,
+            "total": 0,
+            "current_code": None,
+            "message": "正在筛选…",
+        }
+        try:
+            results = self._services.screening_service.screen(
+                plan,
+                dataset_id,
+                trading_day,
+                adjustment,
+                codes,
+                progress_callback=self._on_screen_progress,
+            )
+            self._screen_progress["status"] = "done"
+            self._screen_progress["message"] = "筛选完成"
+        except Exception:
+            self._screen_progress["status"] = "error"
+            self._screen_progress["message"] = "screening failed"
+            raise
         metadata = self._services.repository.get_dataset_metadata(
             dataset_id, trading_day, adjustment
         )
@@ -262,6 +288,19 @@ class WebApp:
         return self._json(
             200,
             screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
+        )
+
+    def _on_screen_progress(self, event: dict[str, object]) -> None:
+        done = event.get("done")
+        total = event.get("total")
+        self._screen_progress.update(
+            {
+                "status": "running",
+                "done": done if isinstance(done, int) else 0,
+                "total": total if isinstance(total, int) else 0,
+                "current_code": event.get("current_code"),
+                "phase": event.get("phase") or "screening",
+            }
         )
 
     def _handle_shutdown(self, body: object) -> Response:

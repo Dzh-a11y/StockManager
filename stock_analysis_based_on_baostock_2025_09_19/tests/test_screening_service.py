@@ -194,6 +194,36 @@ def test_parameterized_screening_uses_compiled_plan_and_reports_statuses(
     assert annual.result.reason == "insufficient valid trading sessions"
 
 
+def test_parameterized_screening_reports_progress(tmp_path: Path) -> None:
+    repository = _seed_repository(tmp_path)
+    registry = build_default_registry()
+    template_path = (
+        Path(__file__).parents[1]
+        / "config"
+        / "rule_templates"
+        / "system-default.json"
+    )
+    template = parse_template(json.loads(template_path.read_text(encoding="utf-8")))
+    plan = TemplateCompiler(registry).compile(template)
+    events: list[dict[str, object]] = []
+
+    ParameterizedScreeningService(repository, registry).screen(
+        plan,
+        "market",
+        TARGET_DAY,
+        AdjustmentMethod.QFQ,
+        ("sh.600001", "sz.000002"),
+        progress_callback=events.append,
+    )
+
+    assert len(events) == 2
+    assert events[0]["done"] == 1
+    assert events[0]["total"] == 2
+    assert events[0]["current_code"] == "sh.600001"
+    assert events[1]["done"] == 2
+    assert events[1]["total"] == 2
+
+
 def test_cli_screen_json_is_offline_and_machine_readable(tmp_path: Path) -> None:
     repository = _seed_repository(tmp_path)
     stdout = StringIO()

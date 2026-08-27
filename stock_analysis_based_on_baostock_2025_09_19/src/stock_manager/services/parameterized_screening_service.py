@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 
 from stock_manager.domain import (
@@ -41,6 +41,7 @@ class ParameterizedScreeningService:
         trading_day: date,
         adjustment: AdjustmentMethod,
         codes: Sequence[str] = (),
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
     ) -> tuple[ParameterizedScreeningResult, ...]:
         normalized_dataset_id = dataset_id.strip()
         if not normalized_dataset_id:
@@ -90,7 +91,17 @@ class ParameterizedScreeningService:
         fundamentals_by_code = {item.code: item for item in fundamentals}
         dividends_by_code = self._group_dividends(dividends)
         output: list[ParameterizedScreeningResult] = []
-        for code in selected:
+        total = len(selected)
+        for index, code in enumerate(selected):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "done": index + 1,
+                        "total": total,
+                        "current_code": code,
+                        "phase": "screening",
+                    }
+                )
             context = RuleContext(
                 stocks[code],
                 trading_day,
