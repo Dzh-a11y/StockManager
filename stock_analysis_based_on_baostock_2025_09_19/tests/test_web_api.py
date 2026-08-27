@@ -588,3 +588,16 @@ def test_backfill_batch_progress_callback_updates_state(tmp_path: Path) -> None:
     assert app._sync_progress["batch_total"] == 100
     assert app._sync_progress["current_code"] == "sh.600000"
     assert app._sync_progress["status"] == "running"
+
+
+def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _get(app, "/api/instances")
+    assert status == 200
+    assert "instances" in payload
+
+
+def test_kill_instance_rejects_unknown_pid(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _post(app, "/api/instances/kill", {"pid": 99999999})
+    assert status == 404

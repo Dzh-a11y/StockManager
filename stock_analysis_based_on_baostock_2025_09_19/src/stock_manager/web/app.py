@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -199,6 +200,8 @@ class WebApp:
                 return self._json(200, self._sync_progress)
             if path == "/api/screen/progress":
                 return self._json(200, self._screen_progress)
+            if path == "/api/instances":
+                return self._json(200, {"instances": self._list_instances()})
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -228,6 +231,9 @@ class WebApp:
 
         if method == "POST" and path == "/api/shutdown":
             return self._handle_shutdown(body)
+
+        if method == "POST" and path == "/api/instances/kill":
+            return self._handle_kill_instance(body)
 
         match = self._template_id_from_path(path)
         if match is not None:
@@ -302,6 +308,70 @@ class WebApp:
                 "phase": event.get("phase") or "screening",
             }
         )
+
+    def _list_instances(self) -> list[dict[str, object]]:
+        """Enumerate this host's stock-manager processes (duplicate diagnosis)."""
+        items: list[dict[str, object]] = []
+        try:
+            if os.name == "nt":
+                ps = (
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.CommandLine -match 'stock_manager' } | "
+                    "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                raw = result.stdout.strip()
+                if not raw:
+                    return []
+                import json as _json
+
+                rows = _json.loads(raw)
+                if isinstance(rows, dict):
+                    rows = [rows]
+                for row in rows:
+                    pid = int(row["ProcessId"])
+                    items.append(
+                        {
+                            "pid": pid,
+                            "command": row.get("CommandLine", ""),
+                            "is_self": pid == os.getpid(),
+                        }
+                    )
+            else:
+                result = subprocess.run(
+                    ["ps", "-Ao", "pid=,command="], capture_output=True, text=True, check=False
+                )
+                for line in result.stdout.splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2 and "stock_manager" in parts[1]:
+                        pid = int(parts[0])
+                        items.append(
+                            {"pid": pid, "command": parts[1], "is_self": pid == os.getpid()}
+                        )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        return items
+
+    def _handle_kill_instance(self, body: object) -> Response:
+        data = self._object(body, "body")
+        unknown = set(data) - {"pid"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        pid = data.get("pid")
+        if not isinstance(pid, int):
+            raise BadRequestError("pid must be an integer")
+        if not any(item["pid"] == pid for item in self._list_instances()):
+            raise NotFoundError("no matching stock-manager process")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as error:
+            raise BadRequestError(f"failed to kill pid {pid}: {error}")
+        return self._json(200, {"killed": pid})
 
     def _handle_shutdown(self, body: object) -> Response:
         """Stop the local server process after explicit confirmation.

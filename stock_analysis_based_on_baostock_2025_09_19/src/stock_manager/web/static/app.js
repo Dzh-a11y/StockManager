@@ -571,14 +571,55 @@ async function pollSyncProgress() {
 async function shutdownServer() {
   if (!window.confirm('确定停止本服务进程吗？停止后需要重新启动才能继续使用。')) return;
   const status = $('#shutdown-status');
-  status.hidden = false;
-  status.textContent = '正在停止服务…';
+  status.hidden = false;  status.textContent = '正在停止服务…';
   try {
     await api('POST', '/api/shutdown', { confirm: true });
   } catch (err) {
     // 服务可能在响应前就退出，连接错误同样视为已停止
   }
   status.textContent = '服务已停止，请关闭本页面。';
+}
+
+async function loadInstances() {
+  try {
+    const data = await api('GET', '/api/instances');
+    const list = data.instances || [];
+    const label = $('#instances-label');
+    const ul = $('#instances-list');
+    const note = $('#instances-note');
+    if (!list.length) {
+      label.hidden = true;
+      ul.hidden = true;
+      ul.innerHTML = '';
+      note.hidden = true;
+      return;
+    }
+    label.hidden = false;
+    label.textContent = '当前 ' + list.length + ' 个相同实例在运行';
+    ul.hidden = false;
+    ul.innerHTML = list.map((item) => {
+      const self = item.is_self ? '（当前服务）' : '';
+      return '<li>' + esc('pid ' + item.pid) + ' ' + self +
+        ' <button class="btn btn--danger" data-pid="' + item.pid + '">停止</button>' +
+        '<code>' + esc(item.command || '') + '</code></li>';
+    }).join('');
+    ul.querySelectorAll('button[data-pid]').forEach((btn) => {
+      btn.addEventListener('click', () => killInstance(Number(btn.dataset.pid)));
+    });
+    note.hidden = false;
+    note.textContent = '「停止」会结束该实例进程；若停止的是当前服务，页面会断开，需重新启动。';
+  } catch (e) { /* ignore */ }
+}
+
+async function killInstance(pid) {
+  if (!confirm('确定停止该实例（pid ' + pid + '）？')) return;
+  try {
+    await api('POST', '/api/instances/kill', { pid });
+    toast('已停止实例 pid ' + pid, 'success');
+    setTimeout(loadInstances, 800);
+  } catch (err) {
+    toast('停止失败：' + err.message, 'error');
+  }
 }
 
 /* ---------- results ---------- */
@@ -704,6 +745,7 @@ function bindEvents() {
 async function init() {
   bindEvents();
   startSyncPolling();
+  loadInstances();
   const today = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
