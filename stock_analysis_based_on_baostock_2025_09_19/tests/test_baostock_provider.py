@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -116,6 +117,48 @@ def test_retry_config_is_validated() -> None:
         BaostockProvider(client=object(), max_retries=0)
     with pytest.raises(ValueError, match="retry_backoff_seconds"):
         BaostockProvider(client=object(), retry_backoff_seconds=-1)
+    with pytest.raises(ValueError, match="socket_timeout_seconds"):
+        BaostockProvider(client=object(), socket_timeout_seconds=0)
+
+
+def test_provider_applies_socket_timeout_around_sdk_calls() -> None:
+    observed: list[float | None] = []
+
+    def operation() -> Any:
+        observed.append(socket.getdefaulttimeout())
+        return "ok"
+
+    provider = BaostockProvider(
+        client=object(),
+        socket_timeout_seconds=30.0,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: None,
+    )
+    assert provider._query(operation) == "ok"
+    # 调用期间进程级默认超时被临时设为 30 秒,结束后恢复原值。
+    assert observed == [30.0]
+    assert socket.getdefaulttimeout() is None
+
+
+def test_provider_retries_then_reraises_socket_timeout() -> None:
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def operation() -> Any:
+        attempts["count"] += 1
+        raise socket.timeout("baostock stalled")
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=2,
+        retry_backoff_seconds=0.5,
+        monotonic=lambda: 0.0,
+        sleep=lambda seconds: sleeps.append(seconds),
+    )
+    with pytest.raises(socket.timeout):
+        provider._query(operation)
+    assert attempts["count"] == 2
+    assert sleeps == [0.5]
 
 
 def test_query_retries_transient_server_errors_with_backoff() -> None:

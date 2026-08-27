@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -51,6 +52,7 @@ class BaostockProvider:
         request_interval_seconds: float = 0.2,
         max_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
+        socket_timeout_seconds: float = 10.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
@@ -61,6 +63,8 @@ class BaostockProvider:
             raise ValueError("max_retries must be positive")
         if retry_backoff_seconds < 0:
             raise ValueError("retry_backoff_seconds must be non-negative")
+        if socket_timeout_seconds <= 0:
+            raise ValueError("socket_timeout_seconds must be positive")
         if client is None:
             import baostock as client_module
 
@@ -69,6 +73,7 @@ class BaostockProvider:
         self._request_interval = request_interval_seconds
         self._max_retries = max_retries
         self._retry_backoff = retry_backoff_seconds
+        self._socket_timeout = socket_timeout_seconds
         self._monotonic = monotonic
         self._sleep = sleep
         self._last_request_at: float | None = None
@@ -92,21 +97,38 @@ class BaostockProvider:
     def source_name(self) -> str:
         return "baostock"
 
+    def _call_with_timeout(self, operation: Callable[[], Any]) -> Any:
+        """Run an SDK call under a bounded socket default timeout.
+
+        Baostock's SDK never sets a timeout on its own sockets, so a stalled
+        server (TCP reachable but the handshake/query never answers) would
+        otherwise block the calling thread forever. Applying the process-wide
+        default timeout around each call turns such a stall into
+        ``socket.timeout`` (an ``OSError``) that ``_retry`` treats as transient.
+        """
+        previous = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(self._socket_timeout)
+        try:
+            return operation()
+        finally:
+            socket.setdefaulttimeout(previous)
+
     def _retry(self, operation: Callable[[], Any]) -> Any:
         """Run a baostock SDK call, retrying transient failures with backoff.
 
-        Transient means a network-level ``OSError`` or a result whose
-        ``error_code`` is non-zero (server busy, connection reset, rate limit).
-        Parsing errors raised after a successful request are permanent and are
-        not retried. On exhaustion, the last failure is re-raised (for network
-        errors) or the last bad result is returned so the caller's ``_rows``
-        raises the usual operation-specific error.
+        Transient means a network-level ``OSError`` (including ``socket.timeout``
+        from :meth:`_call_with_timeout`) or a result whose ``error_code`` is
+        non-zero (server busy, connection reset, rate limit). Parsing errors
+        raised after a successful request are permanent and are not retried. On
+        exhaustion, the last failure is re-raised (for network errors) or the
+        last bad result is returned so the caller's ``_rows`` raises the usual
+        operation-specific error.
         """
         last_result: Any = None
         last_network_error: OSError | None = None
         for attempt in range(self._max_retries):
             try:
-                result = operation()
+                result = self._call_with_timeout(operation)
             except OSError as error:
                 last_result = None
                 last_network_error = error
