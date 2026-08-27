@@ -4,7 +4,7 @@
     "template_id": "system-default",
     "revision": 1,
     "name": "系统默认策略",
-    "description": "P1 默认组合迁移并加入年度最低交易量信号",
+    "description": "P1 默认组合迁移并加入年度最低交易量与最低收盘价信号",
     "timezone": "Asia/Shanghai",
     "technical_adjustment": "qfq"
   },
@@ -15,13 +15,14 @@
     "limit_up_breakout": {"enabled": true, "parameters": {"signal_lookback_trading_sessions": 5, "highest_lookback_trading_sessions": 90, "limit_ratio_lower_exclusive": "1.08", "limit_ratio_upper_exclusive": "1.12", "close_below_high_amount": "0.03"}},
     "limit_up_3m": {"enabled": true, "parameters": {"lookback_trading_sessions": 90, "minimum_events": 1, "maximum_events": 3, "limit_ratio_lower_exclusive": "1.08", "limit_ratio_upper_exclusive": "1.12"}},
     "volatility_multiple": {"enabled": true, "parameters": {"lookback_trading_sessions": 180, "maximum_multiple": "2", "minimum_required_sessions": 5}},
-    "annual_min_volume": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_volume": true}}
+    "annual_min_volume": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_volume": true}},
+    "annual_min_close_price": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_close": true}}
   },
   "composition": {
     "operator": "all",
     "groups": [
       {"group_id": "fundamental", "operator": "all", "rules": ["pe_positive", "non_st"]},
-      {"group_id": "signal", "operator": "any", "rules": ["volume_price_5d", "limit_up_breakout", "annual_min_volume"]},
+      {"group_id": "signal", "operator": "any", "rules": ["volume_price_5d", "limit_up_breakout", "annual_min_volume", "annual_min_close_price"]},
       {"group_id": "risk", "operator": "all", "rules": ["limit_up_3m", "volatility_multiple"]}
     ]
   }

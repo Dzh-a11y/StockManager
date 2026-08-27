@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from stock_manager.domain import RuleResult
+from stock_manager.rules.annual_min_close_price import evaluate_annual_min_close_price
 from stock_manager.rules.annual_min_volume import evaluate_annual_min_volume
 from stock_manager.rules.base import (
     ParameterDefinition,
@@ -35,6 +36,13 @@ from stock_manager.rules.volume_price_5d import evaluate_volume_price_5d
 @dataclass(frozen=True, slots=True)
 class NoParameters:
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class AnnualMinClosePriceParameters:
+    lookback_calendar_days: int
+    minimum_required_trading_sessions: int
+    exclude_zero_close: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +538,71 @@ class AnnualMinVolumeRule:
         )
 
 
+class AnnualMinClosePriceRule:
+    definition = RuleDefinition(
+        "annual_min_close_price",
+        "年度最低收盘价",
+        "目标日是否为自然日窗口最低收盘价",
+        (
+            _parameter(
+                "lookback_calendar_days",
+                ParameterType.INTEGER,
+                365,
+                "自然日窗口",
+                "以自然日计算的回看窗口长度；目标日必须是该窗口内收盘价最低的一天。",
+            ),
+            _parameter(
+                "minimum_required_trading_sessions",
+                ParameterType.INTEGER,
+                120,
+                "最少有效交易日数",
+                "窗口内至少要有多少个交易日的数据；不足则判定失败，避免次新股误判。",
+            ),
+            _parameter(
+                "exclude_zero_close",
+                ParameterType.BOOLEAN,
+                True,
+                "排除零收盘价",
+                "统计最低收盘价时是否忽略零收盘价（停牌）的交易日；关闭后零价日也会参与比较。",
+            ),
+        ),
+    )
+
+    def parse_parameters(self, raw: object) -> AnnualMinClosePriceParameters:
+        names = {
+            "lookback_calendar_days",
+            "minimum_required_trading_sessions",
+            "exclude_zero_close",
+        }
+        values = _mapping(raw, names, self.definition.rule_id)
+        return AnnualMinClosePriceParameters(
+            _integer(values, "lookback_calendar_days"),
+            _integer(values, "minimum_required_trading_sessions"),
+            _boolean(values, "exclude_zero_close"),
+        )
+
+    def data_requirement(self, parameters: object) -> RuleDataRequirement:
+        if not isinstance(parameters, AnnualMinClosePriceParameters):
+            raise TypeError("parameters must be AnnualMinClosePriceParameters")
+        return RuleDataRequirement(
+            market_history_unit=WindowUnit.CALENDAR_DAYS,
+            history_length=parameters.lookback_calendar_days,
+        )
+
+    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
+        if not isinstance(parameters, AnnualMinClosePriceParameters):
+            raise TypeError("parameters must be AnnualMinClosePriceParameters")
+        return evaluate_annual_min_close_price(
+            context.daily_bars,
+            context.metadata,
+            context.trading_day,
+            parameters.lookback_calendar_days,
+            parameters.minimum_required_trading_sessions,
+            parameters.exclude_zero_close,
+            context.adjustment,
+        )
+
+
 def build_default_registry() -> RuleRegistry:
     rules: tuple[ScreeningRule, ...] = (
         PePositiveRule(),
@@ -539,5 +612,6 @@ def build_default_registry() -> RuleRegistry:
         LimitUpCountRule(),
         VolatilityRule(),
         AnnualMinVolumeRule(),
+        AnnualMinClosePriceRule(),
     )
     return RuleRegistry(rules)

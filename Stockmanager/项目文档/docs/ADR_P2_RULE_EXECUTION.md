@@ -1,5 +1,5 @@
 ---
-date: 2026-08-25
+date: 2026-08-27
 purpose: 记录 P2 规则三态、模板版本、兼容入口和年度最低量组合归属的架构决策。
 project: StockManager
 status: active
@@ -37,7 +37,7 @@ P1 的 `screen --rules config/rules.json` 继续使用版本 1 配置。P2 增�
 
 ### 年度最低量属于信号组
 
-默认模板把 `annual_min_volume` 放在 `signal` 的 `any` 组，与 `volume_price_5d`、`limit_up_breakout` 任一通过即可。用户模板可以通过受校验的组合配置调整规则，但每条启用规则必须恰好出现一次。
+默认模板把 `annual_min_volume` 与 `annual_min_close_price` 放在 `signal` 的 `any` 组，与 `volume_price_5d`、`limit_up_breakout` 任一通过即可。用户模板可以通过受校验的组合配置调整规则，但每条启用规则必须恰好出现一次。
 
 ### 模板 revision 使用乐观并发契约
 

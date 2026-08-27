@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from stock_manager.rules.annual_min_close_price import evaluate_annual_min_close_price
 from stock_manager.rules.annual_min_volume import evaluate_annual_min_volume
 from stock_manager.rules.builtin import build_default_registry
 from stock_manager.rules.composite import evaluate_composite
@@ -15,6 +16,7 @@ from stock_manager.rules.volume_price_5d import evaluate_volume_price_5d
 
 __all__ = [
     "build_default_registry",
+    "evaluate_annual_min_close_price",
     "evaluate_annual_min_volume",
     "evaluate_composite",
     "evaluate_limit_up_3m",

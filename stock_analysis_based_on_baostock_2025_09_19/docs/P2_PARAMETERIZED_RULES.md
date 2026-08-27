@@ -1,5 +1,5 @@
 ---
-date: 2026-08-25
+date: 2026-08-27
 purpose: 说明 P2 参数化可扩展规则后端的架构、模板契约、规则扩展方式与验收结果。
 project: StockManager
 status: active
@@ -93,13 +93,13 @@ StockManager 是 A 股研究型筛选平台，禁止自动交易；筛选结果�
 - 每条启用规则必须在组合中恰好出现一次。
 - 禁用规则不得进入组合表达式。
 
-默认组合为：基本面组全部满足；信号组任一满足；风险组全部满足。`annual_min_volume` 位于信号组，与量价信号、炸板或假阴线信号构成 `any`。
+默认组合为：基本面组全部满足；信号组任一满足；风险组全部满足。`annual_min_volume` 与 `annual_min_close_price` 位于信号组，与量价信号、炸板或假阴线信号构成 `any`。
 
 ## 数据需求规划
 
 每个已配置规则根据强类型参数声明数据需求。`ScreeningDataPlanner` 合并全部启用规则后，计算统一的行情起点、是否读取基本面以及分红起点。
 
-自然日窗口和交易日窗口保持不同语义：`annual_min_volume` 使用自然日；量价、涨停和波动规则使用交易日条目。服务批量读取本地 Repository 后按股票分组，再构造不可变 `RuleContext`，规则本身不访问存储。
+自然日窗口和交易日窗口保持不同语义：`annual_min_volume` 与 `annual_min_close_price` 使用自然日；量价、涨停和波动规则使用交易日条目。服务批量读取本地 Repository 后按股票分组，再构造不可变 `RuleContext`，规则本身不访问存储。
 
 请求复权、模板复权和数据集元数据复权必须一致。目标日必须存在精确数据集元数据和本地交易日历；数据缺失时明确失败，不会偷偷同步。
 
@@ -115,6 +115,18 @@ StockManager 是 A 股研究型筛选平台，禁止自动交易；筛选结果�
 - 目标日成交量等于窗口最小成交量即通过，并列最低允许通过。
 - 样本不足返回结构化 `FAILED`，不会把局部样本表述为年度结论。
 - `actual_value` 报告 `target_volume`、`minimum_volume`、`minimum_dates` 和 `valid_session_count`。
+- 重复交易日、混合股票代码、目标日与元数据不一致和复权不匹配均显式抛出异常。
+
+## 年度最低收盘价
+
+`annual_min_close_price`（真实入口 `stock_manager.rules.annual_min_close_price.evaluate_annual_min_close_price`）是 `annual_min_volume` 的镜像规则，仅把比较字段由成交量改为收盘价，窗口与参数语义逐一对应：
+
+- 窗口包含两端：`[target_day - lookback_calendar_days, target_day]`。
+- 默认参数为 365 个自然日、至少 120 个有效交易日、排除零收盘价。
+- 只统计 `is_trading=True` 的行情；排零开启时，零价目标日视为缺失或被排除。
+- 目标日收盘价等于窗口最小收盘价即通过，并列最低允许通过。
+- 样本不足返回结构化 `FAILED`，不会把局部样本表述为年度结论。
+- `actual_value` 报告 `target_close`、`minimum_close`、`minimum_dates` 和 `valid_session_count`。
 - 重复交易日、混合股票代码、目标日与元数据不一致和复权不匹配均显式抛出异常。
 
 ## 模板持久化

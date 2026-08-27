@@ -13,6 +13,7 @@ def test_default_registry_contains_all_builtin_rules() -> None:
     ids = tuple(item.rule_id for item in build_default_registry().definitions())
 
     assert ids == (
+        "annual_min_close_price",
         "annual_min_volume",
         "limit_up_3m",
         "limit_up_breakout",
@@ -29,9 +30,15 @@ def test_system_default_template_compiles_all_rules() -> None:
 
     plan = TemplateCompiler(build_default_registry()).compile(parse_template(raw))
 
-    assert len(plan.enabled_rules) == 7
+    assert len(plan.enabled_rules) == 8
     annual = next(item for item in plan.enabled_rules if item.rule_id == "annual_min_volume")
     assert annual.data_requirement.market_history_unit is WindowUnit.CALENDAR_DAYS
     assert annual.data_requirement.history_length == 365
+    close = next(
+        item for item in plan.enabled_rules if item.rule_id == "annual_min_close_price"
+    )
+    assert close.data_requirement.market_history_unit is WindowUnit.CALENDAR_DAYS
+    assert close.data_requirement.history_length == 365
     signal = next(group for group in plan.composition.groups if group.group_id == "signal")
     assert "annual_min_volume" in signal.rule_ids
+    assert "annual_min_close_price" in signal.rule_ids
