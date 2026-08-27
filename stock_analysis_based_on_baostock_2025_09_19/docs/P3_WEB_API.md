@@ -172,7 +172,7 @@ stock-manager web \
 }
 ```
 
-`recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块；`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，前端据此按覆盖率着色。最新交易日不存在时返回全 `null`/空数组。
+`recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`running`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块：`synced`=绿、`running`=Orange（拉取中）、`failed`=红、`missing`=灰、`nontrading`=浅。日常判定以该日 `sync_record` 的实际状态为准；历史窗口内已有 bar 数据但无独立记录的交易日视为 `synced`。`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，前端据此按覆盖率着色。最新交易日不存在时返回全 `null`/空数组。
 
 `GET /api/screen/progress`：返回筛选进度，`{"status":"idle|running|done|error","phase":"screening","done":N,"total":N,"current_code":...,"message":...}`，前端在 `POST /api/screen` 运行期间据此轮询渲染进度条。
 

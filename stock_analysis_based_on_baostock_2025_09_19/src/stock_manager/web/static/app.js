@@ -586,6 +586,7 @@ async function shutdownServer() {
 
 const STATUS_COLORS = {
   synced: '#2ecc71',
+  running: '#f39c12',
   missing: '#95a5a6',
   failed: '#e74c3c',
   nontrading: '#ecf0f1',

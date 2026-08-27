@@ -615,6 +615,29 @@ def test_sync_status_endpoint_summarizes_local_coverage(tmp_path: Path) -> None:
     assert all(band["coverage"] == 0 for band in payload["older_bands"])
 
 
+def test_sync_status_label_reflects_record_status(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    # 有 bar 且无记录/SUCCESS → 绿;RUNNING → 橙;FAILED → 红;无 bar 无记录 → 灰。
+    assert app._sync_status_label(None, True) == "synced"
+    assert app._sync_status_label(
+        SyncRecord("market", TARGET_DAY, SyncStatus.SUCCESS, "fixture",
+                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+                   datetime(2026, 8, 25, 18, tzinfo=SHANGHAI), None), True
+    ) == "synced"
+    assert app._sync_status_label(
+        SyncRecord("market", TARGET_DAY, SyncStatus.RUNNING, "fixture",
+                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+                   None, None), True
+    ) == "running"
+    assert app._sync_status_label(
+        SyncRecord("market", TARGET_DAY, SyncStatus.FAILED, "fixture",
+                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+                   datetime(2026, 8, 25, 18, tzinfo=SHANGHAI), "boom"), True
+    ) == "failed"
+    # 无 bar 且无记录 → 缺失(灰)。
+    assert app._sync_status_label(None, False) == "missing"
+
+
 def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
     app = _app(tmp_path)
     status, payload = _get(app, "/api/instances")

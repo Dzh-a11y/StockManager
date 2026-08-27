@@ -344,6 +344,24 @@ class WebApp:
             }
         )
 
+    def _sync_status_label(self, rec, has_bar: bool) -> str:
+        """Map a sync record to a per-day status label for the visualization.
+
+        A day counts as satisfied (green) when it has bar data and carries no
+        conflicting record — historical days covered by a backfill have bars but
+        no per-day SUCCESS record. An explicit RUNNING record renders amber
+        (fetch in progress) and FAILED renders red; a day with neither bars nor a
+        record is missing (gray).
+        """
+        if rec is not None:
+            if rec.status is SyncStatus.RUNNING:
+                return "running"
+            if rec.status is SyncStatus.FAILED:
+                return "failed"
+            if rec.status is SyncStatus.SUCCESS:
+                return "synced"
+        return "synced" if has_bar else "missing"
+
     def _sync_status(self) -> dict[str, object]:
         """Summarize local data coverage for the sync-date visualization.
 
@@ -375,11 +393,10 @@ class WebApp:
             day = anchor - timedelta(days=i)
             if day not in cal_days:
                 status = "nontrading"
-            elif day in bar_days:
-                status = "synced"
             else:
+                # 以 sync_record 的实际状态为准;历史天有 bar 数据即视为已同步。
                 rec = repo.get_sync_record("market", day)
-                status = "failed" if rec is not None and rec.status is SyncStatus.FAILED else "missing"
+                status = self._sync_status_label(rec, day in bar_days)
             recent.append({"day": day.isoformat(), "status": status})
 
         bands: list[dict[str, object]] = []
