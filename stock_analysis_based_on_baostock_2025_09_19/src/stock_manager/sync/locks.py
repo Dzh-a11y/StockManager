@@ -85,7 +85,16 @@ def persistent_file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as lock_file:
         _ensure_byte(lock_file)
-        _lock_exclusive(lock_file)
+        try:
+            _lock_exclusive(lock_file)
+        except OSError as error:
+            # Windows msvcrt raises EDEADLOCK (errno 36) when another process
+            # holds the lock beyond its retry window; surface a clear message
+            # instead of a cryptic "Resource deadlock avoided".
+            raise OSError(
+                error.errno,
+                f"无法获取同步锁(可能已有同步任务在运行,请稍候或确认只有一个实例): {path.name}",
+            ) from error
         try:
             yield
         finally:
