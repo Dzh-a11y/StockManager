@@ -135,7 +135,7 @@ class WebApp:
                         "phase": "starting",
                         "dataset_id": "market",
                         "adjustment": "qfq",
-                        "message": "正在同步数据…",
+                        "message": "自动回补（补一年数据）…",
                     }
                 )
                 outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
@@ -338,7 +338,7 @@ class WebApp:
             "completed": 0,
             "total": 0,
             "current_code": None,
-            "message": "开始回补",
+            "message": "同步数据（从数据源传入数据）…",
         }
         sync_config = load_sync_config(self._config.sync_config_path)
         provider = self._make_provider(
