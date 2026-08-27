@@ -34,12 +34,13 @@ def test_server_command_uses_venv_and_project_root(launcher) -> None:
     cmd = launcher.server_command()
     assert cmd[0].startswith(str(launcher.VENV_DIR))
     assert cmd[1:4] == ["-m", "stock_manager.cli", "web"]
-    # 路径类参数都相对项目根,且真实存在
-    path_args = [
-        "data/market.sqlite3", "config/rule_templates", "data/user-templates",
-        "src/stock_manager/web/static", "config/sync.json", "data/locks",
-    ]
-    for rel in path_args:
+    # 仓库内资源必须存在;data/ 目录是运行时创建的 gitignored 目录,CI 干净检出里不存在,
+    # 所以这里只断言仓库内的资源,不要求 data/ 存在。
+    for rel in (
+        "config/sync.json",
+        "config/rule_templates",
+        "src/stock_manager/web/static",
+    ):
         assert (launcher.ROOT / rel).exists()
 
 
