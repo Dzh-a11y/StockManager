@@ -1,6 +1,6 @@
 ---
-date: 2026-08-25
-purpose: 说明 StockManager 使用的数据库以及本地 Web UI 的启动方式。
+date: 2026-08-27
+purpose: 说明 StockManager 的功能、内置筛选规则以及 macOS / Windows 下本地 Web 工作台的最新启动方式。
 project: StockManager
 status: active
 ---
@@ -9,39 +9,66 @@ status: active
 
 StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供研究参考，不构成任何投资建议；项目严禁实现自动交易功能。
 
+当前版本：**1.3.1**
+
+## 功能概览
+
+- **本地优先**：行情数据由同步服务从 Baostock 拉取后写入本地 SQLite（`data/market.sqlite3`）；筛选、Web 与 CLI 查询只读本地数据库，断网可运行。
+- **参数化筛选**：内置 8 条可配置规则，模板可开关规则、调整参数与组合。
+- **本地 Web 工作台**：加载/编辑模板、开关规则、修改参数、调整组合、运行筛选并查看逐股结果与进度。
+- **自动补齐**：进入新的已完成交易日后首次启动自动同步补齐历史数据；同一交易日不会重复拉取。
+- **双平台一键启动**：macOS 与 Windows 均支持双击启动，首次运行自动创建虚拟环境并安装依赖。
+
+## 目录结构
+
+- 项目根目录：`/Users/douzihao/StockManager`
+- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`
+- 项目文档：`/Users/douzihao/StockManager/项目文档`
+
 ## 数据库
 
-本地使用 **SQLite**，路径为 `data/market.sqlite3`。市场数据由 `stock-manager sync` 通过 `DataSyncService` 拉取后写入；筛选规则、Web API 与 CLI 查询只读取本地 SQLite，不直接访问外部 Provider。
+本地使用 **SQLite**，路径为 `data/market.sqlite3`（相对于代码仓库）。市场数据由 `stock-manager sync` 通过 `DataSyncService` 拉取后写入；筛选规则、Web API 与 CLI 查询只读取本地 SQLite，不直接访问外部 Provider。交易日以 `Asia/Shanghai` 为准，同步目标为“最新已完成交易日”。
 
-## Web UI 启动
+## 启动方式
 
-先进入代码仓库并安装依赖：
+先进入代码仓库：
 
 ```bash
 cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
-python3 -m pip install '.[dev]'
 ```
 
-### 一键启动（推荐）
+首次运行会自动检测 Python 3.11+、创建 `.venv`、执行 `pip install -e '.[dev]'`（下载 baostock/tzdata 等，约 1–2 分钟），然后启动服务并打开浏览器；之后再次启动秒进，不再安装。服务已在运行时重复点击只会打开浏览器（幂等，不会重复启动）。
 
-**桌面图标(双击即用)**:
-- macOS:把 `scripts/StockManager.command` 放到桌面或程序坞,双击即启动并自动打开浏览器;或运行 `scripts/make_app.sh` 生成带图标的 `StockManager.app`
-- Windows(最傻瓜):把项目拷到 Windows 后,**直接双击 `scripts\StockManager.bat`**——首次会自动装依赖、启动服务、打开浏览器,并**自动在桌面生成带图标的快捷方式**;以后双击桌面图标即可(想手动补救桌面图标可双击 `scripts\setup_windows.bat`)
-- 服务已在运行时再点会直接打开浏览器(幂等,不会重复启动)
+### macOS
 
-**首次双击会自动安装依赖**(两个平台都支持):自动检测 Python 3.11+ → 创建 `.venv` → `pip install -e '.[dev]'`(下载 baostock/tzdata 等,约 1-2 分钟)→ 启动服务 → 打开浏览器。之后再次点击秒进,不再安装。
+- **双击脚本（推荐，最简）**：把 `scripts/StockManager.command` 放到桌面或程序坞，双击即启动并自动打开浏览器。
+  - 注意：该脚本第一行写死了本项目路径；如果整个项目目录移动了，把那一行的路径改成新路径即可。
+- **桌面 App（带图标）**：先运行 `python3 scripts/make_icon.py` 生成图标（若已生成可跳过），再运行 `./scripts/make_app.sh`，在代码仓库根生成 `StockManager.app`，双击图标即可启动。
+- **命令行方式**：
 
-**命令行方式**:
-```bash
-python3 scripts/launcher.py start    # 启动并打开浏览器
-python3 scripts/launcher.py status   # 查看状态
-python3 scripts/launcher.py restart  # 重启
-python3 scripts/launcher.py stop     # 停止
-```
+  ```bash
+  python3 scripts/launcher.py start    # 启动并打开浏览器
+  python3 scripts/launcher.py status   # 查看运行状态
+  python3 scripts/launcher.py restart  # 重启
+  python3 scripts/launcher.py stop     # 停止
+  ```
 
-启动器会自动:检测/创建 `.venv`、安装依赖、检查端口(已在跑则跳过)、写日志到 `data/server.log`、等待就绪后打开浏览器。
+### Windows
 
-### 手动启动(等价,适合排障)
+- **双击启动（推荐，最傻瓜）**：把项目拷到 Windows 后，直接双击 `scripts\StockManager.bat`。首次会自动查找 Python 3.11+、创建 `.venv`、安装依赖、启动服务、打开浏览器，并**自动在桌面生成带图标的 StockManager 快捷方式**；之后双击桌面图标即可。
+- **快捷方式补救**：若桌面图标缺失，双击 `scripts\setup_windows.bat` 重新生成（快捷方式指向 `StockManager.bat`）。
+- **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。
+- **命令行方式**（在代码仓库根执行）：
+
+  ```bat
+  scripts\launcher.py start    & 启动并打开浏览器（首次自动装依赖）
+  ```
+
+  也可直接双击 `scripts\StockManager.bat` 走同一流程。
+
+### 手动启动（等价，适合排障）
+
+不依赖启动器时，用已安装的 CLI 等价启动：
 
 ```bash
 stock-manager web \
@@ -55,4 +82,25 @@ stock-manager web \
   --port 8000
 ```
 
-浏览器打开 `http://127.0.0.1:8000` 进入筛选工作台。
+浏览器打开 `http://127.0.0.1:8000` 进入筛选工作台。日志写入 `data/server.log`，进程信息在 `data/server.pid`。
+
+## 内置筛选规则
+
+规则通过模板配置开关与参数，Web 工作台的规则目录由后端元数据自动生成（`GET /api/rules`）：
+
+| rule_id | 名称 | 说明 |
+| --- | --- | --- |
+| `pe_positive` | PE 下限 | PE TTM 存在并严格大于下限，排除亏损/微利 |
+| `non_st` | 非 ST | 排除 ST 股票 |
+| `volume_price_5d` | 五日四倍量 | 五日量能放大且涨幅达标 |
+| `limit_up_breakout` | 五日炸板与最高价 | 近期涨停、炸板与创阶段新高等形态 |
+| `limit_up_3m` | 三个月涨停 | 三个月内涨停次数区间 |
+| `volatility_multiple` | 波动倍数 | 近期波动相对历史基准不超过上限 |
+| `annual_min_volume` | 年度最低交易量 | 目标日为自然日窗口内成交量最低的一天 |
+| `annual_min_close_price` | 年度最低收盘价 | 目标日为自然日窗口内收盘价最低的一天 |
+
+系统默认模板把基本面（PE、非 ST）设为全部满足、信号组（量价、炸板、年度最低量/最低价）任一满足、风险组（涨停次数、波动）全部满足。
+
+## 文档
+
+项目文档与架构决策记录（ADR）位于 `/Users/douzihao/StockManager/项目文档`，其中 `docs/` 收录各阶段设计、验收与 ADR 明细；`ADR_OVERVIEW.md` 为汇总总体架构决策的总 ADR。
