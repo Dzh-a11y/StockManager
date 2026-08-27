@@ -489,75 +489,6 @@ def _non_st_template() -> dict:
     }
 
 
-def test_sync_endpoint_requires_configuration(tmp_path: Path) -> None:
-    app = _app(tmp_path)
-    status, payload = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
-    )
-    assert status == 400
-    assert payload["error"]["code"] == "BAD_REQUEST"
-
-
-def _sync_app(tmp_path: Path, clock_value: datetime) -> WebApp:
-    database_path = tmp_path / "market.sqlite3"
-    _seed_repository(database_path)
-    locks = tmp_path / "locks"
-    locks.mkdir()
-    config = WebConfig(
-        database_path=database_path,
-        system_template_root=SYSTEM_TEMPLATES,
-        user_template_root=tmp_path / "user-templates",
-        static_root=STATIC_ROOT,
-        sync_config_path=REPO / "config" / "sync.json",
-        lock_directory=locks,
-    )
-    return WebApp(
-        config, provider_factory=_fake_provider, clock=lambda: clock_value
-    )
-
-
-def test_sync_window_endpoint_reports_available_days(tmp_path: Path) -> None:
-    app = _sync_app(tmp_path, datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI))
-
-    status, payload = _get(app, "/api/sync/window")
-
-    assert status == 200
-    assert payload["available"] is True
-    assert payload["latest_completed_trading_day"] == "2026-08-25"
-    assert payload["cutoff_time"] == "17:30:00"
-    assert payload["timezone"] == "Asia/Shanghai"
-
-
-def test_sync_rejects_day_before_cutoff(tmp_path: Path) -> None:
-    # 08-25 10:00 还没到 17:30 截止,当天数据不算"已就绪"
-    app = _sync_app(tmp_path, datetime(2026, 8, 25, 10, 0, tzinfo=SHANGHAI))
-
-    status, payload = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
-    )
-
-    assert status == 409
-    assert "尚未就绪" in payload["error"]["message"]
-
-
-def test_sync_allows_completed_day(tmp_path: Path) -> None:
-    # 08-25 18:00 已过 17:30 截止,当天可以同步
-    app = _sync_app(tmp_path, datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI))
-
-    status, payload = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
-    )
-
-    assert status == 200
-    assert payload["status"] == "SUCCESS"
-
-
 def test_shutdown_endpoint_requires_confirmation(tmp_path: Path) -> None:
     app = _app(tmp_path)
     status, payload = _post(app, "/api/shutdown", {})
@@ -586,30 +517,9 @@ def test_shutdown_endpoint_invokes_handler_after_confirmation(tmp_path: Path) ->
     assert calls == [True]
 
 
-def test_sync_populates_local_data_then_screen_reads_it(tmp_path: Path) -> None:
-    db = tmp_path / "market.sqlite3"
-    # Create the (empty) local schema so startup validation passes.
-    SQLiteRepository(db)
-    locks = tmp_path / "locks"
-    locks.mkdir()
-    config = WebConfig(
-        database_path=db,
-        system_template_root=SYSTEM_TEMPLATES,
-        user_template_root=tmp_path / "user-templates",
-        static_root=STATIC_ROOT,
-        sync_config_path=REPO / "config" / "sync.json",
-        lock_directory=locks,
-    )
-    app = WebApp(config, provider_factory=_fake_provider)
-
-    status, payload = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
-    )
-    assert status == 200
-    assert payload["status"] == "SUCCESS"
-    assert payload["skipped"] is False
+def test_screen_reads_seeded_local_data(tmp_path: Path) -> None:
+    # 手动同步按钮已移除;数据由启动自动回补/CLI 写入。这里直接对已种入的本地数据筛选。
+    app = _app(tmp_path)
 
     status, screen = _post(
         app,
@@ -647,49 +557,19 @@ def test_sync_progress_endpoint_tracks_state(tmp_path: Path) -> None:
     assert status == 200
     assert progress["status"] == "idle"
 
-    status, _ = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq", "retry": True},
+    # 启动自动回补通过这两个处理器写进度;这里直接驱动它们验证端点。
+    app._on_backfill_progress(
+        {"phase": "daily_bars", "completed": 12, "total": 100, "current_code": "sh.600000"}
     )
-    assert status == 200
-
+    app._on_backfill_batch_progress(
+        {"phase": "daily_bars", "index": 3, "total": 100, "current_code": "sh.600003"}
+    )
     status, progress = _get(app, "/api/sync/progress")
     assert status == 200
-    assert progress["status"] == "done"
-    assert progress["dataset_id"] == "market"
-    assert progress["trading_day"] == TARGET_DAY.isoformat()
-
-
-def test_sync_endpoint_rejects_while_backfill_running(tmp_path: Path) -> None:
-    db = tmp_path / "market.sqlite3"
-    SQLiteRepository(db)
-    locks = tmp_path / "locks"
-    locks.mkdir()
-    config = WebConfig(
-        database_path=db,
-        system_template_root=SYSTEM_TEMPLATES,
-        user_template_root=tmp_path / "user-templates",
-        static_root=STATIC_ROOT,
-        sync_config_path=REPO / "config" / "sync.json",
-        lock_directory=locks,
-    )
-    app = WebApp(config, provider_factory=_fake_provider)
-    app._sync_progress = {
-        "status": "running",
-        "phase": "backfill",
-        "dataset_id": "market",
-        "adjustment": "qfq",
-        "message": "启动回补历史数据",
-    }
-
-    status, payload = _post(
-        app,
-        "/api/sync",
-        {"dataset_id": "market", "trading_day": TARGET_DAY.isoformat(), "adjustment": "qfq"},
-    )
-    assert status == 409
-    assert payload["error"]["code"] == "CONFLICT"
+    assert progress["status"] == "running"
+    assert progress["phase"] == "daily_bars"
+    assert progress["completed"] == 12
+    assert progress["batch_completed"] == 3
 
 
 def test_backfill_batch_progress_callback_updates_state(tmp_path: Path) -> None:

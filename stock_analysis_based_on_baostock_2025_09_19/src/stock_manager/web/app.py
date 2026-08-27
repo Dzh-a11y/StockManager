@@ -7,7 +7,7 @@ import os
 import signal
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Callable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -21,7 +21,6 @@ from stock_manager.services.parameterized_screening_service import (
 from stock_manager.storage.sqlite_repo import SQLiteRepository
 from stock_manager.sync import (
     DataSyncService,
-    latest_completed_trading_day,
     load_sync_config,
 )
 from stock_manager.sync.data_sync_service import SHANGHAI
@@ -33,7 +32,6 @@ from stock_manager.web.config import WebConfig
 from stock_manager.web.errors import (
     ApiError,
     BadRequestError,
-    ConflictError,
     NotFoundError,
     map_exception,
 )
@@ -198,8 +196,6 @@ class WebApp:
                 )
             if path == "/api/sync/progress":
                 return self._json(200, self._sync_progress)
-            if path == "/api/sync/window":
-                return self._json(200, self._sync_window())
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -226,9 +222,6 @@ class WebApp:
 
         if method == "POST" and path == "/api/screen":
             return self._handle_screen(body)
-
-        if method == "POST" and path == "/api/sync":
-            return self._handle_sync(body)
 
         if method == "POST" and path == "/api/shutdown":
             return self._handle_shutdown(body)
@@ -271,98 +264,6 @@ class WebApp:
             screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
         )
 
-    def _sync_window(self) -> dict[str, object]:
-        """Describe which trading days may be manually synced right now.
-
-        Mirrors the startup ``sync_missing_on_startup`` policy: a day is only
-        available once it has closed at the configured ``cutoff_time`` in
-        ``Asia/Shanghai``. The frontend uses this to disable the sync button
-        for days whose market data does not exist yet.
-        """
-        if self._config.sync_config_path is None or self._config.lock_directory is None:
-            return {"available": False, "reason": "not_configured"}
-        sync_config = load_sync_config(self._config.sync_config_path)
-        now = self._clock()
-        if now.tzinfo is None or now.utcoffset() is None:
-            now = now.replace(tzinfo=SHANGHAI)
-        days = self._services.repository.get_trading_days(
-            now.date() - timedelta(days=45), now.date()
-        )
-        if not days:
-            return {"available": False, "reason": "no_calendar"}
-        latest = latest_completed_trading_day(now, days, sync_config.cutoff_time)
-        return {
-            "available": True,
-            "latest_completed_trading_day": latest.isoformat(),
-            "cutoff_time": sync_config.cutoff_time.isoformat(),
-            "timezone": "Asia/Shanghai",
-            "now": now.isoformat(),
-        }
-
-    def _handle_sync(self, body: object) -> Response:
-        if self._config.sync_config_path is None or self._config.lock_directory is None:
-            raise BadRequestError("sync is not configured on this server")
-        data = self._object(body, "body")
-        unknown = set(data) - {"dataset_id", "trading_day", "adjustment", "retry"}
-        if unknown:
-            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
-        required = {"dataset_id", "trading_day", "adjustment"}
-        missing = required - set(data)
-        if missing:
-            raise BadRequestError(f"missing field(s): {', '.join(sorted(missing))}")
-        dataset_id = self._text(data["dataset_id"], "dataset_id")
-        trading_day = self._iso_date(data["trading_day"])
-        adjustment = self._adjustment(data["adjustment"])
-        retry = data.get("retry", False)
-        if not isinstance(retry, bool):
-            raise BadRequestError("retry must be a boolean")
-        if self._sync_progress.get("status") == "running":
-            phase = self._sync_progress.get("phase", "")
-            raise ConflictError(
-                f"已有同步任务正在进行（阶段：{phase or 'unknown'}），请等待完成后再试"
-            )
-        window = self._sync_window()
-        if window["available"]:
-            latest = date.fromisoformat(str(window["latest_completed_trading_day"]))
-            if trading_day > latest:
-                raise ConflictError(
-                    f"{trading_day.isoformat()} 的行情数据尚未就绪"
-                    f"（当日 {window['cutoff_time']} 后开放，或选择更早的交易日）"
-                )
-        self._sync_progress = {
-            "status": "running",
-            "dataset_id": dataset_id,
-            "trading_day": trading_day.isoformat(),
-            "adjustment": adjustment.value,
-            "phase": "starting",
-            "completed": 0,
-            "total": 0,
-            "current_code": None,
-            "message": "同步数据（从数据源传入数据）…",
-        }
-        sync_config = load_sync_config(self._config.sync_config_path)
-        provider = self._make_provider(
-            request_interval_seconds=sync_config.minimum_request_interval_seconds,
-            progress_callback=self._on_sync_progress,
-        )
-        service = DataSyncService(
-            provider,
-            self._services.repository,
-            self._config.lock_directory,
-            sync_config,
-        )
-        try:
-            # 与启动时的一次性 360 天拉取走同一机制:全窗口分批回补 + checkpoint
-            # 续传 + 失败标记不设门槛(不存在逐日 sync 的 RetryRequiredError 卡死)。
-            outcome = service.backfill_history(dataset_id, trading_day, adjustment)
-        except Exception:
-            self._sync_progress["status"] = "error"
-            self._sync_progress["message"] = "synchronization failed"
-            raise
-        self._sync_progress["status"] = "done"
-        self._sync_progress["message"] = outcome.status.value
-        return self._json(200, to_jsonable(outcome))
-
     def _handle_shutdown(self, body: object) -> Response:
         """Stop the local server process after explicit confirmation.
 
@@ -400,25 +301,6 @@ class WebApp:
         return BaostockProvider(
             request_interval_seconds=request_interval_seconds,
             progress_callback=progress_callback,
-        )
-
-    def _on_sync_progress(self, event: dict[str, object]) -> None:
-        phase = event.get("phase")
-        index = event.get("index")
-        total = event.get("total")
-        code = event.get("current_code")
-        completed = index if isinstance(index, int) else 0
-        self._sync_progress.update(
-            {
-                "status": "running",
-                "phase": phase,
-                "completed": completed,
-                "total": total,
-                "current_code": code,
-                "batch_phase": phase,
-                "batch_completed": completed,
-                "batch_total": total,
-            }
         )
 
     def _on_backfill_batch_progress(self, event: dict[str, object]) -> None:

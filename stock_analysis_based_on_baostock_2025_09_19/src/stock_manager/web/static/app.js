@@ -14,7 +14,6 @@ const state = {
   result: null,
   resultFilter: 'all',
   selectedCode: null,
-  syncWindow: null,    // {available, latest_completed_trading_day, cutoff_time, ...}
 };
 
 /* ---------- small helpers ---------- */
@@ -469,45 +468,6 @@ async function runScreen() {
   }
 }
 
-function syncButtonDisabledReason() {
-  const w = state.syncWindow;
-  if (!w) return null;
-  if (!w.available) {
-    return w.reason === 'not_configured'
-      ? '同步未配置（缺少 --sync-config / --lock-dir）'
-      : null;
-  }
-  const day = $('#trading-day').value;
-  if (day && day > w.latest_completed_trading_day) {
-    return '该交易日行情尚未就绪（当日 ' + w.cutoff_time + ' 后开放，或选择更早的交易日）';
-  }
-  return null;
-}
-function updateSyncButton() {
-  const btn = $('#sync-data');
-  const hint = $('#sync-window-hint');
-  const reason = syncButtonDisabledReason();
-  const busy = btn.dataset.busy === 'true';
-  btn.disabled = busy || reason !== null;
-  if (busy) {
-    hint.hidden = false;
-    hint.textContent = '已有同步任务正在进行,请等待完成后再试…';
-  } else if (reason) {
-    hint.hidden = false;
-    hint.textContent = reason;
-  } else {
-    hint.hidden = true;
-  }
-}
-async function loadSyncWindow() {
-  try {
-    const w = await api('GET', '/api/sync/window');
-    state.syncWindow = w;
-    if (w.available) $('#trading-day').max = w.latest_completed_trading_day;
-  } catch (e) { /* 未配置或接口不可用时保持按钮可用 */ }
-  updateSyncButton();
-}
-
 let syncPollTimer = null;
 function startSyncPolling() {
   if (syncPollTimer) return;
@@ -522,10 +482,7 @@ function renderSyncProgress(p) {
   const batchTrack = $('#sync-batch-track');
   const batchFill = $('#sync-batch-fill');
   const batchLabel = $('#sync-batch-label');
-  const btn = $('#sync-data');
   const active = p && (p.status === 'running' || p.status === 'error');
-  btn.dataset.busy = active ? 'true' : 'false';
-  updateSyncButton();
   if (!active) {
     track.hidden = true;
     current.hidden = true;
@@ -569,39 +526,6 @@ async function pollSyncProgress() {
     const p = await api('GET', '/api/sync/progress');
     renderSyncProgress(p);
   } catch (e) { /* ignore transient poll errors */ }
-}
-
-async function syncData() {
-  const cond = runtimeConditions();
-  if (!cond.dataset_id) { toast('请填写数据集。', 'warn'); return; }
-  if (!cond.trading_day) { toast('请选择交易日。', 'warn'); return; }
-  const progress = $('#sync-progress');
-  progress.hidden = false;
-  progress.textContent = '正在启动同步…';
-  const btn = $('#sync-data');
-  btn.dataset.busy = 'true';
-  updateSyncButton();
-  startSyncPolling();
-  try {
-    const data = await api('POST', '/api/sync', {
-      dataset_id: cond.dataset_id,
-      trading_day: cond.trading_day,
-      adjustment: cond.adjustment,
-      retry: true,
-    });
-    if (data.skipped) {
-      toast('数据已存在，跳过拉取。', 'warn');
-    } else if (data.status === 'SUCCESS') {
-      toast('同步成功：' + cond.dataset_id + ' @ ' + cond.trading_day, 'success');
-    } else {
-      toast('同步状态：' + data.status, 'warn');
-    }
-  } catch (err) {
-    toast('同步失败：' + err.message, 'error');
-  } finally {
-    btn.dataset.busy = 'false';
-    updateSyncButton();
-  }
 }
 
 async function shutdownServer() {
@@ -677,8 +601,6 @@ function buildDetail(r) {
 /* ---------- event wiring ---------- */
 function bindEvents() {
   $('#run-screen').addEventListener('click', runScreen);
-  $('#sync-data').addEventListener('click', syncData);
-  $('#trading-day').addEventListener('change', updateSyncButton);
   $('#shutdown-server').addEventListener('click', shutdownServer);
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
@@ -742,7 +664,6 @@ function bindEvents() {
 async function init() {
   bindEvents();
   startSyncPolling();
-  loadSyncWindow();
   const today = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
