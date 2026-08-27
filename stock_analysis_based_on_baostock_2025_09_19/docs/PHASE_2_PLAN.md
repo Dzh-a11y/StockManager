@@ -318,7 +318,7 @@ SKIPPED
   - P2 端到端测试。
   - 规则扩展示例测试。
   - 更新后的架构、模板、规则和 CLI 文档。
-  - Obsidian 项目文档同步副本。
+  - Obsidian `project_doc` 同步副本。
 - **验收条件**：
   - 全部测试默认离线并使用固定 fixtures 或临时 SQLite。
   - 测试证明筛选路径不构建、不持有、不调用 Provider。

@@ -23,7 +23,7 @@ StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供�
 
 - 项目根目录：`/Users/douzihao/StockManager`
 - 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`
-- 项目文档：`/Users/douzihao/StockManager/项目文档`
+- 项目文档（project_doc）：`/Users/douzihao/StockManager/project_doc`
 
 ## 数据库
 
@@ -103,4 +103,4 @@ stock-manager web \
 
 ## 文档
 
-项目文档与架构决策记录（ADR）位于 `/Users/douzihao/StockManager/项目文档`，其中 `docs/` 收录各阶段设计、验收与 ADR 明细；`ADR_OVERVIEW.md` 为汇总总体架构决策的总 ADR。
+项目文档与架构决策记录（ADR）位于 `/Users/douzihao/StockManager/project_doc`，其中 `docs/` 收录各阶段设计、验收与 ADR 明细；`ADR_OVERVIEW.md` 为汇总总体架构决策的总 ADR。

@@ -37,12 +37,11 @@ status: active
 
 - 项目根目录：`/Users/douzihao/StockManager`。
 - 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
-- Obsidian Vault：`/Users/douzihao/StockManager/Stockmanager`。
-- 项目文档目录：`/Users/douzihao/StockManager/Stockmanager/项目文档`。
+- 项目文档目录（project_doc）：`/Users/douzihao/StockManager/project_doc`。
 - 所有仓库相对路径均以上述代码仓库为基准解析。
 
-- Obsidian Vault `/Users/douzihao/StockManager/Stockmanager` 是开发时默认的项目知识与技术文档来源。
-- 每次开发开始前，必须优先读取 Vault 的 `项目文档` 目录。
+- 项目文档目录：`/Users/douzihao/StockManager/project_doc` 是开发时默认的项目知识与技术文档来源。
+- 每次开发开始前，必须优先读取 Vault 的 `project_doc` 目录。
 - Obsidian 只保存项目资料、设计、需求、决策和开发记录，**不是**股票行情或财务数据 Provider。
 - 当前股票市场数据源仍为 Baostock，Provider 接口必须保持可替换。
 - 代码仓库是代码事实来源，Obsidian 是文档事实来源。
@@ -251,8 +250,8 @@ Qwen 默认不知道 `AGENTS.md`、Obsidian Vault、仓库源码、历史对话�
 
 ### 10.2 Obsidian 同步
 
-- 文档新增或修改后，必须同步到 Obsidian Vault：`/Users/douzihao/StockManager/Stockmanager`。
-- Vault 内统一存放在 `项目文档` 目录，并尽量保持源项目的相对目录结构。
+- 文档新增或修改后，必须同步到 Obsidian Vault：`/Users/douzihao/StockManager/project_doc`。
+- Vault 内统一存放在 `project_doc` 目录，并尽量保持源项目的相对目录结构。
 - 同名文档已经存在时必须更新原副本，禁止反复创建带日期后缀的重复副本。
 - 文档同步是完成定义的一部分；没有完成同步，不得将任务标记为完成。
 - 本 `AGENTS.md` 自身也必须遵守本节规定。
