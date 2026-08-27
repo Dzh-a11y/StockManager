@@ -442,6 +442,14 @@ class DataSyncService:
         if not dataset_id.strip():
             raise ValueError("dataset_id must not be empty")
         target = self._latest_completed_trading_day()
+        # 若保留窗口内存在 FAILED 的交易日,把回补目标退回到最早的失败日,
+        # 以便重新拉取那段未能完整同步的缺口(否则会被最新 checkpoint 掩盖)。
+        window_start = target - timedelta(days=self._config.retention_days)
+        first_failed = self._repository.earliest_failed_day(
+            dataset_id, window_start, target
+        )
+        if first_failed is not None:
+            target = first_failed
         record = self._repository.get_sync_record(dataset_id, target)
         if record is not None and record.status is SyncStatus.SUCCESS:
             return None
@@ -524,6 +532,17 @@ class DataSyncService:
                         print(
                             f"增量回补:上次覆盖到 {covered_end.isoformat()},"
                             f"本次只拉 {bars_start.isoformat()} 起的交易日"
+                        )
+                    # 若保留窗口内存在 FAILED 的交易日(夹在已成功天之间),把增量起点
+                    # 退回最早的失败日,避免其被 covered_end 掩盖而永久跳过。
+                    first_failed = self._repository.earliest_failed_day(
+                        dataset_id, start, as_of
+                    )
+                    if first_failed is not None and first_failed < bars_start:
+                        bars_start = first_failed
+                        print(
+                            f"发现失败日 {first_failed.isoformat()},"
+                            f"增量起点退回该日重新拉取"
                         )
                     total_units = 2 * len(selected_codes)
                     done_units = 0

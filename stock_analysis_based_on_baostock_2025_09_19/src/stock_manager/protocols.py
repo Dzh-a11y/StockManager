@@ -109,6 +109,13 @@ class LocalRepositoryProtocol(Protocol):
         adjustment: AdjustmentMethod,
     ) -> set[date]: ...
 
+    def earliest_failed_day(
+        self,
+        dataset_id: str,
+        start: date,
+        end: date,
+    ) -> date | None: ...
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: ...
 
     def get_daily_bars(

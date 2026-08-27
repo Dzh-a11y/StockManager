@@ -419,6 +419,33 @@ class SQLiteRepository:
             ).fetchall()
         return {date.fromisoformat(row["trading_day"]) for row in rows}
 
+    def earliest_failed_day(
+        self,
+        dataset_id: str,
+        start: date,
+        end: date,
+    ) -> date | None:
+        """Return the earliest sync day marked FAILED in ``[start, end]``.
+
+        Used by the backfill incremental tail so a day that partially failed but
+        was not yet re-run does not get skipped over by a later checkpoint's
+        ``covered_end``.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT MIN(trading_day) AS day FROM sync_runs
+                   WHERE dataset_id = ? AND status = ?
+                     AND trading_day BETWEEN ? AND ?""",
+                (
+                    dataset_id,
+                    SyncStatus.FAILED.value,
+                    start.isoformat(),
+                    end.isoformat(),
+                ),
+            ).fetchone()
+        day = row["day"]
+        return None if day is None else date.fromisoformat(day)
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]:
         with self._connect() as connection:
             row = connection.execute(

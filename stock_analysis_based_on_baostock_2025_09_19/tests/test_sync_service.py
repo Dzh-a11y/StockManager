@@ -874,6 +874,88 @@ def test_backfill_history_incremental_tail_only_fetches_new_days(
     assert repository.latest_backfill_cover_date("market", AdjustmentMethod.QFQ) == date(2026, 8, 26)
 
 
+def test_backfill_on_startup_goes_back_to_refresh_a_failed_day(tmp_path: Path) -> None:
+    """A FAILED day sandwiched between later SUCCESS days must be re-fetched.
+
+    Recent checkpoints push ``covered_end`` forward, so the incremental tail used
+    to start after the failed day and skip it forever. ``backfill_on_startup``
+    must pull the target ``as_of`` back to the earliest FAILED trading day so the
+    gap is refreshed and re-marked SUCCESS.
+    """
+    days = (
+        date(2026, 8, 24),
+        date(2026, 8, 25),
+        date(2026, 8, 26),
+    )
+    now = datetime(2026, 8, 26, 20, tzinfo=SHANGHAI)
+    config = SyncConfig(
+        time(17, 30), timedelta(minutes=5), 0, 30, 3, retention_days=10
+    )
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+
+    def provider() -> FixtureProvider:
+        stocks = tuple(
+            StockIdentity(f"sh.{600000 + i:06d}", f"股{i}", "SSE", False, None, None)
+            for i in range(250)
+        )
+        bars = tuple(
+            DailyBar(
+                s.code, d, Decimal("10"), Decimal("11"), Decimal("9"),
+                Decimal("10.5"), Decimal("10"), Decimal("1000"), Decimal("10500"), True,
+            )
+            for s in stocks for d in days
+        )
+        return FixtureProvider(
+            trading_days=days, stocks=stocks, bars=bars,
+            fundamentals=(), dividends=(),
+        )
+
+    def snapshot(repository: SQLiteRepository, day: date) -> None:
+        p = provider()
+        metadata = DatasetMetadata("market", day, "fixture", now, AdjustmentMethod.QFQ)
+        bars = tuple(b for b in p._bars if b.trading_day == day)
+        success = SyncRecord(
+            "market", day, SyncStatus.SUCCESS, "fixture",
+            AdjustmentMethod.QFQ, now, now, None,
+        )
+        repository.save_market_snapshot(p._stocks, bars, (), (), days, metadata, success)
+        for offset in range(0, len(p._stocks), 100):
+            chunk = tuple(s.code for s in p._stocks[offset : offset + 100])
+            repository.mark_chunk_complete(
+                "market", day, AdjustmentMethod.QFQ, offset // 100, chunk
+            )
+
+    snapshot(repository, date(2026, 8, 24))
+    snapshot(repository, date(2026, 8, 26))
+    # 8/25 上次回补失败,数据行为空;它的 checkpoint 缺失。
+    repository.save_sync_record(
+        SyncRecord(
+            "market", date(2026, 8, 25), SyncStatus.FAILED, "fixture",
+            AdjustmentMethod.QFQ, now, now, "boom",
+        )
+    )
+    assert repository.latest_backfill_cover_date("market", AdjustmentMethod.QFQ) == date(2026, 8, 26)
+
+    p = provider()
+    recording = _RecordingProvider(
+        trading_days=p._trading_days, stocks=p._stocks, bars=p._bars,
+        fundamentals=p._fundamentals, dividends=p._dividends,
+    )
+    service = DataSyncService(
+        recording, repository, tmp_path / "locks", config,
+        clock=MutableClock(now),
+    )
+
+    outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+
+    assert outcome is not None
+    assert outcome.status is SyncStatus.SUCCESS
+    # 目标 as_of 已退回到 8/25,重新拉取并写回 SUCCESS。
+    assert repository.get_sync_record("market", date(2026, 8, 25)).status is SyncStatus.SUCCESS
+    assert recording.bar_ranges, "expected at least one daily-bars fetch"
+    assert any(rng[0] <= date(2026, 8, 25) for rng in recording.bar_ranges)
+
+
 def test_sync_missing_auto_retries_failed_day_after_cooldown(tmp_path: Path) -> None:
     clock = MutableClock(NOW)
     provider = _provider()
