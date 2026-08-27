@@ -153,36 +153,19 @@ stock-manager web \
 
 `bars` 按交易日升序，最多返回 `days` 根；`Decimal` 字段序列化为十进制字符串。接口只读本地 SQLite，不访问 Provider；指定复权方式没有本地数据集（且未提供 `end`）时返回 `404`；参数缺失或非法返回 `400`；本地无该股票数据时返回 `200` 与空 `bars`。
 
-### 数据回补（启动自动）与数据状态
+### 同步
 
-手动同步入口已移除（软件不常驻电脑，数据由 Web 启动时的自动回补写入，或在需要时用 `stock-manager sync` CLI 手动执行）。Web 启动时若配置了同步（`--sync-config`、`--lock-dir`），会自动回补一年数据并做增量 tail；不配置同步则筛选只读取本地已有数据。
-
-`GET /api/sync/progress`：返回自动回补进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","batch_phase":...,"batch_completed":N,"batch_total":N,"completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
-
-`GET /api/sync/status`：返回本地数据覆盖概览，用于界面上的"数据状态"卡片：
+`POST /api/sync`（需在启动时提供 `--sync-config` 与 `--lock-dir`；未配置时返回 `400`）：
 
 ```json
-{
-  "latest_synced_trading_day": "2026-08-25",
-  "coverage_start": "2025-08-31",
-  "coverage_end": "2026-08-25",
-  "stocks_count": 2,
-  "recent_days": [{"day": "2026-08-25", "status": "synced"}, ...],
-  "older_bands": [{"start": "2026-06-27", "end": "2026-07-26", "coverage": 0.0}, ...]
-}
+{"dataset_id": "market", "trading_day": "2026-08-25", "adjustment": "qfq", "retry": false}
 ```
 
-`recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块；`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，前端据此按覆盖率着色。最新交易日不存在时返回全 `null`/空数组。
+响应为 `SyncOutcome`：`dataset_id`、`trading_day`、`status`（`SUCCESS`/`FAILED`/`PENDING`/`RUNNING`）、`skipped`、`warning`、`metadata`。成功 `200`；冷却/需重试返回 `409`；同步失败返回 `500`。
 
-`GET /api/screen/progress`：返回筛选进度，`{"status":"idle|running|done|error","phase":"screening","done":N,"total":N,"current_code":...,"message":...}`，前端在 `POST /api/screen` 运行期间据此轮询渲染进度条。
+同步由后端调用 `DataSyncService`，浏览器不直接访问 Baostock，仍遵守单一入口、文件/进程锁、防重复与速率限制。
 
-### 停止服务与多实例
-
-`POST /api/shutdown`：请求体 `{"confirm": true}`。确认后向本进程发送 `SIGTERM`（延迟 0.5 秒以确保响应先返回），用于在界面内直接结束服务进程，无需进入终端。未确认（`confirm` 缺失或非 `true`）返回 `400`。停止后需重新执行 `stock-manager web` 启动命令。
-
-`GET /api/instances`：返回本机正在运行的 `stock-manager` 进程列表，`{"instances":[{"pid":N,"command":"...","is_self":true|false}, ...]}`，用于诊断重复实例（避免文件/进程锁的 `Errno36` EDEADLOCK 冲突）。当前服务所在进程标记 `is_self`。
-
-`POST /api/instances/kill`：请求体 `{"pid": N}`。对指定进程发送 `SIGTERM`，用于在界面内直接停止某个重复实例，无需进入终端。进程不存在返回 `404`；发送失败返回 `400`。
+`GET /api/sync/progress`：返回同步进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
 ## 错误映射
 
@@ -198,4 +181,4 @@ stock-manager web \
 
 ## 本地优先边界
 
-Web 启动时由受控配置提供 SQLite、模板根目录和静态目录；浏览器不能决定任何文件路径。模板必须经过 `parse_template` 与 `TemplateCompiler`，前端校验不能替代后端校验。筛选（`POST /api/screen`）只读本地 SQLite。启动时的自动回补（`backfill_on_startup`）由后端调用 `DataSyncService`，作为唯一允许访问 Baostock 的入口；浏览器不直接访问 Provider，仍遵守单一入口、锁、防重复与速率限制。
+Web 启动时由受控配置提供 SQLite、模板根目录和静态目录；浏览器不能决定任何文件路径。模板必须经过 `parse_template` 与 `TemplateCompiler`，前端校验不能替代后端校验。筛选（`POST /api/screen`）只读本地 SQLite。同步（`POST /api/sync`）由后端调用 `DataSyncService`，作为唯一允许访问 Baostock 的入口；浏览器不直接访问 Provider，仍遵守单一入口、锁、防重复与速率限制。

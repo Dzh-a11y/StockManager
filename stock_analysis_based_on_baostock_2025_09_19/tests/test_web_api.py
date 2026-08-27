@@ -130,6 +130,13 @@ def _get(app: WebApp, path: str) -> tuple[int, object]:
     return status, json.loads(data.decode("utf-8")) if data else None
 
 
+def _get_query(app: WebApp, path: str, query: dict[str, str]) -> tuple[int, object]:
+    status, _content_type, data = app.route(
+        "GET", path, {key: [value] for key, value in query.items()}, None
+    )
+    return status, json.loads(data.decode("utf-8")) if data else None
+
+
 def _delete(app: WebApp, path: str, body: object) -> tuple[int, object]:
     status, _content_type, data = app.route(
         "DELETE", path, {}, json.dumps(body).encode("utf-8")
@@ -619,3 +626,101 @@ def test_kill_instance_rejects_unknown_pid(tmp_path: Path) -> None:
     app = _app(tmp_path)
     status, payload = _post(app, "/api/instances/kill", {"pid": 99999999})
     assert status == 404
+
+
+# ---------- local daily bars (K-line source) ----------
+def test_bars_returns_recent_local_daily_bars(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _get_query(
+        app,
+        "/api/bars",
+        {"code": "sh.600001", "adjustment": "qfq", "end": "2026-08-25", "days": "250"},
+    )
+    assert status == 200
+    assert payload["code"] == "sh.600001"
+    assert payload["adjustment"] == "qfq"
+    assert payload["end"] == "2026-08-25"
+    bars = payload["bars"]
+    # 种子数据覆盖 6 个交易日(2026-08-20..08-25)。
+    assert len(bars) == 6
+    assert [bar["trading_day"] for bar in bars] == [
+        "2026-08-20",
+        "2026-08-21",
+        "2026-08-22",
+        "2026-08-23",
+        "2026-08-24",
+        "2026-08-25",
+    ]
+    last = bars[-1]
+    assert last["close"] == "109"
+    assert last["open"] == "100"
+    assert last["high"] == "109"
+    assert last["low"] == "99"
+    assert last["volume"] == "400"
+    assert last["amount"] == "1000"
+    assert last["is_trading"] is True
+    for bar in bars:
+        assert set(bar) == {
+            "code",
+            "trading_day",
+            "open",
+            "high",
+            "low",
+            "close",
+            "preclose",
+            "volume",
+            "amount",
+            "is_trading",
+        }
+
+
+def test_bars_respects_days_limit_and_defaults_end_to_latest_synced_day(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    status, payload = _get_query(
+        app, "/api/bars", {"code": "sh.600001", "adjustment": "qfq", "days": "3"}
+    )
+    assert status == 200
+    assert payload["end"] == TARGET_DAY.isoformat()
+    assert [bar["trading_day"] for bar in payload["bars"]] == [
+        "2026-08-23",
+        "2026-08-24",
+        "2026-08-25",
+    ]
+
+
+def test_bars_unknown_code_returns_empty_list(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _get_query(
+        app, "/api/bars", {"code": "sh.999999", "adjustment": "qfq"}
+    )
+    assert status == 200
+    assert payload["bars"] == []
+
+
+def test_bars_missing_adjustment_dataset_returns_404(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    # 种子数据只有 qfq 数据集;hfq 无最新元数据,end 缺省时明确 404。
+    status, payload = _get_query(
+        app, "/api/bars", {"code": "sh.600001", "adjustment": "hfq"}
+    )
+    assert status == 404
+    assert payload["error"]["code"] == "NOT_FOUND"
+
+
+def test_bars_rejects_invalid_parameters(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    cases = [
+        {"adjustment": "qfq"},
+        {"code": "sh.600001"},
+        {"code": "sh.600001", "adjustment": "bad"},
+        {"code": "sh.600001", "adjustment": "qfq", "days": "0"},
+        {"code": "sh.600001", "adjustment": "qfq", "days": "501"},
+        {"code": "sh.600001", "adjustment": "qfq", "days": "abc"},
+        {"code": "sh.600001", "adjustment": "qfq", "end": "2026-13-01"},
+    ]
+    for query in cases:
+        status, payload = _get_query(app, "/api/bars", query)
+        assert status == 400, query
+        assert payload["error"]["code"] == "BAD_REQUEST"

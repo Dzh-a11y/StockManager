@@ -16,6 +16,10 @@ const state = {
   selectedCode: null,
 };
 
+let _klineBars = null;      // last bars drawn (for hover / resize)
+let _klineCanvas = null;    // last active canvas
+let _klineInfoDefault = ''; // default info text (restored on mouse leave)
+
 /* ---------- small helpers ---------- */
 function esc(value) {
   return String(value == null ? '' : value)
@@ -704,6 +708,10 @@ function renderResults() {
     if (r) html.push(buildDetail(r));
   }
   body.innerHTML = html.join('');
+  if (state.selectedCode) {
+    const r = data.results.find((x) => x.code === state.selectedCode);
+    if (r) loadBars(r);
+  }
 }
 
 function buildDetail(r) {
@@ -718,8 +726,165 @@ function buildDetail(r) {
     }
     return '<div class="rule-detail"><div class="rule-detail__head"><span class="status-pill status-pill--' + st + '">' + st + '</span><span class="rule-detail__name">' + esc(name) + '</span></div><p class="rule-detail__reason">' + esc(ex.result ? ex.result.reason : '规则未参与（SKIPPED）') + '</p>' + vals + '</div>';
   }).join('');
+  inner += '<div class="kline-panel">' +
+    '<div class="kline-panel__head"><span class="kline-panel__title">本地日K · 成交量</span><span id="kline-info" class="kline-panel__info">加载中…</span></div>' +
+    '<canvas id="kline-canvas" class="kline-canvas"></canvas>' +
+    '</div>';
   return '<div class="detail-panel">' + inner + '</div>';
 }
+
+/* ---------- local K-line chart ---------- */
+async function loadBars(r) {
+  const canvas = $('#kline-canvas');
+  const info = $('#kline-info');
+  if (!canvas || !info) return;
+  try {
+    const adj = (state.result && state.result.adjustment) || 'qfq';
+    const end = r.trading_day || (state.result && state.result.trading_day) || '';
+    const query = new URLSearchParams({ code: r.code, adjustment: adj, end: end, days: '250' });
+    const data = await api('GET', '/api/bars?' + query.toString());
+    const bars = data.bars || [];
+    _klineInfoDefault = bars.length ? adj.toUpperCase() + ' · ' + data.end : '本地暂无日K数据';
+    drawKline(canvas, bars);
+    info.textContent = _klineInfoDefault;
+    bindKlineHover(canvas);
+  } catch (err) {
+    _klineInfoDefault = '加载失败：' + err.message;
+    info.textContent = _klineInfoDefault;
+  }
+}
+
+function bindKlineHover(canvas) {
+  canvas.onmousemove = (e) => {
+    const info = $('#kline-info');
+    const bars = _klineBars;
+    if (!bars || !bars.length || !info) return;
+    const rect = canvas.getBoundingClientRect();
+    const axisW = 52;
+    const n = bars.length;
+    const slot = (rect.width - axisW - 6) / n;
+    const i = Math.max(0, Math.min(n - 1, Math.floor((e.clientX - rect.left - axisW) / slot)));
+    const b = bars[i];
+    info.textContent = String(b.trading_day) + '  开 ' + b.open + '  高 ' + b.high + '  低 ' + b.low + '  收 ' + b.close + '  量 ' + b.volume;
+  };
+  canvas.onmouseleave = () => {
+    const info = $('#kline-info');
+    if (info) info.textContent = _klineInfoDefault;
+  };
+}
+
+function drawKline(canvas, bars) {
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 600;
+  const cssH = canvas.clientHeight || 300;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const W = cssW;
+  const H = cssH;
+  _klineCanvas = canvas;
+  _klineBars = bars;
+  if (!bars || bars.length === 0) {
+    ctx.fillStyle = '#8a8f98';
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('本地暂无该股票日K数据', W / 2, H / 2);
+    return;
+  }
+
+  const axisW = 52;                 // left price axis
+  const topPad = 10;
+  const bottomPad = 18;             // date labels
+  const volH = Math.max(48, Math.round(H * 0.22));
+  const gap = 8;
+  const priceTop = topPad;
+  const priceBottom = H - bottomPad - volH - gap;
+  const volTop = H - bottomPad - volH;
+  const volBottom = H - bottomPad;
+  const plotL = axisW;
+  const plotR = W - 6;
+
+  let minP = Infinity;
+  let maxP = -Infinity;
+  let maxV = 0;
+  for (const b of bars) {
+    const low = Number(b.low);
+    const high = Number(b.high);
+    const v = Number(b.volume);
+    if (low < minP) minP = low;
+    if (high > maxP) maxP = high;
+    if (v > maxV) maxV = v;
+  }
+  if (!isFinite(minP) || !isFinite(maxP)) return;
+  const spread = (maxP - minP) * 0.05 || 1;
+  minP -= spread;
+  maxP += spread;
+  const priceAt = (p) => priceTop + (maxP - p) / (maxP - minP) * (priceBottom - priceTop);
+
+  const n = bars.length;
+  const slot = (plotR - plotL) / n;
+  const bodyW = Math.max(1, Math.min(slot * 0.7, 14));
+
+  // grid + price labels
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.strokeStyle = 'rgba(120, 128, 138, 0.18)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const p = minP + (maxP - minP) * i / 4;
+    const y = priceAt(p);
+    ctx.beginPath();
+    ctx.moveTo(plotL, y);
+    ctx.lineTo(plotR, y);
+    ctx.stroke();
+    ctx.fillStyle = '#9aa0a8';
+    ctx.fillText(p.toFixed(2), plotL - 4, y + 3);
+  }
+
+  // candles + volume (A 股习惯：红涨绿跌)
+  for (let i = 0; i < n; i++) {
+    const b = bars[i];
+    const x = plotL + slot * i + slot / 2;
+    const o = Number(b.open);
+    const c = Number(b.close);
+    const h = Number(b.high);
+    const l = Number(b.low);
+    const v = Number(b.volume);
+    const up = c >= o;
+    const color = up ? '#d0342c' : '#1a9c50';
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    const yO = priceAt(o);
+    const yC = priceAt(c);
+    ctx.beginPath();
+    ctx.moveTo(x, priceAt(h));
+    ctx.lineTo(x, priceAt(l));
+    ctx.stroke();
+    const top = Math.min(yO, yC);
+    const hgt = Math.max(1, Math.abs(yO - yC));
+    ctx.fillRect(x - bodyW / 2, top, bodyW, hgt);
+    if (maxV > 0 && v > 0) {
+      const vh = (volBottom - volTop) * (v / maxV);
+      ctx.fillRect(x - bodyW / 2, volBottom - vh, bodyW, vh);
+    }
+  }
+
+  // date labels
+  ctx.fillStyle = '#9aa0a8';
+  ctx.textAlign = 'center';
+  for (const i of [0, Math.floor((n - 1) / 2), n - 1]) {
+    ctx.fillText(String(bars[i].trading_day).slice(5), plotL + slot * i + slot / 2, H - 6);
+  }
+  ctx.textAlign = 'left';
+  ctx.fillText('量', plotL + 2, volTop + 10);
+}
+
+window.addEventListener('resize', () => {
+  if (_klineCanvas && _klineBars) drawKline(_klineCanvas, _klineBars);
+});
 
 /* ---------- event wiring ---------- */
 function bindEvents() {

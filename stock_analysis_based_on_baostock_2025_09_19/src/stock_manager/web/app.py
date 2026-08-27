@@ -204,6 +204,8 @@ class WebApp:
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
                 return self._json(200, {"instances": self._list_instances()})
+            if path == "/api/bars":
+                return self._handle_bars(query)
             match = self._template_id_from_path(path)
             if match is not None:
                 template_id = match
@@ -296,6 +298,37 @@ class WebApp:
         return self._json(
             200,
             screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
+        )
+
+    def _handle_bars(self, query: Mapping[str, list[str]]) -> Response:
+        """Return recent local daily bars for one stock (K-line + volume source).
+
+        Query params: ``code`` (required), ``adjustment`` (required),
+        ``end`` (optional ISO date, defaults to the latest synced trading day)
+        and ``days`` (optional 1..500, defaults to 250). Only reads the local
+        SQLite database; never touches a provider.
+        """
+        code = self._query_text(query, "code")
+        adjustment = self._adjustment(self._query_text(query, "adjustment"))
+        end = self._query_date(query, "end")
+        days = self._query_integer(query, "days", default=250, minimum=1, maximum=500)
+        if end is None:
+            latest = self._services.repository.get_latest_dataset_metadata(
+                "market", adjustment
+            )
+            if latest is None:
+                raise NotFoundError("local dataset is unavailable")
+            end = latest.trading_day
+        start = end - timedelta(days=max(days * 2, 60))
+        bars = self._services.repository.get_daily_bars((code,), start, end, adjustment)
+        return self._json(
+            200,
+            {
+                "code": code,
+                "adjustment": adjustment.value,
+                "end": end.isoformat(),
+                "bars": list(bars)[-days:],
+            },
         )
 
     def _on_screen_progress(self, event: dict[str, object]) -> None:
@@ -590,6 +623,48 @@ class WebApp:
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
             raise BadRequestError(f"{field_name} must be a positive integer")
         return value
+
+    @staticmethod
+    def _query_first(query: Mapping[str, list[str]], name: str) -> str | None:
+        values = query.get(name)
+        if not values:
+            return None
+        return values[0]
+
+    def _query_text(self, query: Mapping[str, list[str]], name: str) -> str:
+        value = self._query_first(query, name)
+        if value is None or not value.strip():
+            raise BadRequestError(f"{name} is required")
+        return value.strip()
+
+    def _query_date(self, query: Mapping[str, list[str]], name: str) -> date | None:
+        value = self._query_first(query, name)
+        if value is None or not value.strip():
+            return None
+        try:
+            return date.fromisoformat(value)
+        except ValueError as error:
+            raise BadRequestError(f"{name} must be an ISO date (YYYY-MM-DD)") from error
+
+    def _query_integer(
+        self,
+        query: Mapping[str, list[str]],
+        name: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        value = self._query_first(query, name)
+        if value is None or not value.strip():
+            return default
+        try:
+            parsed = int(value)
+        except ValueError as error:
+            raise BadRequestError(f"{name} must be an integer") from error
+        if isinstance(parsed, bool) or not (minimum <= parsed <= maximum):
+            raise BadRequestError(f"{name} must be between {minimum} and {maximum}")
+        return parsed
 
     @staticmethod
     def _codes(value: object) -> tuple[str, ...]:

@@ -359,6 +359,12 @@ body {
 .rule-detail__reason { color: var(--text-soft); font-size: 12px; margin: 4px 0 0; }
 .rule-detail__vals { display: flex; gap: 14px; font-family: var(--mono); font-size: 12px; color: var(--text-soft); margin-top: 4px; flex-wrap: wrap; }
 
+.kline-panel { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px; }
+.kline-panel__head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.kline-panel__title { font-weight: 650; font-size: 12px; }
+.kline-panel__info { font-family: var(--mono); font-size: 12px; color: var(--text-soft); }
+.kline-canvas { display: block; width: 100%; height: 320px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+
 .empty-state { text-align: center; padding: 42px 20px; color: var(--muted); }
 .empty-state__title { font-size: 15px; font-weight: 650; color: var(--text-soft); margin: 0 0 6px; }
 .empty-state__hint { font-size: 12px; margin: 0; }
