@@ -580,6 +580,48 @@ async function shutdownServer() {
   status.textContent = '服务已停止，请关闭本页面。';
 }
 
+const STATUS_COLORS = {
+  synced: '#2ecc71',
+  missing: '#95a5a6',
+  failed: '#e74c3c',
+  nontrading: '#ecf0f1',
+};
+
+async function loadSyncStatus() {
+  try {
+    const s = await api('GET', '/api/sync/status');
+    const title = $('#sync-status-title');
+    title.hidden = false;
+    title.textContent = s.latest_synced_trading_day
+      ? '数据状态：最近同步 ' + s.latest_synced_trading_day +
+        ' · 覆盖 ' + (s.coverage_start || '-') + ' ~ ' + (s.coverage_end || '-') +
+        ' · ' + (s.stocks_count || 0) + ' 只'
+      : '数据状态：尚未同步本地数据';
+    // 最近 30 日:每格一个色块
+    const daily = $('#sync-status-daily');
+    daily.hidden = false;
+    daily.innerHTML = (s.recent_days || []).map((d) => {
+      const color = STATUS_COLORS[d.status] || '#95a5a6';
+      return '<span title="' + esc(d.day + ' ' + d.status) + '" style="display:inline-block;width:12px;height:18px;margin:1px;background:' + color + '"></span>';
+    }).join('');
+    $('#sync-status-daily-legend').hidden = false;
+    // 更早 11 段:每段一条色带(按覆盖率着色,深=覆盖高)
+    const bands = $('#sync-status-bands');
+    bands.hidden = false;
+    bands.style.display = 'flex';
+    bands.style.gap = '2px';
+    bands.innerHTML = (s.older_bands || []).map((b) => {
+      const pct = Math.max(0, Math.min(1, b.coverage || 0));
+      const g = Math.round(150 + (pct * 105)); // 0%→浅绿灰,100%→深绿
+      const r = Math.round(140 - (pct * 115));
+      const color = pct === 0 ? '#95a5a6' : 'rgb(' + r + ',' + g + ',120)';
+      const title = b.start + ' ~ ' + b.end + ' 覆盖率 ' + Math.round(pct * 100) + '%';
+      return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
+    }).join('');
+    $('#sync-status-bands-legend').hidden = false;
+  } catch (e) { /* ignore */ }
+}
+
 async function loadInstances() {
   try {
     const data = await api('GET', '/api/instances');
@@ -746,6 +788,7 @@ async function init() {
   bindEvents();
   startSyncPolling();
   loadInstances();
+  loadSyncStatus();
   const today = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -588,6 +588,24 @@ def test_backfill_batch_progress_callback_updates_state(tmp_path: Path) -> None:
     assert app._sync_progress["batch_total"] == 100
     assert app._sync_progress["current_code"] == "sh.600000"
     assert app._sync_progress["status"] == "running"
+
+
+def test_sync_status_endpoint_summarizes_local_coverage(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, payload = _get(app, "/api/sync/status")
+    assert status == 200
+    # 种子数据:最新交易日 2026-08-25,覆盖 6 个交易日,2 只股票。
+    assert payload["latest_synced_trading_day"] == TARGET_DAY.isoformat()
+    assert payload["coverage_end"] == TARGET_DAY.isoformat()
+    assert payload["coverage_start"] == (TARGET_DAY - timedelta(days=359)).isoformat()
+    assert payload["stocks_count"] == 2
+    # 最近 30 自然日:每个 1 项。
+    assert len(payload["recent_days"]) == 30
+    for entry in payload["recent_days"][:6]:
+        assert entry["status"] == "synced"
+    # 更早的 11 段(每段约 30 天)均在覆盖窗口之前 → 覆盖率 0。
+    assert len(payload["older_bands"]) == 11
+    assert all(band["coverage"] == 0 for band in payload["older_bands"])
 
 
 def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:

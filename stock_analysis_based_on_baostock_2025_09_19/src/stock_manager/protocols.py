@@ -102,6 +102,13 @@ class LocalRepositoryProtocol(Protocol):
         adjustment: AdjustmentMethod,
     ) -> date | None: ...
 
+    def daily_bar_days(
+        self,
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> set[date]: ...
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: ...
 
     def get_daily_bars(

@@ -8,11 +8,11 @@ import signal
 import subprocess
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from stock_manager.domain import AdjustmentMethod
+from stock_manager.domain import AdjustmentMethod, SyncStatus
 from stock_manager.protocols import ProviderProtocol
 from stock_manager.rules.builtin import build_default_registry
 from stock_manager.rules.registry import RuleRegistry
@@ -198,6 +198,8 @@ class WebApp:
                 )
             if path == "/api/sync/progress":
                 return self._json(200, self._sync_progress)
+            if path == "/api/sync/status":
+                return self._json(200, self._sync_status())
             if path == "/api/screen/progress":
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
@@ -308,6 +310,70 @@ class WebApp:
                 "phase": event.get("phase") or "screening",
             }
         )
+
+    def _sync_status(self) -> dict[str, object]:
+        """Summarize local data coverage for the sync-date visualization.
+
+        Returns the latest synced day, coverage range/counts, the most recent
+        30 natural days (per-day status) and 11 older 30-day coverage bands
+        (together spanning the 360-day retention window).
+        """
+        repo = self._services.repository
+        qfq = AdjustmentMethod.QFQ
+        latest_meta = repo.get_latest_dataset_metadata("market", qfq)
+        if latest_meta is None:
+            return {
+                "latest_synced_trading_day": None,
+                "coverage_start": None,
+                "coverage_end": None,
+                "bars_count": 0,
+                "stocks_count": 0,
+                "recent_days": [],
+                "older_bands": [],
+            }
+        anchor = latest_meta.trading_day
+        start = anchor - timedelta(days=359)
+        bar_days = repo.daily_bar_days(start, anchor, qfq)
+        cal_days = set(repo.get_trading_days(start, anchor))
+        stocks_count = len(repo.get_stocks(anchor))
+
+        recent: list[dict[str, object]] = []
+        for i in range(30):
+            day = anchor - timedelta(days=i)
+            if day not in cal_days:
+                status = "nontrading"
+            elif day in bar_days:
+                status = "synced"
+            else:
+                rec = repo.get_sync_record("market", day)
+                status = "failed" if rec is not None and rec.status is SyncStatus.FAILED else "missing"
+            recent.append({"day": day.isoformat(), "status": status})
+
+        bands: list[dict[str, object]] = []
+        band_end = anchor - timedelta(days=30)
+        for _ in range(11):
+            band_start = band_end - timedelta(days=29)
+            seg = [d for d in cal_days if band_start <= d <= band_end]
+            coverage = (
+                sum(1 for d in seg if d in bar_days) / len(seg) if seg else 0.0
+            )
+            bands.append(
+                {
+                    "start": band_start.isoformat(),
+                    "end": band_end.isoformat(),
+                    "coverage": round(coverage, 2),
+                }
+            )
+            band_end = band_start - timedelta(days=1)
+
+        return {
+            "latest_synced_trading_day": anchor.isoformat(),
+            "coverage_start": start.isoformat(),
+            "coverage_end": anchor.isoformat(),
+            "stocks_count": stocks_count,
+            "recent_days": recent,
+            "older_bands": bands,
+        }
 
     def _list_instances(self) -> list[dict[str, object]]:
         """Enumerate this host's stock-manager processes (duplicate diagnosis)."""

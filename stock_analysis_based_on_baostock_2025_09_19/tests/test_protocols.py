@@ -53,6 +53,7 @@ class EmptyRepository:
     def mark_chunk_complete(self, dataset_id: str, trading_day: date, adjustment: AdjustmentMethod, chunk_index: int, codes: Sequence[str]) -> None: ...
     def completed_chunk_codes(self, dataset_id: str, trading_day: date, adjustment: AdjustmentMethod) -> dict[int, tuple[str, ...]]: return {}
     def latest_backfill_cover_date(self, dataset_id: str, adjustment: AdjustmentMethod) -> date | None: return None
+    def daily_bar_days(self, start: date, end: date, adjustment: AdjustmentMethod) -> set[date]: return set()
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: return ()
     def get_daily_bars(self, codes: Sequence[str], start: date, end: date, adjustment: AdjustmentMethod) -> Sequence[DailyBar]: return ()
     def get_fundamentals(self, codes: Sequence[str], as_of: date) -> Sequence[FundamentalSnapshot]: return ()

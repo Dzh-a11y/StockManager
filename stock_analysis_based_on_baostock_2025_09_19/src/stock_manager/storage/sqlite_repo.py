@@ -404,6 +404,21 @@ class SQLiteRepository:
         cover = row["cover"]
         return None if cover is None else date.fromisoformat(cover)
 
+    def daily_bar_days(
+        self,
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> set[date]:
+        """Return the set of trading days that have daily bars in the range."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT trading_day FROM daily_bars
+                   WHERE adjustment = ? AND trading_day BETWEEN ? AND ?""",
+                (adjustment.value, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return {date.fromisoformat(row["trading_day"]) for row in rows}
+
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]:
         with self._connect() as connection:
             row = connection.execute(
