@@ -1,5 +1,5 @@
 ---
-date: 2026-08-25
+date: 2026-08-28
 purpose: 记录 StockManager P3 本地 Web 工作台的启动方式、接口契约与错误映射。
 project: StockManager
 status: active
@@ -31,6 +31,7 @@ stock-manager web \
 - **运行条件**：数据集、交易日、复权方式、可选股票代码。
 - **策略编辑器**：模板选择、规则卡片、参数控件、规则开关、分组组合 `all`/`any`。
 - **筛选结果**：总数/通过/失败统计、结果表、逐规则详情。
+- **个股 K 线**：点击结果行展开本地日K与成交量；K 线信息栏（图上方）在「涨停次数」规则（`limit_up_3m`）启用时，附加展示其返回的涨停日期（`actual_value.trading_days`），无涨停则为空。
 
 参数控件由 `GET /api/rules` 元数据自动生成，页面不硬编码内置规则清单。
 
@@ -159,6 +160,8 @@ stock-manager web \
 
 `GET /api/sync/progress`：返回自动回补进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","batch_phase":...,"batch_completed":N,"batch_total":N,"completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
+`GET /api/version`：返回当前包版本，`{"version": "1.5.0"}`，前端在顶部显示 `v1.5.0`。
+
 `GET /api/sync/status`：返回本地数据覆盖概览，用于界面上的"数据状态"卡片：
 
 ```json
@@ -168,11 +171,11 @@ stock-manager web \
   "coverage_end": "2026-08-25",
   "stocks_count": 2,
   "recent_days": [{"day": "2026-08-25", "status": "synced"}, ...],
-  "older_bands": [{"start": "2026-06-27", "end": "2026-07-26", "coverage": 0.0}, ...]
+  "older_bands": [{"start": "2026-06-27", "end": "2026-07-26", "coverage": 0.0, "incomplete": false}, ...]
 }
 ```
 
-`recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块；`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，前端据此按覆盖率着色。最新交易日不存在时返回全 `null`/空数组。
+`recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`running`/`incomplete`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块：`synced`=绿、`running`=Orange（拉取中）、`incomplete`=Orange（未完全同步）、`failed`=红、`missing`=灰、`nontrading`=浅。日常判定以该日 `sync_record` 的实际状态为准；对无记录的历史交易日，若当日 bar 的不同股票数 < 股票池规模的 95%（如首次启动只同步了一部分），则视为 `incomplete`（未完全同步，橙色），否则为 `synced`。`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，`incomplete` 表示该段存在未完全同步的天。最新交易日不存在时返回全 `null`/空数组。
 
 `GET /api/screen/progress`：返回筛选进度，`{"status":"idle|running|done|error","phase":"screening","done":N,"total":N,"current_code":...,"message":...}`，前端在 `POST /api/screen` 运行期间据此轮询渲染进度条。
 
