@@ -16,7 +16,9 @@
     "limit_up_3m": {"enabled": true, "parameters": {"lookback_trading_sessions": 90, "minimum_events": 1, "maximum_events": 3, "limit_ratio_lower_exclusive": "1.08", "limit_ratio_upper_exclusive": "1.12"}},
     "volatility_multiple": {"enabled": true, "parameters": {"lookback_trading_sessions": 180, "maximum_multiple": "2", "minimum_required_sessions": 5}},
     "annual_min_volume": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_volume": true}},
-    "annual_min_close_price": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_close": true}}
+    "annual_min_close_price": {"enabled": true, "parameters": {"lookback_calendar_days": 365, "minimum_required_trading_sessions": 120, "exclude_zero_close": true}},
+    "consecutive_up_days": {"enabled": false, "parameters": {"lookback_trading_sessions": 5}},
+    "avg_close_above": {"enabled": false, "parameters": {"lookback_trading_sessions": 5, "minimum_average_close": "10"}}
   },
   "composition": {
     "operator": "all",

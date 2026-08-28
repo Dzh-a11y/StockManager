@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from stock_manager.domain import RuleResult
 from stock_manager.rules.annual_min_close_price import evaluate_annual_min_close_price
 from stock_manager.rules.annual_min_volume import evaluate_annual_min_volume
+from stock_manager.rules.avg_close_above import evaluate_avg_close_above
 from stock_manager.rules.base import (
     ParameterDefinition,
     ParameterType,
@@ -24,6 +25,7 @@ from stock_manager.rules.config import (
     VolatilityConfig,
     VolumePriceConfig,
 )
+from stock_manager.rules.consecutive_up_days import evaluate_consecutive_up_days
 from stock_manager.rules.limit_up_3m import evaluate_limit_up_3m
 from stock_manager.rules.limit_up_breakout import evaluate_limit_up_breakout
 from stock_manager.rules.non_st import evaluate_non_st
@@ -50,6 +52,17 @@ class AnnualMinVolumeParameters:
     lookback_calendar_days: int
     minimum_required_trading_sessions: int
     exclude_zero_volume: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ConsecutiveUpDaysParameters:
+    lookback_trading_sessions: int
+
+
+@dataclass(frozen=True, slots=True)
+class AvgCloseAboveParameters:
+    lookback_trading_sessions: int
+    minimum_average_close: Decimal
 
 
 def _mapping(raw: object, expected: set[str], rule_id: str) -> dict[str, object]:
@@ -603,6 +616,105 @@ class AnnualMinClosePriceRule:
         )
 
 
+class ConsecutiveUpDaysRule:
+    definition = RuleDefinition(
+        "consecutive_up_days",
+        "连阳",
+        "最近N个交易日收盘价逐日抬升（N连阳）",
+        (
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                5,
+                "连阳交易日数",
+                "要求最近多少个交易日的收盘价都高于前一交易日收盘价；5 表示五连阳，全部满足才通过。",
+            ),
+        ),
+    )
+
+    def parse_parameters(self, raw: object) -> ConsecutiveUpDaysParameters:
+        values = _mapping(
+            raw, {"lookback_trading_sessions"}, self.definition.rule_id
+        )
+        return ConsecutiveUpDaysParameters(
+            _integer(values, "lookback_trading_sessions")
+        )
+
+    def data_requirement(self, parameters: object) -> RuleDataRequirement:
+        if not isinstance(parameters, ConsecutiveUpDaysParameters):
+            raise TypeError("parameters must be ConsecutiveUpDaysParameters")
+        return RuleDataRequirement(
+            market_history_unit=WindowUnit.TRADING_SESSIONS,
+            history_length=parameters.lookback_trading_sessions + 1,
+        )
+
+    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
+        if not isinstance(parameters, ConsecutiveUpDaysParameters):
+            raise TypeError("parameters must be ConsecutiveUpDaysParameters")
+        return evaluate_consecutive_up_days(
+            context.daily_bars,
+            context.metadata,
+            parameters.lookback_trading_sessions,
+            context.adjustment,
+        )
+
+
+class AvgCloseAboveRule:
+    definition = RuleDefinition(
+        "avg_close_above",
+        "N日收盘均价",
+        "最近N个交易日收盘价均值严格高于设定值",
+        (
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                5,
+                "观察交易日数",
+                "计算收盘价均值的最近交易日数量（N 日均线）。",
+            ),
+            _parameter(
+                "minimum_average_close",
+                ParameterType.DECIMAL,
+                "10",
+                "最低收盘均价",
+                "最近N个交易日收盘价均值必须严格高于该值（元）；恰好等于判定失败。",
+            ),
+        ),
+    )
+
+    def parse_parameters(self, raw: object) -> AvgCloseAboveParameters:
+        values = _mapping(
+            raw,
+            {"lookback_trading_sessions", "minimum_average_close"},
+            self.definition.rule_id,
+        )
+        threshold = _decimal(values, "minimum_average_close")
+        if threshold <= 0:
+            raise ValueError("minimum_average_close must be positive")
+        return AvgCloseAboveParameters(
+            _integer(values, "lookback_trading_sessions"), threshold
+        )
+
+    def data_requirement(self, parameters: object) -> RuleDataRequirement:
+        if not isinstance(parameters, AvgCloseAboveParameters):
+            raise TypeError("parameters must be AvgCloseAboveParameters")
+        return RuleDataRequirement(
+            market_history_unit=WindowUnit.TRADING_SESSIONS,
+            history_length=parameters.lookback_trading_sessions,
+        )
+
+    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
+        if not isinstance(parameters, AvgCloseAboveParameters):
+            raise TypeError("parameters must be AvgCloseAboveParameters")
+        return evaluate_avg_close_above(
+            context.daily_bars,
+            context.metadata,
+            parameters.lookback_trading_sessions,
+            parameters.minimum_average_close,
+            context.adjustment,
+        )
+
+
 def build_default_registry() -> RuleRegistry:
     rules: tuple[ScreeningRule, ...] = (
         PePositiveRule(),
@@ -613,5 +725,7 @@ def build_default_registry() -> RuleRegistry:
         VolatilityRule(),
         AnnualMinVolumeRule(),
         AnnualMinClosePriceRule(),
+        ConsecutiveUpDaysRule(),
+        AvgCloseAboveRule(),
     )
     return RuleRegistry(rules)
