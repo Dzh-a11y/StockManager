@@ -16,9 +16,12 @@ const state = {
   selectedCode: null,
 };
 
-let _klineBars = null;      // last bars drawn (for hover / resize)
+let _klineBars = null;      // last full dataset drawn (for hover / zoom / resize)
 let _klineCanvas = null;    // last active canvas
 let _klineInfoDefault = ''; // default info text (restored on mouse leave)
+let _klineView = null;      // visible window {start, end} into _klineBars
+let _klineDrag = null;      // {startX, viewStart} while panning
+const _klineCache = new Map(); // code+adjustment+end -> bars
 
 /* ---------- small helpers ---------- */
 function esc(value) {
@@ -749,7 +752,16 @@ function buildDetail(r) {
     return '<div class="rule-detail"><div class="rule-detail__head"><span class="status-pill status-pill--' + st + '">' + st + '</span><span class="rule-detail__name">' + esc(name) + '</span></div><p class="rule-detail__reason">' + esc(ex.result ? ex.result.reason : '规则未参与（SKIPPED）') + '</p>' + vals + '</div>';
   }).join('');
   inner += '<div class="kline-panel">' +
-    '<div class="kline-panel__head"><span class="kline-panel__title">本地日K · 成交量</span><span id="kline-info" class="kline-panel__info">加载中…</span></div>' +
+    '<div class="kline-panel__head"><span class="kline-panel__title">本地日K · 成交量</span>' +
+    '<span class="kline-toolbar">' +
+    '<button class="kline-btn" data-kline-action="zoom-out" type="button" title="缩小">−</button>' +
+    '<button class="kline-btn" data-kline-action="pan-left" type="button" title="左移">←</button>' +
+    '<button class="kline-btn" data-kline-action="pan-right" type="button" title="右移">→</button>' +
+    '<button class="kline-btn" data-kline-action="zoom-in" type="button" title="放大">＋</button>' +
+    '<button class="kline-btn" data-kline-action="reset" type="button" title="复位">复位</button>' +
+    '</span>' +
+    '<span id="kline-info" class="kline-panel__info">加载中…</span>' +
+    '</div>' +
     '<canvas id="kline-canvas" class="kline-canvas"></canvas>' +
     '</div>';
   return '<div class="detail-panel">' + inner + '</div>';
@@ -770,10 +782,21 @@ async function loadBars(r) {
   try {
     const adj = (state.result && state.result.adjustment) || 'qfq';
     const end = r.trading_day || (state.result && state.result.trading_day) || '';
-    const query = new URLSearchParams({ code: r.code, adjustment: adj, end: end, days: '250' });
-    const data = await api('GET', '/api/bars?' + query.toString());
-    const bars = data.bars || [];
-    let defaultInfo = bars.length ? adj.toUpperCase() + ' · ' + data.end : '本地暂无日K数据';
+    const key = klineKey(r.code, adj, end);
+    let bars;
+    let dataEnd;
+    const cached = _klineCache.get(key);
+    if (cached) {
+      bars = cached.bars;
+      dataEnd = cached.end;
+    } else {
+      const query = new URLSearchParams({ code: r.code, adjustment: adj, end: end, days: '250' });
+      const data = await api('GET', '/api/bars?' + query.toString());
+      bars = data.bars || [];
+      dataEnd = data.end || end;
+      _klineCache.set(key, { bars, end: dataEnd });
+    }
+    let defaultInfo = bars.length ? adj.toUpperCase() + ' · ' + dataEnd : '本地暂无日K数据';
     const limitUpDates = limitUpDatesOf(r);
     if (limitUpDates.length) {
       const shown = limitUpDates.length > 8
@@ -781,32 +804,179 @@ async function loadBars(r) {
         : limitUpDates.join('、');
       defaultInfo += ' · 涨幅日 ' + shown;
     }
+    _klineBars = bars;
+    _klineView = null;
     _klineInfoDefault = defaultInfo;
     drawKline(canvas, bars);
-    info.textContent = _klineInfoDefault;
     bindKlineHover(canvas);
+    bindKlineWheel(canvas);
+    updateKlineInfo();
   } catch (err) {
     _klineInfoDefault = '加载失败：' + err.message;
-    info.textContent = _klineInfoDefault;
+    const info2 = $('#kline-info');
+    if (info2) info2.textContent = _klineInfoDefault;
+  }
+}
+
+function klineKey(code, adjustment, end) {
+  return [code, adjustment, end].join('|');
+}
+
+function currentKlineView() {
+  const bars = _klineBars || [];
+  return _klineView || { start: 0, end: bars.length };
+}
+
+function klineVisibleBars() {
+  const bars = _klineBars || [];
+  const view = currentKlineView();
+  return bars.slice(view.start, view.end);
+}
+
+function updateKlineInfo() {
+  const info = $('#kline-info');
+  if (!info) return;
+  const bars = _klineBars || [];
+  const view = currentKlineView();
+  const visible = bars.slice(view.start, view.end);
+  if (bars.length && visible.length) {
+    const first = visible[0].trading_day;
+    const last = visible[visible.length - 1].trading_day;
+    info.textContent = (_klineInfoDefault || '') + ' · 显示 ' + first + '~' + last + ' (' + visible.length + '/' + bars.length + ')';
+  } else {
+    info.textContent = _klineInfoDefault || '本地暂无日K数据';
+  }
+}
+
+function setKlineView(start, end) {
+  const bars = _klineBars || [];
+  if (!bars.length) return;
+  const total = bars.length;
+  const minVisible = Math.min(5, total);
+  let s = Math.max(0, Math.min(total, start));
+  let e = Math.max(s + 1, Math.min(total, end));
+  if (e - s < minVisible) {
+    if (s > total - minVisible) {
+      s = Math.max(0, total - minVisible);
+    } else {
+      e = Math.min(total, s + minVisible);
+    }
+  }
+  _klineView = { start: s, end: e };
+  if (_klineCanvas && _klineBars) drawKline(_klineCanvas, _klineBars);
+  updateKlineInfo();
+}
+
+function zoomKline(factor, anchorRatio) {
+  const bars = _klineBars;
+  if (!bars || bars.length < 2) return;
+  const view = currentKlineView();
+  const visibleCount = view.end - view.start;
+  const newCount = Math.max(5, Math.min(bars.length, Math.round(visibleCount * factor)));
+  const ratio = Math.max(0, Math.min(1, anchorRatio == null ? 0.5 : anchorRatio));
+  const anchorIndex = view.start + ratio * (visibleCount - 1);
+  let newStart = Math.round(anchorIndex - (anchorIndex - view.start) / visibleCount * newCount);
+  newStart = Math.max(0, Math.min(bars.length - newCount, newStart));
+  setKlineView(newStart, newStart + newCount);
+}
+
+function panKline(direction) {
+  const bars = _klineBars;
+  if (!bars || !bars.length) return;
+  const view = currentKlineView();
+  const count = view.end - view.start;
+  const step = Math.max(1, Math.round(count * 0.2));
+  const delta = direction < 0 ? -step : step;
+  let newStart = view.start + delta;
+  newStart = Math.max(0, Math.min(bars.length - count, newStart));
+  setKlineView(newStart, newStart + count);
+}
+
+function resetKlineView() {
+  const bars = _klineBars || [];
+  _klineView = bars.length ? { start: 0, end: bars.length } : null;
+  if (_klineCanvas && _klineBars) drawKline(_klineCanvas, _klineBars);
+  updateKlineInfo();
+}
+
+function handleKlineAction(action) {
+  switch (action) {
+    case 'zoom-in':
+      zoomKline(0.75, 0.5);
+      break;
+    case 'zoom-out':
+      zoomKline(1.4, 0.5);
+      break;
+    case 'pan-left':
+      panKline(-1);
+      break;
+    case 'pan-right':
+      panKline(1);
+      break;
+    case 'reset':
+      resetKlineView();
+      break;
   }
 }
 
 function bindKlineHover(canvas) {
+  canvas.onmousedown = (e) => {
+    if (e.button !== 0) return;
+    const view = currentKlineView();
+    _klineDrag = { startX: e.clientX, viewStart: view.start, viewEnd: view.end };
+    canvas.style.cursor = 'grabbing';
+    e.preventDefault();
+  };
   canvas.onmousemove = (e) => {
     const info = $('#kline-info');
     const bars = _klineBars;
     if (!bars || !bars.length || !info) return;
+    if (_klineDrag) {
+      const rect = canvas.getBoundingClientRect();
+      const axisW = 52;
+      const view = currentKlineView();
+      const count = view.end - view.start;
+      const slot = Math.max(1, (rect.width - axisW - 6) / count);
+      const deltaBars = Math.round((e.clientX - _klineDrag.startX) / slot);
+      const newStart = Math.max(0, Math.min(bars.length - count, _klineDrag.viewStart - deltaBars));
+      setKlineView(newStart, newStart + count);
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const axisW = 52;
-    const n = bars.length;
+    const view = currentKlineView();
+    const visible = bars.slice(view.start, view.end);
+    const n = visible.length;
+    if (!n) return;
     const slot = (rect.width - axisW - 6) / n;
     const i = Math.max(0, Math.min(n - 1, Math.floor((e.clientX - rect.left - axisW) / slot)));
-    const b = bars[i];
+    const b = visible[i];
     info.textContent = String(b.trading_day) + '  开 ' + b.open + '  高 ' + b.high + '  低 ' + b.low + '  收 ' + b.close + '  量 ' + b.volume;
   };
+  canvas.onmouseup = () => {
+    _klineDrag = null;
+    canvas.style.cursor = 'grab';
+  };
   canvas.onmouseleave = () => {
-    const info = $('#kline-info');
-    if (info) info.textContent = _klineInfoDefault;
+    if (_klineDrag) {
+      _klineDrag = null;
+      canvas.style.cursor = 'grab';
+    }
+    updateKlineInfo();
+  };
+  canvas.style.cursor = 'grab';
+}
+
+function bindKlineWheel(canvas) {
+  canvas.onwheel = (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const axisW = 52;
+    const plotL = axisW;
+    const plotR = rect.width - 6;
+    const ratio = plotR > plotL ? (e.clientX - rect.left - plotL) / (plotR - plotL) : 0.5;
+    const factor = e.deltaY < 0 ? 0.75 : 1.4;
+    zoomKline(factor, ratio);
   };
 }
 
@@ -831,6 +1001,15 @@ function drawKline(canvas, bars) {
     ctx.fillText('本地暂无该股票日K数据', W / 2, H / 2);
     return;
   }
+  if (!_klineView || _klineView.end > bars.length) {
+    _klineView = { start: 0, end: bars.length };
+  }
+  const view = _klineView;
+  const visible = bars.slice(view.start, view.end);
+  if (!visible.length) {
+    _klineView = { start: 0, end: bars.length };
+    return drawKline(canvas, bars);
+  }
 
   const axisW = 52;                 // left price axis
   const topPad = 10;
@@ -847,7 +1026,7 @@ function drawKline(canvas, bars) {
   let minP = Infinity;
   let maxP = -Infinity;
   let maxV = 0;
-  for (const b of bars) {
+  for (const b of visible) {
     const low = Number(b.low);
     const high = Number(b.high);
     const v = Number(b.volume);
@@ -861,7 +1040,7 @@ function drawKline(canvas, bars) {
   maxP += spread;
   const priceAt = (p) => priceTop + (maxP - p) / (maxP - minP) * (priceBottom - priceTop);
 
-  const n = bars.length;
+  const n = visible.length;
   const slot = (plotR - plotL) / n;
   const bodyW = Math.max(1, Math.min(slot * 0.7, 14));
 
@@ -883,7 +1062,7 @@ function drawKline(canvas, bars) {
 
   // candles + volume (A 股习惯：红涨绿跌)
   for (let i = 0; i < n; i++) {
-    const b = bars[i];
+    const b = visible[i];
     const x = plotL + slot * i + slot / 2;
     const o = Number(b.open);
     const c = Number(b.close);
@@ -913,14 +1092,17 @@ function drawKline(canvas, bars) {
   ctx.fillStyle = '#9aa0a8';
   ctx.textAlign = 'center';
   for (const i of [0, Math.floor((n - 1) / 2), n - 1]) {
-    ctx.fillText(String(bars[i].trading_day).slice(5), plotL + slot * i + slot / 2, H - 6);
+    ctx.fillText(String(visible[i].trading_day).slice(5), plotL + slot * i + slot / 2, H - 6);
   }
   ctx.textAlign = 'left';
   ctx.fillText('量', plotL + 2, volTop + 10);
 }
 
 window.addEventListener('resize', () => {
-  if (_klineCanvas && _klineBars) drawKline(_klineCanvas, _klineBars);
+  if (_klineCanvas && _klineBars) {
+    drawKline(_klineCanvas, _klineBars);
+    updateKlineInfo();
+  }
 });
 
 /* ---------- event wiring ---------- */
@@ -949,6 +1131,8 @@ function bindEvents() {
     b.addEventListener('click', () => setComposeOperator(b.dataset.compose));
   });
   $('#result-body').addEventListener('click', (e) => {
+    const klineBtn = e.target.closest('[data-kline-action]');
+    if (klineBtn) { handleKlineAction(klineBtn.dataset.klineAction); return; }
     const filterBtn = e.target.closest('[data-filter]');
     if (filterBtn) { state.resultFilter = filterBtn.dataset.filter; renderResults(); return; }
     const row = e.target.closest('tr[data-code]');
