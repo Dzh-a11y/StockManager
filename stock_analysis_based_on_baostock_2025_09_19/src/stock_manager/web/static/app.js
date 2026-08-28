@@ -587,6 +587,7 @@ async function shutdownServer() {
 const STATUS_COLORS = {
   synced: '#2ecc71',
   running: '#f39c12',
+  incomplete: '#f39c12',
   missing: '#95a5a6',
   failed: '#e74c3c',
   nontrading: '#ecf0f1',
@@ -617,13 +618,33 @@ async function loadSyncStatus() {
     bands.style.gap = '2px';
     bands.innerHTML = (s.older_bands || []).map((b) => {
       const pct = Math.max(0, Math.min(1, b.coverage || 0));
-      const g = Math.round(150 + (pct * 105)); // 0%→浅绿灰,100%→深绿
-      const r = Math.round(140 - (pct * 115));
-      const color = pct === 0 ? '#95a5a6' : 'rgb(' + r + ',' + g + ',120)';
-      const title = b.start + ' ~ ' + b.end + ' 覆盖率 ' + Math.round(pct * 100) + '%';
+      // 段内含未完全同步的天 → 整段橙色,表示还需补拉。
+      let color;
+      if (b.incomplete) {
+        color = '#f39c12';
+      } else if (pct === 0) {
+        color = '#95a5a6';
+      } else {
+        const g = Math.round(150 + (pct * 105)); // 0%→浅绿灰,100%→深绿
+        const r = Math.round(140 - (pct * 115));
+        color = 'rgb(' + r + ',' + g + ',120)';
+      }
+      const note = b.incomplete ? '（部分未同步）' : '';
+      const title = b.start + ' ~ ' + b.end + ' 覆盖率 ' + Math.round(pct * 100) + '%' + note;
       return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
     }).join('');
     $('#sync-status-bands-legend').hidden = false;
+  } catch (e) { /* ignore */ }
+}
+
+async function loadVersion() {
+  try {
+    const v = await api('GET', '/api/version');
+    const el = $('#version');
+    if (v && v.version) {
+      el.textContent = 'v' + v.version;
+      el.className = 'badge badge--muted';
+    }
   } catch (e) { /* ignore */ }
 }
 
@@ -976,6 +997,7 @@ async function init() {
     $('#server-status').textContent = '连接失败';
     toast('初始化失败：' + err.message, 'error');
   }
+  loadVersion();
 }
 
 document.addEventListener('DOMContentLoaded', init);

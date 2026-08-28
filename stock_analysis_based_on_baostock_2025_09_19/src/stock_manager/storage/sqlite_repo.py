@@ -419,6 +419,26 @@ class SQLiteRepository:
             ).fetchall()
         return {date.fromisoformat(row["trading_day"]) for row in rows}
 
+    def daily_bar_stock_counts(
+        self,
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> dict[date, int]:
+        """Return ``{trading_day: distinct bar code count}`` for days with bars.
+
+        Used to decide whether a day was fully synchronised (its bar universe
+        covers the stock pool) versus partially pulled.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT trading_day, COUNT(DISTINCT code) AS n FROM daily_bars
+                   WHERE adjustment = ? AND trading_day BETWEEN ? AND ?
+                   GROUP BY trading_day""",
+                (adjustment.value, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return {date.fromisoformat(row["trading_day"]): int(row["n"]) for row in rows}
+
     def earliest_failed_day(
         self,
         dataset_id: str,

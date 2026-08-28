@@ -109,6 +109,13 @@ class LocalRepositoryProtocol(Protocol):
         adjustment: AdjustmentMethod,
     ) -> set[date]: ...
 
+    def daily_bar_stock_counts(
+        self,
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> dict[date, int]: ...
+
     def earliest_failed_day(
         self,
         dataset_id: str,

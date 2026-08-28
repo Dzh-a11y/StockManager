@@ -16,6 +16,7 @@
       </div>
     </div>
     <div class="topbar__meta">
+      <span id="version" class="badge badge--muted"></span>
       <span id="server-status" class="badge badge--muted">连接中…</span>
       <span class="disclaimer">仅供研究参考，不构成投资建议</span>
     </div>
@@ -70,9 +71,9 @@
         <div class="section-divider"></div>
         <p id="sync-status-title" class="panel__hint" hidden></p>
         <div id="sync-status-daily" class="panel__hint"></div>
-        <p id="sync-status-daily-legend" class="panel__hint" hidden>最近的 30 天（绿=已同步 橙=拉取中 灰=缺失 红=失败 浅=非交易日）</p>
+        <p id="sync-status-daily-legend" class="panel__hint" hidden>最近的 30 天（绿=已同步 橙=拉取中/未完全同步 灰=缺失 红=失败 浅=非交易日）</p>
         <div id="sync-status-bands" class="panel__hint"></div>
-        <p id="sync-status-bands-legend" class="panel__hint" hidden>更早的 11 段（每段约 30 天,色深=覆盖率高）</p>
+        <p id="sync-status-bands-legend" class="panel__hint" hidden>更早的 11 段（每段约 30 天,色深=覆盖率高;橙=含未完全同步天）</p>
         <div class="section-divider"></div>
         <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
           <span class="btn__label">停止服务（结束本进程）</span>

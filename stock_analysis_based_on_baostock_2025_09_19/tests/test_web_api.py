@@ -610,32 +610,37 @@ def test_sync_status_endpoint_summarizes_local_coverage(tmp_path: Path) -> None:
     assert len(payload["recent_days"]) == 30
     for entry in payload["recent_days"][:6]:
         assert entry["status"] == "synced"
-    # 更早的 11 段(每段约 30 天)均在覆盖窗口之前 → 覆盖率 0。
+    # 更早的 11 段(每段约 30 天)均在覆盖窗口之前 → 覆盖率 0;无 bar → 不判为 incomplete。
     assert len(payload["older_bands"]) == 11
     assert all(band["coverage"] == 0 for band in payload["older_bands"])
+    assert all(band["incomplete"] is False for band in payload["older_bands"])
+
+
+def test_version_endpoint_reports_package_version(tmp_path: Path) -> None:
+    from stock_manager import __version__
+    app = _app(tmp_path)
+    status, payload = _get(app, "/api/version")
+    assert status == 200
+    assert payload["version"] == __version__
 
 
 def test_sync_status_label_reflects_record_status(tmp_path: Path) -> None:
     app = _app(tmp_path)
-    # 有 bar 且无记录/SUCCESS → 绿;RUNNING → 橙;FAILED → 红;无 bar 无记录 → 灰。
-    assert app._sync_status_label(None, True) == "synced"
-    assert app._sync_status_label(
-        SyncRecord("market", TARGET_DAY, SyncStatus.SUCCESS, "fixture",
-                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
-                   datetime(2026, 8, 25, 18, tzinfo=SHANGHAI), None), True
-    ) == "synced"
-    assert app._sync_status_label(
-        SyncRecord("market", TARGET_DAY, SyncStatus.RUNNING, "fixture",
-                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
-                   None, None), True
-    ) == "running"
-    assert app._sync_status_label(
-        SyncRecord("market", TARGET_DAY, SyncStatus.FAILED, "fixture",
-                   AdjustmentMethod.QFQ, datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
-                   datetime(2026, 8, 25, 18, tzinfo=SHANGHAI), "boom"), True
-    ) == "failed"
-    # 无 bar 且无记录 → 缺失(灰)。
-    assert app._sync_status_label(None, False) == "missing"
+    def rec(status: SyncStatus) -> SyncRecord:
+        return SyncRecord(
+            "market", TARGET_DAY, status, "fixture", AdjustmentMethod.QFQ,
+            datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+            datetime(2026, 8, 25, 18, tzinfo=SHANGHAI) if status is not SyncStatus.RUNNING else None,
+            "boom" if status is SyncStatus.FAILED else None,
+        )
+    # 完整且无记录 → 绿;完整且有 SUCCESS → 绿;RUNNING → 橙;FAILED → 红。
+    assert app._sync_status_label(None, True, True) == "synced"
+    assert app._sync_status_label(rec(SyncStatus.SUCCESS), True, True) == "synced"
+    assert app._sync_status_label(rec(SyncStatus.RUNNING), False, True) == "running"
+    assert app._sync_status_label(rec(SyncStatus.FAILED), False, True) == "failed"
+    # 有 bar 但不完整(部分拉取) → 橙;无 bar 无记录 → 灰。
+    assert app._sync_status_label(None, False, True) == "incomplete"
+    assert app._sync_status_label(None, False, False) == "missing"
 
 
 def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
@@ -747,3 +752,44 @@ def test_bars_rejects_invalid_parameters(tmp_path: Path) -> None:
         status, payload = _get_query(app, "/api/bars", query)
         assert status == 400, query
         assert payload["error"]["code"] == "BAD_REQUEST"
+
+
+def test_sync_status_marks_partial_bar_day_as_incomplete(tmp_path: Path) -> None:
+    """A day with only a fraction of the universe's bars is not fully synced."""
+    db = tmp_path / "market.sqlite3"
+    db.touch()
+    repository = SQLiteRepository(db)
+    DAY = date(2026, 8, 25)
+    now = datetime(2026, 8, 25, 18, tzinfo=SHANGHAI)
+    days = (date(2026, 8, 24), DAY)
+    # 股票池 120 只,但该日只有 20 只写入了 bar(< 95%).
+    stocks = tuple(
+        StockIdentity(f"sh.{600000 + i:06d}", f"股{i}", "SH", False, None, None)
+        for i in range(120)
+    )
+    bars = tuple(
+        DailyBar(
+            s.code, DAY, Decimal("10"), Decimal("11"), Decimal("9"),
+            Decimal("10.5"), Decimal("10"), Decimal("1000"), Decimal("10500"), True,
+        )
+        for s in stocks[:20]
+    )
+    metadata = DatasetMetadata("market", DAY, "fixture", now, AdjustmentMethod.QFQ)
+    success = SyncRecord(
+        "market", DAY, SyncStatus.SUCCESS, "fixture", AdjustmentMethod.QFQ, now, now, None,
+    )
+    repository.save_market_snapshot(stocks, bars, (), (), days, metadata, success)
+
+    config = WebConfig(
+        database_path=db,
+        system_template_root=SYSTEM_TEMPLATES,
+        user_template_root=tmp_path / "user-templates",
+        static_root=STATIC_ROOT,
+    )
+    app = WebApp(config)
+    status, payload = _get(app, "/api/sync/status")
+    assert status == 200
+    assert payload["stocks_count"] == 120
+    # 最新交易日有 bar 但只覆盖 20/120 → 未完全同步 → incomplete(Orange)。
+    latest = next(e for e in payload["recent_days"] if e["day"] == DAY.isoformat())
+    assert latest["status"] == "incomplete"

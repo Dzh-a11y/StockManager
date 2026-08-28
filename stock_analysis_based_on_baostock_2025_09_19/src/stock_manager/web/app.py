@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from typing import Callable, Mapping
 from zoneinfo import ZoneInfo
 
+from stock_manager import __version__
 from stock_manager.domain import AdjustmentMethod, SyncStatus
 from stock_manager.protocols import ProviderProtocol
 from stock_manager.rules.builtin import build_default_registry
@@ -186,6 +187,8 @@ class WebApp:
                 return static
             if path == "/health":
                 return self._json(200, {"status": "ok"})
+            if path == "/api/version":
+                return self._json(200, {"version": __version__})
             if path == "/api/rules":
                 return self._json(200, rule_catalog(self._services.registry))
             if path == "/api/templates":
@@ -344,23 +347,26 @@ class WebApp:
             }
         )
 
-    def _sync_status_label(self, rec, has_bar: bool) -> str:
+    def _sync_status_label(self, rec, complete: bool, has_bar: bool) -> str:
         """Map a sync record to a per-day status label for the visualization.
 
-        A day counts as satisfied (green) when it has bar data and carries no
-        conflicting record — historical days covered by a backfill have bars but
-        no per-day SUCCESS record. An explicit RUNNING record renders amber
-        (fetch in progress) and FAILED renders red; a day with neither bars nor a
-        record is missing (gray).
+        ``complete`` is True when the day's bar universe covers the stock pool
+        (fully synced). An explicit RUNNING record renders amber and FAILED red.
+        Completeness is checked before SUCCESS so a day falsely marked SUCCESS
+        but holding only part of the universe renders amber (partial pull) rather
+        than green. A day with no bars is gray; a non-trading day is handled by
+        the caller.
         """
         if rec is not None:
             if rec.status is SyncStatus.RUNNING:
                 return "running"
             if rec.status is SyncStatus.FAILED:
                 return "failed"
-            if rec.status is SyncStatus.SUCCESS:
-                return "synced"
-        return "synced" if has_bar else "missing"
+        if complete:
+            return "synced"
+        if has_bar:
+            return "incomplete"
+        return "missing"
 
     def _sync_status(self) -> dict[str, object]:
         """Summarize local data coverage for the sync-date visualization.
@@ -387,6 +393,13 @@ class WebApp:
         bar_days = repo.daily_bar_days(start, anchor, qfq)
         cal_days = set(repo.get_trading_days(start, anchor))
         stocks_count = len(repo.get_stocks(anchor))
+        # 完整同步的判定:某天 bar 的不同股票数 >= 股票池规模的 0.95。
+        # 首次启动只同步了一部分(bar 不足)时,这些天视为"未完全同步"→ 橙色。
+        bar_stock_counts = repo.daily_bar_stock_counts(start, anchor, qfq)
+        complete_threshold = max(1, int(stocks_count * 0.95))
+        complete_days = {
+            day for day, n in bar_stock_counts.items() if n >= complete_threshold
+        }
 
         recent: list[dict[str, object]] = []
         for i in range(30):
@@ -394,9 +407,11 @@ class WebApp:
             if day not in cal_days:
                 status = "nontrading"
             else:
-                # 以 sync_record 的实际状态为准;历史天有 bar 数据即视为已同步。
+                # 以 sync_record 的实际状态为准;bar 覆盖不足视为"未完全同步"。
                 rec = repo.get_sync_record("market", day)
-                status = self._sync_status_label(rec, day in bar_days)
+                status = self._sync_status_label(
+                    rec, day in complete_days, day in bar_days
+                )
             recent.append({"day": day.isoformat(), "status": status})
 
         bands: list[dict[str, object]] = []
@@ -405,13 +420,15 @@ class WebApp:
             band_start = band_end - timedelta(days=29)
             seg = [d for d in cal_days if band_start <= d <= band_end]
             coverage = (
-                sum(1 for d in seg if d in bar_days) / len(seg) if seg else 0.0
+                sum(1 for d in seg if d in complete_days) / len(seg) if seg else 0.0
             )
+            incomplete = any(d in bar_days and d not in complete_days for d in seg)
             bands.append(
                 {
                     "start": band_start.isoformat(),
                     "end": band_end.isoformat(),
                     "coverage": round(coverage, 2),
+                    "incomplete": incomplete,
                 }
             )
             band_end = band_start - timedelta(days=1)

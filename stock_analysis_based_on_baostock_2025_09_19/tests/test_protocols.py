@@ -54,6 +54,7 @@ class EmptyRepository:
     def completed_chunk_codes(self, dataset_id: str, trading_day: date, adjustment: AdjustmentMethod) -> dict[int, tuple[str, ...]]: return {}
     def latest_backfill_cover_date(self, dataset_id: str, adjustment: AdjustmentMethod) -> date | None: return None
     def daily_bar_days(self, start: date, end: date, adjustment: AdjustmentMethod) -> set[date]: return set()
+    def daily_bar_stock_counts(self, start: date, end: date, adjustment: AdjustmentMethod) -> dict[date, int]: return {}
     def earliest_failed_day(self, dataset_id: str, start: date, end: date) -> date | None: return None
     def get_stocks(self, as_of: date) -> Sequence[StockIdentity]: return ()
     def get_daily_bars(self, codes: Sequence[str], start: date, end: date, adjustment: AdjustmentMethod) -> Sequence[DailyBar]: return ()
