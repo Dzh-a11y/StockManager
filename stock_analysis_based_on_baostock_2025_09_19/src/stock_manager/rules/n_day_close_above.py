@@ -1,8 +1,8 @@
-"""N-session average close threshold rule (N日均价下限).
+"""N-session close floor rule (N日收盘价下限).
 
-The average of the latest N trading sessions' closing prices must be strictly
-above the configured price threshold; an average that merely equals the
-threshold fails.
+Every one of the latest N trading sessions' closing prices must be strictly
+above the configured price threshold; a session whose close merely equals the
+threshold fails the rule.
 """
 
 from __future__ import annotations
@@ -14,26 +14,26 @@ from stock_manager.domain import AdjustmentMethod, DailyBar, DatasetMetadata, Ru
 from stock_manager.rules._shared import prepare_bars, require_positive_integer
 
 
-RULE_ID = "avg_close_above"
+RULE_ID = "n_day_close_above"
 
 
-def evaluate_avg_close_above(
+def evaluate_n_day_close_above(
     bars: Sequence[DailyBar],
     metadata: DatasetMetadata,
     lookback_trading_sessions: int,
-    minimum_average_close: Decimal,
+    minimum_close: Decimal,
     required_adjustment: AdjustmentMethod,
 ) -> RuleResult:
-    """Pass when the average close of the latest N sessions exceeds the threshold."""
+    """Pass when every close in the latest N sessions is strictly above the threshold."""
     require_positive_integer(lookback_trading_sessions, "lookback_trading_sessions")
-    if minimum_average_close <= 0:
-        raise ValueError("minimum_average_close must be positive")
+    if minimum_close <= 0:
+        raise ValueError("minimum_close must be positive")
     ordered = prepare_bars(bars, metadata, required_adjustment)
     window = ordered[-lookback_trading_sessions:]
     window_days = tuple(bar.trading_day.isoformat() for bar in window)
     threshold = {
         "lookback_trading_sessions": lookback_trading_sessions,
-        "minimum_average_close": minimum_average_close,
+        "minimum_close": minimum_close,
         "adjustment": required_adjustment.value,
     }
     if len(window) < lookback_trading_sessions:
@@ -42,8 +42,9 @@ def evaluate_avg_close_above(
             False,
             {
                 "session_count": len(window),
-                "average_close": None,
+                "lowest_close": None,
                 "latest_close": window[-1].close if window else None,
+                "below_threshold_days": (),
                 "window_start": window_days[0] if window_days else None,
                 "window_end": window_days[-1] if window_days else None,
                 "trading_days": window_days,
@@ -51,22 +52,24 @@ def evaluate_avg_close_above(
             threshold,
             f"insufficient trading data: {len(window)} bar(s), need {lookback_trading_sessions}",
         )
-    total = Decimal("0")
-    for bar in window:
-        total += bar.close
-    average = total / Decimal(lookback_trading_sessions)
-    passed = average > minimum_average_close
+    below = tuple(
+        bar.trading_day.isoformat() for bar in window if bar.close <= minimum_close
+    )
+    lowest = min((bar.close for bar in window), default=None)
+    passed = not below
     reason = (
-        f"average close {average} over {lookback_trading_sessions} sessions "
-        f"{'is above' if passed else 'is not above'} {minimum_average_close}"
+        f"all {lookback_trading_sessions} sessions closed above {minimum_close}"
+        if passed
+        else f"{len(below)} of {lookback_trading_sessions} sessions closed at or below {minimum_close}"
     )
     return RuleResult(
         RULE_ID,
         passed,
         {
             "session_count": len(window),
-            "average_close": average,
+            "lowest_close": lowest,
             "latest_close": window[-1].close,
+            "below_threshold_days": below,
             "window_start": window_days[0],
             "window_end": window_days[-1],
             "trading_days": window_days,

@@ -41,14 +41,34 @@ def bar(
     )
 
 
-def evaluate(items: tuple[DailyBar, ...], lookback: int = 5):
+def evaluate(
+    items: tuple[DailyBar, ...],
+    lookback: int = 60,
+    required: int = 5,
+):
     return evaluate_consecutive_up_days(
-        items, METADATA, lookback, AdjustmentMethod.QFQ
+        items, METADATA, lookback, required, AdjustmentMethod.QFQ
     )
 
 
-def test_passes_when_last_n_sessions_are_all_up() -> None:
-    # 5 根连续上涨 + 1 根参照日 = 五连阳。
+def test_passes_when_a_k_run_exists_inside_the_window() -> None:
+    # 8 根连续上涨;窗口 60 覆盖全部数据,参照日缺失时首日不计数,最长连阳 7。
+    items = tuple(
+        bar(TARGET - timedelta(days=7 - index), str(100 + index))
+        for index in range(8)
+    )
+
+    result = evaluate(items, lookback=60, required=5)
+
+    assert result.passed is True
+    assert result.actual_value["longest_consecutive_up_days"] == 7
+    assert result.actual_value["run_start"] == "2026-08-19"
+    assert result.actual_value["run_end"] == "2026-08-25"
+    assert result.actual_value["reference_trading_day"] is None
+
+
+def test_passes_when_reference_day_verifies_window_start() -> None:
+    # 窗口 5 日,参照日存在,首日也能确认收阳 → 最长连阳 5。
     items = (
         bar(TARGET - timedelta(days=6), "100"),
         bar(TARGET - timedelta(days=5), "101"),
@@ -56,72 +76,61 @@ def test_passes_when_last_n_sessions_are_all_up() -> None:
         bar(TARGET - timedelta(days=3), "103"),
         bar(TARGET - timedelta(days=2), "104"),
         bar(TARGET - timedelta(days=1), "105"),
-        bar(TARGET, "106"),
     )
 
-    result = evaluate(tuple(reversed(items)))
+    result = evaluate(tuple(reversed(items)), lookback=5, required=3)
 
     assert result.passed is True
-    assert result.actual_value["consecutive_up_sessions"] == 6
-    assert result.actual_value["reference_trading_day"] == "2026-08-20"
-    assert result.actual_value["window_start"] == "2026-08-21"
-    assert result.actual_value["window_end"] == "2026-08-25"
-    assert len(result.actual_value["trading_days"]) == 5
+    assert result.actual_value["longest_consecutive_up_days"] == 5
+    assert result.actual_value["reference_trading_day"] == "2026-08-19"
+    assert result.actual_value["window_start"] == "2026-08-20"
+    assert result.actual_value["window_end"] == "2026-08-24"
 
 
-def test_fails_when_one_session_is_flat() -> None:
+def test_fails_when_longest_run_is_shorter_than_required() -> None:
+    # 只有 4 根连续上涨。
     items = (
         bar(TARGET - timedelta(days=6), "100"),
         bar(TARGET - timedelta(days=5), "101"),
-        bar(TARGET - timedelta(days=4), "101"),  # 平盘:收盘不高于前一日
+        bar(TARGET - timedelta(days=4), "102"),
+        bar(TARGET - timedelta(days=3), "103"),
+        bar(TARGET - timedelta(days=2), "104"),
+        bar(TARGET - timedelta(days=1), "103"),
+    )
+
+    result = evaluate(tuple(reversed(items)), lookback=60, required=5)
+
+    assert result.passed is False
+    assert result.actual_value["longest_consecutive_up_days"] == 4
+    assert "need 5" in result.reason
+
+
+def test_flat_session_breaks_the_run() -> None:
+    items = (
+        bar(TARGET - timedelta(days=6), "100"),
+        bar(TARGET - timedelta(days=5), "101"),
+        bar(TARGET - timedelta(days=4), "101"),  # 平盘:不算阳线
         bar(TARGET - timedelta(days=3), "102"),
         bar(TARGET - timedelta(days=2), "103"),
         bar(TARGET - timedelta(days=1), "104"),
-        bar(TARGET, "105"),
     )
 
-    result = evaluate(tuple(reversed(items)))
+    result = evaluate(tuple(reversed(items)), lookback=60, required=5)
 
     assert result.passed is False
-    assert "consecutive up" in result.reason
-
-
-def test_fails_when_one_session_closes_lower() -> None:
-    items = (
-        bar(TARGET - timedelta(days=6), "100"),
-        bar(TARGET - timedelta(days=5), "103"),
-        bar(TARGET - timedelta(days=4), "102"),  # 收阴
-        bar(TARGET - timedelta(days=3), "103"),
-        bar(TARGET - timedelta(days=2), "104"),
-        bar(TARGET - timedelta(days=1), "105"),
-        bar(TARGET, "106"),
-    )
-
-    result = evaluate(tuple(reversed(items)))
-
-    assert result.passed is False
-
-
-def test_single_session_check_uses_reference_day() -> None:
-    # n=1:最近 1 个交易日收盘高于前一日。
-    items = (
-        bar(TARGET - timedelta(days=1), "100"),
-        bar(TARGET, "101"),
-    )
-
-    result = evaluate(items, lookback=1)
-
-    assert result.passed is True
-    assert result.actual_value["consecutive_up_sessions"] == 1
+    assert result.actual_value["longest_consecutive_up_days"] == 3
 
 
 def test_insufficient_bars_fails_explicitly() -> None:
-    items = tuple(bar(TARGET - timedelta(days=index), str(100 + index)) for index in range(3))
+    # K=5 需要至少 6 根 bar 才能确认五连阳。
+    items = tuple(
+        bar(TARGET - timedelta(days=index), str(100 + index)) for index in range(5)
+    )
 
-    result = evaluate(items, lookback=5)
+    result = evaluate(items, lookback=60, required=5)
 
     assert result.passed is False
-    assert result.actual_value["reference_trading_day"] is None
+    assert result.actual_value["longest_consecutive_up_days"] == 0
     assert "insufficient" in result.reason
 
 
@@ -133,7 +142,7 @@ def test_empty_bars_fails_explicitly() -> None:
 
 
 def test_nontrading_rows_do_not_break_the_window() -> None:
-    # 中间一根非交易日不参与比较,窗口仍取最近 5 个有效交易日。
+    # 停牌日不参与比较;窗口取最近 5 个有效交易日,参照日验证首日。
     items = (
         bar(TARGET - timedelta(days=7), "100"),
         bar(TARGET - timedelta(days=6), "101"),
@@ -142,19 +151,25 @@ def test_nontrading_rows_do_not_break_the_window() -> None:
         bar(TARGET - timedelta(days=3), "104"),
         bar(TARGET - timedelta(days=2), "105"),
         bar(TARGET - timedelta(days=1), "106"),
-        bar(TARGET, "107"),
     )
 
-    result = evaluate(tuple(reversed(items)))
+    result = evaluate(tuple(reversed(items)), lookback=5, required=5)
 
     assert result.passed is True
-    assert result.actual_value["session_count"] == 7
-    assert result.actual_value["reference_trading_day"] == "2026-08-19"
+    assert result.actual_value["longest_consecutive_up_days"] == 5
+    assert result.actual_value["reference_trading_day"] == "2026-08-18"
 
 
-def test_rejects_nonpositive_lookback() -> None:
+def test_rejects_required_larger_than_lookback() -> None:
+    with pytest.raises(ValueError, match="required_consecutive_days"):
+        evaluate((bar(TARGET, "10"),), lookback=5, required=10)
+
+
+def test_rejects_nonpositive_parameters() -> None:
     with pytest.raises(ValueError, match="lookback_trading_sessions"):
         evaluate((bar(TARGET, "10"),), lookback=0)
+    with pytest.raises(ValueError, match="required_consecutive_days"):
+        evaluate((bar(TARGET, "10"),), required=0)
 
 
 def test_rejects_duplicate_days_and_mixed_codes() -> None:
@@ -176,5 +191,6 @@ def test_rejects_adjustment_mismatch() -> None:
             (bar(TARGET, "10"),),
             METADATA,
             5,
+            2,
             AdjustmentMethod.HFQ,
         )

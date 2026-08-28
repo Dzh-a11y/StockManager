@@ -1,4 +1,4 @@
-"""Recent limit-up count rule."""
+"""Recent gain-count rule (涨幅次数)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def evaluate_limit_up_3m(
     limit_ratio_upper_exclusive: Decimal,
     required_adjustment: AdjustmentMethod,
 ) -> RuleResult:
-    """Pass when the recent limit-up count lies in the configured inclusive range."""
+    """Pass when the recent gain-event count lies in the configured inclusive range."""
     require_positive_integer(lookback_trading_sessions, "lookback_trading_sessions")
     if minimum_events < 0 or maximum_events < minimum_events:
         raise ValueError("event count bounds are invalid")
@@ -45,5 +45,5 @@ def evaluate_limit_up_3m(
         "limit_ratio_open_interval": [limit_ratio_lower_exclusive, limit_ratio_upper_exclusive],
         "adjustment": required_adjustment.value,
     }
-    reason = f"found {count} limit-up event(s); expected {minimum_events}..{maximum_events}"
+    reason = f"found {count} gain event(s); expected {minimum_events}..{maximum_events}"
     return RuleResult(RULE_ID, passed, {"count": count, "trading_days": event_days}, threshold, reason)

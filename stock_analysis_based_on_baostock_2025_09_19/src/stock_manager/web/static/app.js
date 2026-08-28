@@ -757,7 +757,7 @@ function buildDetail(r) {
 
 /* ---------- local K-line chart ---------- */
 function limitUpDatesOf(r) {
-  // 涨停次数规则（limit_up_3m）在 actual_value.trading_days 中返回涨停日期。
+  // 涨幅次数规则（limit_up_3m）在 actual_value.trading_days 中返回涨幅日期。
   const ex = (r.rule_executions || []).find((x) => x.rule_id === 'limit_up_3m');
   const v = ex && ex.result && ex.result.actual_value;
   return v && Array.isArray(v.trading_days) ? v.trading_days : [];
@@ -779,7 +779,7 @@ async function loadBars(r) {
       const shown = limitUpDates.length > 8
         ? limitUpDates.slice(0, 8).join('、') + ' 等' + limitUpDates.length + '日'
         : limitUpDates.join('、');
-      defaultInfo += ' · 涨停日 ' + shown;
+      defaultInfo += ' · 涨幅日 ' + shown;
     }
     _klineInfoDefault = defaultInfo;
     drawKline(canvas, bars);

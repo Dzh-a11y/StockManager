@@ -8,7 +8,6 @@ from decimal import Decimal, InvalidOperation
 from stock_manager.domain import RuleResult
 from stock_manager.rules.annual_min_close_price import evaluate_annual_min_close_price
 from stock_manager.rules.annual_min_volume import evaluate_annual_min_volume
-from stock_manager.rules.avg_close_above import evaluate_avg_close_above
 from stock_manager.rules.base import (
     ParameterDefinition,
     ParameterType,
@@ -27,6 +26,7 @@ from stock_manager.rules.config import (
 )
 from stock_manager.rules.consecutive_up_days import evaluate_consecutive_up_days
 from stock_manager.rules.limit_up_3m import evaluate_limit_up_3m
+from stock_manager.rules.n_day_close_above import evaluate_n_day_close_above
 from stock_manager.rules.limit_up_breakout import evaluate_limit_up_breakout
 from stock_manager.rules.non_st import evaluate_non_st
 from stock_manager.rules.pe_positive import evaluate_pe_positive
@@ -57,12 +57,13 @@ class AnnualMinVolumeParameters:
 @dataclass(frozen=True, slots=True)
 class ConsecutiveUpDaysParameters:
     lookback_trading_sessions: int
+    required_consecutive_days: int
 
 
 @dataclass(frozen=True, slots=True)
-class AvgCloseAboveParameters:
+class NDayCloseAboveParameters:
     lookback_trading_sessions: int
-    minimum_average_close: Decimal
+    minimum_close: Decimal
 
 
 def _mapping(raw: object, expected: set[str], rule_id: str) -> dict[str, object]:
@@ -333,43 +334,43 @@ class LimitUpBreakoutRule:
 class LimitUpCountRule:
     definition = RuleDefinition(
         "limit_up_3m",
-        "涨停次数",
-        "统计窗口内涨停事件次数",
+        "涨幅次数",
+        "统计窗口内涨幅事件次数",
         (
             _parameter(
                 "lookback_trading_sessions",
                 ParameterType.INTEGER,
                 90,
                 "观察交易日数",
-                "统计涨停次数的时间窗口长度（交易日数）。",
+                "统计涨幅次数的时间窗口长度（交易日数）。",
             ),
             _parameter(
                 "minimum_events",
                 ParameterType.INTEGER,
                 1,
-                "最少涨停次数",
-                "窗口内涨停事件数下限；少于该值判定失败。",
+                "最少涨幅次数",
+                "窗口内涨幅事件数下限；少于该值判定失败。",
             ),
             _parameter(
                 "maximum_events",
                 ParameterType.INTEGER,
                 3,
-                "最多涨停次数",
-                "窗口内涨停事件数上限；超过该值判定失败，用于避开连续暴涨的股票。",
+                "最多涨幅次数",
+                "窗口内涨幅事件数上限；超过该值判定失败，用于避开连续暴涨的股票。",
             ),
             _parameter(
                 "limit_ratio_lower_exclusive",
                 ParameterType.DECIMAL,
                 "1.08",
-                "涨停比例开区间下限",
-                "单日涨幅达到该比例即视为一次涨停；开区间，恰好等于不算。",
+                "涨幅比例开区间下限",
+                "单日涨幅达到该比例即计入一次涨幅；开区间，恰好等于不算。",
             ),
             _parameter(
                 "limit_ratio_upper_exclusive",
                 ParameterType.DECIMAL,
                 "1.12",
-                "涨停比例开区间上限",
-                "涨幅超过该比例不计入涨停；用于排除 20% 涨跌幅的板块。",
+                "涨幅比例开区间上限",
+                "涨幅超过该比例不计入涨幅；用于排除 20% 涨跌幅的板块。",
             ),
         ),
     )
@@ -620,25 +621,38 @@ class ConsecutiveUpDaysRule:
     definition = RuleDefinition(
         "consecutive_up_days",
         "连阳",
-        "最近N个交易日收盘价逐日抬升（N连阳）",
+        "最近N个交易日窗口内出现至少K个连续上涨交易日（K连阳）",
         (
             _parameter(
                 "lookback_trading_sessions",
                 ParameterType.INTEGER,
+                60,
+                "搜索窗口交易日数",
+                "在最近多少个交易日窗口内搜索连阳段；窗口越大越容易命中历史上任一段连续上涨。",
+            ),
+            _parameter(
+                "required_consecutive_days",
+                ParameterType.INTEGER,
                 5,
-                "连阳交易日数",
-                "要求最近多少个交易日的收盘价都高于前一交易日收盘价；5 表示五连阳，全部满足才通过。",
+                "连阳天数",
+                "窗口内至少要有多少个连续交易日每个交易日的收盘价都高于前一交易日收盘价；5 表示五连阳。",
             ),
         ),
     )
 
     def parse_parameters(self, raw: object) -> ConsecutiveUpDaysParameters:
         values = _mapping(
-            raw, {"lookback_trading_sessions"}, self.definition.rule_id
+            raw,
+            {"lookback_trading_sessions", "required_consecutive_days"},
+            self.definition.rule_id,
         )
-        return ConsecutiveUpDaysParameters(
-            _integer(values, "lookback_trading_sessions")
-        )
+        lookback = _integer(values, "lookback_trading_sessions")
+        required = _integer(values, "required_consecutive_days")
+        if required > lookback:
+            raise ValueError(
+                "required_consecutive_days must not exceed lookback_trading_sessions"
+            )
+        return ConsecutiveUpDaysParameters(lookback, required)
 
     def data_requirement(self, parameters: object) -> RuleDataRequirement:
         if not isinstance(parameters, ConsecutiveUpDaysParameters):
@@ -655,62 +669,63 @@ class ConsecutiveUpDaysRule:
             context.daily_bars,
             context.metadata,
             parameters.lookback_trading_sessions,
+            parameters.required_consecutive_days,
             context.adjustment,
         )
 
 
-class AvgCloseAboveRule:
+class NDayCloseAboveRule:
     definition = RuleDefinition(
-        "avg_close_above",
-        "N日收盘均价",
-        "最近N个交易日收盘价均值严格高于设定值",
+        "n_day_close_above",
+        "N日收盘价下限",
+        "最近N个交易日每天的收盘价都严格高于设定值",
         (
             _parameter(
                 "lookback_trading_sessions",
                 ParameterType.INTEGER,
                 5,
                 "观察交易日数",
-                "计算收盘价均值的最近交易日数量（N 日均线）。",
+                "检查最近多少个交易日的收盘价；3 表示最近 3 个交易日的收盘价都必须高于设定值。",
             ),
             _parameter(
-                "minimum_average_close",
+                "minimum_close",
                 ParameterType.DECIMAL,
                 "10",
-                "最低收盘均价",
-                "最近N个交易日收盘价均值必须严格高于该值（元）；恰好等于判定失败。",
+                "最低收盘价",
+                "窗口内每一天的收盘价都必须严格高于该值（元）；恰好等于判定失败。",
             ),
         ),
     )
 
-    def parse_parameters(self, raw: object) -> AvgCloseAboveParameters:
+    def parse_parameters(self, raw: object) -> NDayCloseAboveParameters:
         values = _mapping(
             raw,
-            {"lookback_trading_sessions", "minimum_average_close"},
+            {"lookback_trading_sessions", "minimum_close"},
             self.definition.rule_id,
         )
-        threshold = _decimal(values, "minimum_average_close")
+        threshold = _decimal(values, "minimum_close")
         if threshold <= 0:
-            raise ValueError("minimum_average_close must be positive")
-        return AvgCloseAboveParameters(
+            raise ValueError("minimum_close must be positive")
+        return NDayCloseAboveParameters(
             _integer(values, "lookback_trading_sessions"), threshold
         )
 
     def data_requirement(self, parameters: object) -> RuleDataRequirement:
-        if not isinstance(parameters, AvgCloseAboveParameters):
-            raise TypeError("parameters must be AvgCloseAboveParameters")
+        if not isinstance(parameters, NDayCloseAboveParameters):
+            raise TypeError("parameters must be NDayCloseAboveParameters")
         return RuleDataRequirement(
             market_history_unit=WindowUnit.TRADING_SESSIONS,
             history_length=parameters.lookback_trading_sessions,
         )
 
     def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
-        if not isinstance(parameters, AvgCloseAboveParameters):
-            raise TypeError("parameters must be AvgCloseAboveParameters")
-        return evaluate_avg_close_above(
+        if not isinstance(parameters, NDayCloseAboveParameters):
+            raise TypeError("parameters must be NDayCloseAboveParameters")
+        return evaluate_n_day_close_above(
             context.daily_bars,
             context.metadata,
             parameters.lookback_trading_sessions,
-            parameters.minimum_average_close,
+            parameters.minimum_close,
             context.adjustment,
         )
 
@@ -726,6 +741,6 @@ def build_default_registry() -> RuleRegistry:
         AnnualMinVolumeRule(),
         AnnualMinClosePriceRule(),
         ConsecutiveUpDaysRule(),
-        AvgCloseAboveRule(),
+        NDayCloseAboveRule(),
     )
     return RuleRegistry(rules)

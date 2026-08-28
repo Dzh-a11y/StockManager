@@ -307,8 +307,8 @@ def test_screen_returns_tri_state_results(tmp_path: Path) -> None:
 
 
 def test_screen_limit_up_rule_returns_event_dates(tmp_path: Path) -> None:
-    # 种子数据:2026-08-25 收盘 109 / 前收 100 = 1.09,落在涨停开区间 (1.08, 1.12)。
-    # 涨停次数规则必须返回具体涨停日期,供前端 K 线信息栏展示。
+    # 种子数据:2026-08-25 收盘 109 / 前收 100 = 1.09,落在涨幅开区间 (1.08, 1.12)。
+    # 涨幅次数规则必须返回具体涨幅日期,供前端 K 线信息栏展示。
     app = _app(tmp_path)
     status, payload = _post(app, "/api/screen", _screen_body(_default_template()))
     assert status == 200
