@@ -756,6 +756,13 @@ function buildDetail(r) {
 }
 
 /* ---------- local K-line chart ---------- */
+function limitUpDatesOf(r) {
+  // 涨停次数规则（limit_up_3m）在 actual_value.trading_days 中返回涨停日期。
+  const ex = (r.rule_executions || []).find((x) => x.rule_id === 'limit_up_3m');
+  const v = ex && ex.result && ex.result.actual_value;
+  return v && Array.isArray(v.trading_days) ? v.trading_days : [];
+}
+
 async function loadBars(r) {
   const canvas = $('#kline-canvas');
   const info = $('#kline-info');
@@ -766,7 +773,15 @@ async function loadBars(r) {
     const query = new URLSearchParams({ code: r.code, adjustment: adj, end: end, days: '250' });
     const data = await api('GET', '/api/bars?' + query.toString());
     const bars = data.bars || [];
-    _klineInfoDefault = bars.length ? adj.toUpperCase() + ' · ' + data.end : '本地暂无日K数据';
+    let defaultInfo = bars.length ? adj.toUpperCase() + ' · ' + data.end : '本地暂无日K数据';
+    const limitUpDates = limitUpDatesOf(r);
+    if (limitUpDates.length) {
+      const shown = limitUpDates.length > 8
+        ? limitUpDates.slice(0, 8).join('、') + ' 等' + limitUpDates.length + '日'
+        : limitUpDates.join('、');
+      defaultInfo += ' · 涨停日 ' + shown;
+    }
+    _klineInfoDefault = defaultInfo;
     drawKline(canvas, bars);
     info.textContent = _klineInfoDefault;
     bindKlineHover(canvas);

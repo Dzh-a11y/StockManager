@@ -306,6 +306,23 @@ def test_screen_returns_tri_state_results(tmp_path: Path) -> None:
     assert all(item["status"] in ("PASSED", "FAILED", "SKIPPED") for item in result["rule_executions"])
 
 
+def test_screen_limit_up_rule_returns_event_dates(tmp_path: Path) -> None:
+    # 种子数据:2026-08-25 收盘 109 / 前收 100 = 1.09,落在涨停开区间 (1.08, 1.12)。
+    # 涨停次数规则必须返回具体涨停日期,供前端 K 线信息栏展示。
+    app = _app(tmp_path)
+    status, payload = _post(app, "/api/screen", _screen_body(_default_template()))
+    assert status == 200
+    execution = next(
+        item
+        for item in payload["results"][0]["rule_executions"]
+        if item["rule_id"] == "limit_up_3m"
+    )
+    assert execution["status"] == "PASSED"
+    actual = execution["result"]["actual_value"]
+    assert actual["count"] == 1
+    assert actual["trading_days"] == ["2026-08-25"]
+
+
 def test_screen_reports_local_data_missing_as_404(tmp_path: Path) -> None:
     app = _app(tmp_path)
     body = _screen_body(_default_template())
