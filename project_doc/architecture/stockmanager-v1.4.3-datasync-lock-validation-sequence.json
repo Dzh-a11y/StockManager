@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "StockManager 1.4.3 · DataSyncService 双锁与校验细节",
+    "locale": "zh-CN",
+    "output": "artifacts/architecture/stockmanager-v1.4.3-datasync-lock-validation-sequence.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1440, 880]
+  },
+  "participants": [
+    { "id": "caller", "type": "frontend", "label": "启动检查 / CLI" },
+    { "id": "service", "type": "backend", "label": "DataSyncService" },
+    { "id": "dataset_locks", "type": "security", "label": "Dataset 双锁" },
+    { "id": "repo", "type": "database", "label": "本地 SQLite" },
+    { "id": "provider_locks", "type": "security", "label": "Provider 全局锁" },
+    { "id": "provider", "type": "external", "label": "BaostockProvider" },
+    { "id": "validators", "type": "backend", "label": "Service 校验器" }
+  ],
+  "segments": [
+    { "from": 155, "to": 315, "label": "Dataset 双锁、幂等与重试门禁" },
+    { "from": 325, "to": 615, "label": "Provider 全局串行、节流与交叉校验" },
+    { "from": 625, "to": 790, "label": "原子终态、异常记录与逆序解锁" }
+  ],
+  "messages": [
+    { "id": "sync_request", "from": "caller", "to": "service", "y": 180, "label": "sync(dataset_id, trading_day, adjustment, retry=False)", "variant": "emphasis" },
+    { "id": "process_lock", "from": "service", "to": "dataset_locks", "y": 210, "label": "① process_lock(abs(lock_dir):dataset:day) → threading.Lock", "variant": "security" },
+    { "id": "file_lock", "from": "service", "to": "dataset_locks", "y": 240, "label": "② persistent_file_lock(dataset.day.lock) → OS 阻塞式独占锁", "variant": "security", "note": "POSIX 使用 fcntl.flock(LOCK_EX)，Windows 使用 msvcrt.locking；锁文件保留用于诊断" },
+    { "id": "read_state", "from": "service", "to": "repo", "y": 270, "label": "读取 SyncRecord 与复权元数据", "variant": "default" },
+    { "id": "state_gate", "from": "repo", "to": "service", "y": 300, "label": "SUCCESS→警告并本地复用；FAILED→显式 retry + cooldown；否则继续", "variant": "return" },
+    { "id": "save_running", "from": "service", "to": "repo", "y": 330, "label": "持久化 RUNNING；旧 RUNNING 发出 superseded 警告", "variant": "emphasis" },
+    { "id": "provider_gate", "from": "service", "to": "provider_locks", "y": 360, "label": "Provider process_lock + baostock.provider.lock", "variant": "security", "note": "不同 Dataset 也必须共用同一个 Provider 串行区" },
+    { "id": "fetch_calendar", "from": "service", "to": "provider", "y": 390, "label": "① fetch_trading_days(day, day + horizon)", "variant": "emphasis" },
+    { "id": "validate_calendar", "from": "service", "to": "validators", "y": 420, "label": "日历：非空 · 无重复 · 不越界 · 必须包含目标交易日", "variant": "default" },
+    { "id": "fetch_stocks", "from": "service", "to": "provider", "y": 450, "label": "② fetch_stocks(day) → 过滤为真实 A 股股票集合", "variant": "emphasis" },
+    { "id": "validate_universe", "from": "service", "to": "validators", "y": 480, "label": "股票集合：非空 · code 唯一；selected_codes 取自该集合", "variant": "default" },
+    { "id": "fetch_market", "from": "service", "to": "provider", "y": 510, "label": "③ fetch_daily_bars → ④ fetch_fundamentals（严格串行）", "variant": "emphasis" },
+    { "id": "provider_policy", "from": "provider", "to": "service", "y": 540, "label": "返回 Domain 对象；每 code 顺序循环，默认间隔 0.2s / timeout 10s / 最多 3 次指数退避", "variant": "return" },
+    { "id": "validate_payload", "from": "service", "to": "validators", "y": 570, "label": "K线：目标日且每个 code 恰好 1 条；基本面：不得出现未请求 code", "variant": "default" },
+    { "id": "validation_result", "from": "validators", "to": "service", "y": 600, "label": "全部通过；任一不满足立即抛 ValueError", "variant": "return" },
+    { "id": "atomic_success", "from": "service", "to": "repo", "y": 630, "label": "单事务写 stocks + bars + fundamentals + calendar + metadata + SUCCESS", "variant": "emphasis" },
+    { "id": "commit_result", "from": "repo", "to": "service", "y": 660, "label": "提交成功后执行保留期裁剪", "variant": "return" },
+    { "id": "failed_state", "from": "service", "to": "repo", "y": 690, "label": "异常分支：另写 FAILED(finished_at, error_message)，再抛 SyncFailedError", "variant": "security" },
+    { "id": "release_provider", "from": "service", "to": "provider_locks", "y": 720, "label": "退出 Provider context：释放文件锁，再释放进程锁", "variant": "dashed" },
+    { "id": "release_dataset", "from": "service", "to": "dataset_locks", "y": 750, "label": "退出 Dataset context：finally 解 OS 锁，再释放 threading.Lock", "variant": "dashed" },
+    { "id": "sync_outcome", "from": "service", "to": "caller", "y": 780, "label": "SyncOutcome(SUCCESS / skipped) 或 SyncFailedError", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "service", "from": 175, "to": 785, "type": "backend" },
+    { "participant": "dataset_locks", "from": 205, "to": 755, "type": "security" },
+    { "participant": "repo", "from": 265, "to": 695, "type": "database" },
+    { "participant": "provider_locks", "from": 355, "to": 725, "type": "security" },
+    { "participant": "provider", "from": 385, "to": 545, "type": "external" },
+    { "participant": "validators", "from": 415, "to": 605, "type": "backend" }
+  ]
+}
