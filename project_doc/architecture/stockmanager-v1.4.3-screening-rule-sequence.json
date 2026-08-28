@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "StockManager 1.4.3 · 参数化筛选到规则执行内核",
+    "locale": "zh-CN",
+    "output": "artifacts/architecture/stockmanager-v1.4.3-screening-rule-sequence.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1440, 840]
+  },
+  "participants": [
+    { "id": "caller", "type": "frontend", "label": "Web API / CLI" },
+    { "id": "service", "type": "backend", "label": "参数化筛选服务" },
+    { "id": "planner", "type": "backend", "label": "数据需求规划器" },
+    { "id": "local_repo", "type": "database", "label": "本地 SQLite 仓储" },
+    { "id": "engine", "type": "backend", "label": "规则执行引擎" },
+    { "id": "rule", "type": "backend", "label": "规则注册表 / 纯规则" },
+    { "id": "composition", "type": "backend", "label": "all / any 组合引擎" }
+  ],
+  "segments": [
+    { "from": 150, "to": 305, "label": "校验与规划" },
+    { "from": 325, "to": 470, "label": "本地数据预取" },
+    { "from": 395, "to": 765, "label": "逐股规则执行、8 条当前规则与组合" }
+  ],
+  "messages": [
+    { "id": "screen_request", "from": "caller", "to": "service", "y": 180, "label": "screen(plan, dataset, trading_day, adjustment, codes)", "variant": "emphasis" },
+    { "id": "metadata_read", "from": "service", "to": "local_repo", "y": 215, "label": "读取 dataset 元数据、股票与交易日", "variant": "default", "note": "校验 dataset_id、复权方式与目标交易日" },
+    { "id": "build_plan", "from": "service", "to": "planner", "y": 250, "label": "plan(启用规则的数据需求)", "variant": "emphasis" },
+    { "id": "data_plan", "from": "planner", "to": "service", "y": 285, "label": "合并后的 bars / fundamentals / dividends 窗口", "variant": "return" },
+    { "id": "prefetch", "from": "service", "to": "local_repo", "y": 320, "label": "一次预取所需本地数据", "variant": "emphasis", "note": "筛选路径没有 Provider，也不发起网络请求" },
+    { "id": "local_data", "from": "local_repo", "to": "service", "y": 355, "label": "结构化本地数据", "variant": "return" },
+    { "id": "evaluate_stock", "from": "service", "to": "engine", "y": 390, "label": "evaluate(RuleContext, ScreeningPlan) · 每只股票", "variant": "emphasis" },
+    { "id": "fund_rules", "from": "engine", "to": "rule", "y": 420, "label": "基本面 all：pe_positive · non_st", "variant": "emphasis" },
+    { "id": "fund_results", "from": "rule", "to": "engine", "y": 450, "label": "PE 下限 / 排除 ST → RuleResult × 2", "variant": "return" },
+    { "id": "signal_rules_a", "from": "engine", "to": "rule", "y": 480, "label": "信号 any：volume_price_5d · limit_up_breakout", "variant": "emphasis" },
+    { "id": "signal_rules_b", "from": "engine", "to": "rule", "y": 510, "label": "annual_min_volume · annual_min_close_price", "variant": "emphasis" },
+    { "id": "signal_results", "from": "rule", "to": "engine", "y": 540, "label": "量价 / 炸板假阴线 / 年度最低量价 → RuleResult × 4", "variant": "return" },
+    { "id": "risk_rules", "from": "engine", "to": "rule", "y": 570, "label": "风险 all：limit_up_3m · volatility_multiple", "variant": "security" },
+    { "id": "risk_results", "from": "rule", "to": "engine", "y": 600, "label": "涨停次数 / 波动倍数 → RuleResult × 2", "variant": "return" },
+    { "id": "skipped", "from": "engine", "to": "rule", "y": 630, "label": "模板禁用时：不调用规则，记录 SKIPPED", "variant": "dashed" },
+    { "id": "compose", "from": "engine", "to": "composition", "y": 660, "label": "基本面 all + 信号 any + 风险 all；总体 all", "variant": "emphasis" },
+    { "id": "composed", "from": "composition", "to": "engine", "y": 690, "label": "overall passed + 有序 executions", "variant": "return" },
+    { "id": "stock_result", "from": "engine", "to": "service", "y": 720, "label": "股票筛选结果", "variant": "return" },
+    { "id": "screen_response", "from": "service", "to": "caller", "y": 750, "label": "ParameterizedScreeningResult[]", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "service", "from": 175, "to": 755, "type": "backend" },
+    { "participant": "planner", "from": 245, "to": 290, "type": "backend" },
+    { "participant": "local_repo", "from": 210, "to": 360, "type": "database" },
+    { "participant": "engine", "from": 385, "to": 725, "type": "backend" },
+    { "participant": "rule", "from": 415, "to": 635, "type": "backend" },
+    { "participant": "composition", "from": 655, "to": 695, "type": "backend" }
+  ]
+}

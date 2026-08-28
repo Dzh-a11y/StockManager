@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "StockManager 1.4.3 当前源码架构",
+    "locale": "zh-CN",
+    "output": "stockmanager-v1.4.3-current-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Dzh-a11y/StockManager.git",
+      "revision": "1787297d1ebdcf80aa0a51628977c482c6cdb367"
+    }
+  },
+  "components": [
+    {
+      "id": "researcher",
+      "type": "external",
+      "label": "研究用户",
+      "sublabel": "浏览器 / 终端",
+      "pos": [10, 250],
+      "size": [140, 70]
+    },
+    {
+      "id": "web-ui",
+      "type": "frontend",
+      "label": "本地 Web 工作台",
+      "sublabel": "HTML / CSS / JavaScript",
+      "tag": "无框架、无 CDN",
+      "pos": [220, 155],
+      "size": [180, 82],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/web/static/index.html", "label": "页面入口"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/web/static/app.js", "label": "浏览器交互"}
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "stock-manager CLI",
+      "sublabel": "screen / sync / web / status",
+      "tag": "argparse",
+      "pos": [220, 315],
+      "size": [180, 82],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/cli/main.py", "line": 83, "label": "命令入口"}
+      ]
+    },
+    {
+      "id": "local-api",
+      "type": "backend",
+      "label": "本地 HTTP API",
+      "sublabel": "WebApp + ThreadingHTTPServer",
+      "tag": "127.0.0.1:8000",
+      "pos": [470, 155],
+      "size": [200, 82],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/web/app.py", "line": 69, "label": "路由与装配"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/web/httpd.py", "line": 61, "label": "HTTP Server"}
+      ]
+    },
+    {
+      "id": "template-system",
+      "type": "backend",
+      "label": "模板子系统",
+      "sublabel": "TemplateService + TemplateCompiler",
+      "tag": "严格校验 / revision",
+      "pos": [780, 35],
+      "size": [220, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/templates/service.py", "line": 16, "label": "模板服务"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/templates/compiler.py", "line": 9, "label": "计划编译"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/templates/repository.py", "line": 33, "label": "JSON 仓储"}
+      ]
+    },
+    {
+      "id": "screening",
+      "type": "backend",
+      "label": "参数化筛选服务",
+      "sublabel": "DataPlanner + RuleContext",
+      "tag": "只读本地数据",
+      "pos": [780, 155],
+      "size": [220, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/services/parameterized_screening_service.py", "line": 27, "label": "筛选编排"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/services/screening_data.py", "line": 19, "label": "数据规划"}
+      ]
+    },
+    {
+      "id": "rules",
+      "type": "backend",
+      "label": "规则执行内核",
+      "sublabel": "Registry + RuleEngine + Composition",
+      "tag": "纯函数 / 三态结果",
+      "pos": [1080, 155],
+      "size": [220, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/rules/engine.py", "line": 12, "label": "规则执行"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/rules/builtin.py", "line": 606, "label": "显式注册"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/rules/composition.py", "label": "组合求值"}
+      ]
+    },
+    {
+      "id": "template-files",
+      "type": "database",
+      "label": "模板 JSON",
+      "sublabel": "系统只读 / 用户可修订",
+      "tag": "原子替换",
+      "pos": [1080, 35],
+      "size": [220, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/config/rule_templates/system-default.json", "label": "系统模板"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/templates/repository.py", "line": 85, "label": "持久化实现"}
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "本地 SQLite",
+      "sublabel": "market.sqlite3",
+      "tag": "行情 / 元数据 / 同步状态",
+      "pos": [780, 315],
+      "size": [190, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/storage/sqlite_repo.py", "line": 100, "label": "SQLiteRepository"}
+      ]
+    },
+    {
+      "id": "data-sync",
+      "type": "backend",
+      "label": "DataSyncService",
+      "sublabel": "启动回补 / 显式同步",
+      "tag": "唯一 Provider 调用入口",
+      "pos": [470, 315],
+      "size": [200, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/sync/data_sync_service.py", "line": 88, "label": "同步服务"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/web/app.py", "line": 103, "label": "Web 启动回补"}
+      ]
+    },
+    {
+      "id": "sync-locks",
+      "type": "security",
+      "label": "同步锁与状态门禁",
+      "sublabel": "进程锁 + 持久化文件锁",
+      "tag": "幂等 / 冷却 / 显式重试",
+      "pos": [780, 485],
+      "size": [220, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/sync/locks.py", "label": "并发保护"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/sync/data_sync_service.py", "line": 186, "label": "重复与重试门禁"}
+      ]
+    },
+    {
+      "id": "baostock",
+      "type": "external",
+      "label": "Baostock",
+      "sublabel": "A 股行情 Provider",
+      "tag": "ProviderProtocol",
+      "pos": [470, 485],
+      "size": [190, 86],
+      "sources": [
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/providers/baostock_provider.py", "label": "Provider 适配器"},
+        {"path": "stock_analysis_based_on_baostock_2025_09_19/src/stock_manager/protocols.py", "line": 18, "label": "ProviderProtocol"}
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "StockManager 本机边界",
+      "wraps": ["web-ui", "cli", "local-api", "template-system", "screening", "rules", "template-files", "sqlite", "data-sync", "sync-locks"],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "离线筛选边界",
+      "wraps": ["local-api", "template-system", "screening", "rules", "template-files", "sqlite"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {"id": "researcher-web", "from": "researcher", "to": "web-ui", "label": "浏览器操作", "variant": "emphasis"},
+    {"id": "researcher-cli", "from": "researcher", "to": "cli", "label": "终端命令"},
+    {"id": "web-http", "from": "web-ui", "to": "local-api", "label": "HTTP", "variant": "emphasis"},
+    {"id": "cli-sync", "from": "cli", "to": "data-sync", "label": "sync / smoke", "variant": "security"},
+    {"id": "api-template", "from": "local-api", "to": "template-system", "label": "模板 CRUD / 编译"},
+    {"id": "api-screen", "from": "local-api", "to": "screening", "label": "POST /screen", "variant": "emphasis", "labelAt": [725, 255]},
+    {"id": "api-startup-sync", "from": "local-api", "to": "data-sync", "label": "启动时自动回补", "variant": "dashed", "labelAt": [570, 275]},
+    {"id": "template-files-io", "from": "template-system", "to": "template-files", "label": "模板 JSON"},
+    {"id": "template-plan", "from": "template-system", "to": "screening", "label": "ScreeningPlan", "labelAt": [890, 138]},
+    {"id": "screen-rules", "from": "screening", "to": "rules", "label": "规则上下文", "variant": "emphasis"},
+    {"id": "screen-read", "from": "screening", "to": "sqlite", "label": "只读行情与元数据", "variant": "emphasis", "fromSide": "bottom", "toSide": "top"},
+    {"id": "sync-lock", "from": "data-sync", "to": "sync-locks", "label": "锁与状态门禁", "variant": "security"},
+    {"id": "sync-write", "from": "data-sync", "to": "sqlite", "label": "原子提交", "variant": "security"},
+    {"id": "sync-provider", "from": "data-sync", "to": "baostock", "label": "受控串行调用", "variant": "security", "fromSide": "bottom", "toSide": "top"}
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "本地优先",
+      "items": [
+        "ParameterizedScreeningService 只读 SQLite，不持有 Provider",
+        "Web 工作台与 CLI 筛选在断网时仍可运行"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "可扩展筛选内核",
+      "items": [
+        "模板严格编译为不可变 ScreeningPlan",
+        "规则显式注册，输出 PASSED / FAILED / SKIPPED"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "受控同步",
+      "items": [
+        "DataSyncService 是 Baostock 的唯一业务入口",
+        "Asia/Shanghai、显式复权、锁、幂等与失败状态均被持久化"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "StockManager 1.4.3 · DataSyncService 同步工作流",
+    "locale": "zh-CN",
+    "output": "artifacts/architecture/stockmanager-v1.4.3-datasync-workflow.html",
+    "quality_profile": "showcase",
+    "viewBox": [1440, 760]
+  },
+  "lanes": [
+    { "id": "entry", "label": "触发与目标" },
+    { "id": "control", "label": "DataSyncService" },
+    { "id": "storage", "label": "锁、状态与 SQLite" },
+    { "id": "provider", "label": "Provider 与校验" },
+    { "id": "exception", "label": "失败出口", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "resolve", "label": "确定同步范围", "fromCol": 0, "toCol": 1 },
+    { "id": "protect", "label": "幂等与并发保护", "fromCol": 2, "toCol": 4, "variant": "security" },
+    { "id": "transfer", "label": "受控拉取与落库", "fromCol": 5, "toCol": 5, "variant": "emphasis" }
+  ],
+  "groups": [
+    { "id": "locks", "label": "Dataset 双层保护", "lane": "control", "fromCol": 3, "toCol": 3, "variant": "security" },
+    { "id": "terminal", "label": "唯一终态", "lane": "storage", "fromCol": 5, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": ["trigger", "resolve_target", "dataset_gate", "mark_running", "serial_fetch", "commit_success"],
+  "nodes": [
+    { "id": "trigger", "lane": "entry", "col": 0, "type": "frontend", "label": "启动 / CLI" },
+    { "id": "resolve_target", "lane": "control", "col": 1, "type": "backend", "label": "解析目标交易日", "width": 108 },
+    { "id": "dataset_gate", "lane": "control", "col": 3, "type": "security", "label": "Dataset 双锁" },
+    { "id": "skip_existing", "lane": "entry", "col": 4, "type": "database", "label": "SUCCESS：本地复用", "width": 124 },
+    { "id": "mark_running", "lane": "storage", "col": 4, "type": "database", "label": "写 RUNNING" },
+    { "id": "serial_fetch", "lane": "provider", "col": 5, "type": "external", "label": "串行获取并校验", "width": 110 },
+    { "id": "commit_success", "lane": "storage", "col": 5, "type": "database", "label": "提交 SUCCESS" },
+    { "id": "mark_failed", "lane": "exception", "col": 5, "type": "security", "label": "FAILED + 抛错" }
+  ],
+  "edges": [
+    { "from": "trigger", "to": "resolve_target", "label": "启动检查或用户请求", "role": "main", "variant": "emphasis" },
+    { "from": "resolve_target", "to": "dataset_gate", "role": "main", "variant": "emphasis" },
+    { "from": "dataset_gate", "to": "skip_existing", "role": "branch", "variant": "dashed", "route": "drop", "fromSide": "top", "toSide": "bottom" },
+    { "from": "dataset_gate", "to": "mark_running", "role": "main", "variant": "emphasis", "route": "drop", "fromSide": "bottom", "toSide": "top" },
+    { "from": "mark_running", "to": "serial_fetch", "role": "main", "variant": "emphasis" },
+    { "from": "serial_fetch", "to": "commit_success", "label": "校验通过", "role": "main", "variant": "emphasis" },
+    { "from": "serial_fetch", "to": "mark_failed", "label": "任一步异常", "role": "error", "variant": "security", "route": "drop", "fromSide": "bottom", "toSide": "top" }
+  ]
+}
