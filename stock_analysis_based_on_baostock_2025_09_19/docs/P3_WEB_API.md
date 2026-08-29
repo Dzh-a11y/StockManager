@@ -31,7 +31,7 @@ stock-manager web \
 - **运行条件**：数据集、交易日、复权方式、可选股票代码。
 - **策略编辑器**：模板选择、规则卡片、参数控件、规则开关、分组组合 `all`/`any`。
 - **筛选结果**：总数/通过/失败统计、结果表、逐规则详情。
-- **个股 K 线**：点击结果行展开本地日K与成交量；K 线信息栏（图上方）在「涨幅次数」规则（`limit_up_3m`）启用时，附加展示其返回的涨幅日期（`actual_value.trading_days`），无涨幅则为空。K 线支持滚轮缩放、按钮缩放、左右平移与复位。
+- **个股 K 线**：点击结果行展开本地日K与成交量；K 线信息栏（图上方）在「涨停次数」规则（`limit_up_3m`）启用时，附加展示其返回的涨停日期（`actual_value.trading_days`），无涨停则为空。
 
 参数控件由 `GET /api/rules` 元数据自动生成，页面不硬编码内置规则清单。
 
@@ -160,7 +160,7 @@ stock-manager web \
 
 `GET /api/sync/progress`：返回自动回补进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","batch_phase":...,"batch_completed":N,"batch_total":N,"completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
-`GET /api/version`：返回当前包版本，`{"version": "1.5.1"}`，前端在顶部显示 `v1.5.1`。
+`GET /api/version`：返回当前包版本，`{"version": "1.5.0"}`，前端在顶部显示 `v1.5.0`。
 
 `GET /api/sync/status`：返回本地数据覆盖概览，用于界面上的"数据状态"卡片：
 
