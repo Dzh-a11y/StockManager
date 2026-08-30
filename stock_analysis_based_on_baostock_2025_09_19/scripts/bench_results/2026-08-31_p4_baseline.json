@@ -1,0 +1,64 @@
+{
+  "benchmark": "P4-0 baseline (serial existing paths)",
+  "date": "2026-08-31",
+  "env": {
+    "machine": "arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7",
+    "sqlite": "3.50.4",
+    "db_bytes": 207163392,
+    "db_daily_bar_count": 1243232,
+    "db_stock_count": 5212,
+    "db_day_range": [
+      "2025-09-01",
+      "2026-08-28"
+    ],
+    "plan_rows": 481
+  },
+  "target_day": "2026-08-28",
+  "universe_size": 5212,
+  "measurements": [
+    {
+      "label": "serial get_daily_bars all codes 365d",
+      "elapsed_seconds": 4.9313,
+      "rows": 1243232
+    },
+    {
+      "label": "serial get_daily_bars 200 codes 365d",
+      "elapsed_seconds": 0.143,
+      "rows": 48200
+    },
+    {
+      "label": "serial parameterized screen all codes",
+      "elapsed_seconds": 6.4426,
+      "rows": 5212
+    }
+  ],
+  "peak_rss_bytes": 2424438784,
+  "query_plans": {
+    "bars_in": [
+      [
+        3,
+        0,
+        59,
+        "SEARCH daily_bars USING INDEX sqlite_autoindex_daily_bars_1 (code=? AND trading_day>? AND trading_day<?)"
+      ]
+    ],
+    "stocks_asof": [
+      [
+        4,
+        0,
+        216,
+        "SCAN stocks USING INDEX sqlite_autoindex_stocks_1"
+      ]
+    ],
+    "fundamentals_in": [
+      [
+        3,
+        0,
+        72,
+        "SEARCH fundamentals USING INDEX sqlite_autoindex_fundamentals_1 (code=?)"
+      ]
+    ]
+  }
+}

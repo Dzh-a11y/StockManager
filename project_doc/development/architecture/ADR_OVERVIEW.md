@@ -1,5 +1,5 @@
 ---
-date: 2026-08-28
+date: 2026-08-31
 purpose: 汇总 StockManager 总体架构、数据边界、规则与模板契约、Web 边界、同步存储、版本与启动等全部已接受架构决策，作为项目决策总 ADR。
 project: StockManager
 status: active
@@ -13,7 +13,7 @@ status: active
 
 ## 背景与范围
 
-本 ADR 汇总 StockManager 自 P1 至 P3 全部已接受的架构决策，作为项目决策总纲。各阶段的设计、契约与验收明细分别记录于 `docs/` 下对应文档（`P1_*`、`P2_*`、`P3_*`），本 ADR 不与任何明细文档冲突；出现不一致时以本 ADR 为总纲、以对应明细文档的契约测试为准。
+本 ADR 汇总 StockManager 自 P1 至 P3 全部已接受的架构决策，作为项目决策总纲。各阶段的设计、契约与验收明细分别记录于 `development/implementation/` 下对应文档（`P1_*`、`P2_*`、`P3_*`），架构决策明细记录于 `development/architecture/` 下的 `ADR_P*` 文档；本 ADR 不与任何明细文档冲突；出现不一致时以本 ADR 为总纲、以对应明细文档的契约测试为准。
 
 ## 总体决策
 
@@ -84,7 +84,7 @@ Domain（不可变领域对象）被各层共享引用
 
 - 采用语义化版本 `MAJOR.MINOR.PATCH`：主版本=不兼容破坏；次版本=新增规则/功能（向后兼容）；修订版本=新增 UI 内容（向后兼容）。
 - 版本号必须同步三处并保持一致：`pyproject.toml` 的 `version`、`src/stock_manager/__init__.py` 的 `__version__`、`tests/test_package_structure.py` 的版本断言。
-- 当前基线版本：**1.4.3**。
+- 当前基线版本：**1.7.0**。
 
 ### 9. 平台与启动
 
@@ -93,24 +93,38 @@ Domain（不可变领域对象）被各层共享引用
 - **Windows**：双击 `scripts\StockManager.bat` 自动装依赖、启动并自动生成桌面快捷方式；`scripts\setup_windows.bat` 手动补救快捷方式；`scripts\build_windows_exe.bat` 可打包单文件 `dist\StockManager.exe`（免装 Python，数据存放于 exe 所在目录）。
 - 手动启动等价命令：`stock-manager web --db data/market.sqlite3 --system-templates config/rule_templates --user-templates data/user-templates --static src/stock_manager/web/static --sync-config config/sync.json --lock-dir data/locks --host 127.0.0.1 --port 8000`。
 
-### 10. 内置规则清单
+### 9. P4 只读访问与分片筛选基础设施
+
+- 新增数据库无关只读访问层 `stock_manager.read`：`MarketDataReadRequest`、`DatasetReadSnapshot`、`MarketDataBatch` 为不可变领域契约（无 SQL）；`MarketDataReaderProtocol` / `MarketDataReaderFactoryProtocol` 为数据库无关协议（禁止 sqlite3.Connection、SQL 文本与 PRAGMA）；`SQLiteMarketDataReader` 为 P4 唯一实现（只读 URI `mode=ro` + `PRAGMA query_only`）。
+- `MarketDataReadService` 负责代码分片、受控线程池并发、稳定合并（`code ASC, trading_day ASC`）、`max_workers=1` 串行回退与失败传播（`ShardReadError` 携带分片标识与原始异常链）；快照在并发读取前冻结，版本变化抛 `SnapshotConsistencyError`，禁止返回混合数据。
+- `ScreeningShardExecutor` 只属于参数化筛选通道：进程池 worker 各自创建只读 reader/连接，在 worker 内读取行情/基本面/分红并执行 `RuleEngine.evaluate()`，只回传结构化结果与进度；同一调用链禁止嵌套线程池/进程池；`max_workers=1` 或小数据量回退串行（逐股进度回调与旧实现一致）。
+- 并发约束：SQLite 连接只读且每 worker 独立；worker 数配置化有上限（默认读取 1、筛选 4）；代码分片避免超大 IN 查询；合并结果与串行结果逐项相等；写入、同步、重试与上游限速不受 P4 影响。
+- 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s。
+- 对后续阶段：P5-A 回测、P5-B CAPM、P6 只依赖 `MarketDataReadService` 与数据库无关类型；未来数据库升级只替换 reader 实现与连接配置；未来 CAPM/回测各自增加独立执行器，不得复用 `ScreeningPlan` 或 `RuleEngine` 承载其他模块业务。
+
+### 11. 内置规则清单
 
 | rule_id | 名称 | 归属 |
 | --- | --- | --- |
 | `pe_positive` | PE 下限 | 基本面组 |
-| `non_st` | 非 ST | 基本面组 |
-| `volume_price_5d` | 五日四倍量 | 信号组 |
-| `limit_up_breakout` | 五日炸板与最高价 | 信号组 |
+| `non_st` | 排除 ST | 基本面组 |
+| `volume_price_5d` | 量价信号 | 信号组 |
+| `limit_up_breakout` | 炸板或假阴线 | 信号组 |
 | `annual_min_volume` | 年度最低交易量 | 信号组 |
 | `annual_min_close_price` | 年度最低收盘价 | 信号组 |
-| `limit_up_3m` | 三个月涨停 | 风险组 |
+| `limit_up_3m` | 涨幅次数 | 风险组 |
 | `volatility_multiple` | 波动倍数 | 风险组 |
+| `consecutive_up_days` | 连阳 | 信号组 |
+| `n_day_close_above` | N日收盘价下限 | 信号组 |
+| `volume_sum_extreme` | 连续量能极值 | 信号组 |
+| `price_range_ratio` | N日高低点倍率 | 信号组 |
 
 ## 关联决策记录
 
-- `docs/ADR_P2_RULE_EXECUTION.md`：规则三态、模板版本与编译、显式注册、信号组归属、revision 乐观并发。
-- `docs/ADR_P3_LOCAL_WEB_UI.md`：Web 技术选型、分层边界、静态资源白名单、JSON 表示与错误映射。
-- 各阶段明细与验收：`docs/P1_2_DOMAIN_PROTOCOLS.md`、`docs/P1_4_PURE_RULES.md`、`docs/P1_5_LOCAL_SYNC_STORAGE.md`、`docs/P1_6_SCREENING_CLI.md`、`docs/P2_PARAMETERIZED_RULES.md`、`docs/P3_WEB_API.md` 等。
+- `development/architecture/ADR_P4_READ_LAYER.md`：P4 只读访问层、并发读取服务与分片筛选执行的公共契约、并发约束与错误语义。
+- `development/architecture/ADR_P2_RULE_EXECUTION.md`：规则三态、模板版本与编译、显式注册、信号组归属、revision 乐观并发。
+- `development/architecture/ADR_P3_LOCAL_WEB_UI.md`：Web 技术选型、分层边界、静态资源白名单、JSON 表示与错误映射。
+- 各阶段明细与验收：`development/implementation/P1_2_DOMAIN_PROTOCOLS.md`、`development/implementation/P1_4_PURE_RULES.md`、`development/implementation/P1_5_LOCAL_SYNC_STORAGE.md`、`development/implementation/P1_6_SCREENING_CLI.md`、`development/implementation/P2_PARAMETERIZED_RULES.md`、`development/implementation/P3_WEB_API.md`、`development/implementation/P4_READ_LAYER.md` 等。
 
 ## 结果
 

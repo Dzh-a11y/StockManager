@@ -1,5 +1,5 @@
 ---
-date: 2026-08-28
+date: 2026-08-31
 purpose: 规定 StockManager 的架构、开发质量、AI 分工及文档同步要求。
 project: StockManager
 status: active
@@ -39,6 +39,14 @@ status: active
 - 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
 - 项目文档目录（project_doc）：`/Users/douzihao/StockManager/project_doc`。
 - 所有仓库相对路径均以上述代码仓库为基准解析。
+
+`project_doc` 内部按「开发手册」与「使用手册」组织，目录名均为英文：
+
+- `development/plan/`：计划手册（阶段计划 `PHASE_*_PLAN.md`、`MIGRATION_PLAN.md`、`DELETE_MANIFEST.md`）。
+- `development/architecture/`：架构手册与架构图（总 ADR `ADR_OVERVIEW.md`、`ADR_P*` 明细及 HTML/JSON 架构图，同属一个文件夹）。
+- `development/implementation/`：实现手册（`P1_*`、`P2_*`、`P3_*` 等各阶段设计、验收与接口明细）。
+- `usage/`：使用手册（安装、启动、内置规则与操作说明）。
+- 入口索引：`project_doc/README.md`。
 
 - 项目文档目录：`/Users/douzihao/StockManager/project_doc` 是开发时默认的项目知识与技术文档来源。
 - 每次开发开始前，必须优先读取 Vault 的 `project_doc` 目录。
@@ -251,7 +259,8 @@ Qwen 默认不知道 `AGENTS.md`、Obsidian Vault、仓库源码、历史对话�
 ### 10.2 Obsidian 同步
 
 - 文档新增或修改后，必须同步到 Obsidian Vault：`/Users/douzihao/StockManager/project_doc`。
-- Vault 内统一存放在 `project_doc` 目录，并尽量保持源项目的相对目录结构。
+- Vault 内统一存放在 `project_doc` 目录，并按第 1.4 节的分类归位：`development/plan/`、`development/architecture/`、`development/implementation/`、`usage/`。
+- 技术文档的唯一存放位置为 `project_doc`（Obsidian Vault）；代码仓库不再保留 Markdown 文档副本，文档变更只需更新 Vault 内对应文档。
 - 同名文档已经存在时必须更新原副本，禁止反复创建带日期后缀的重复副本。
 - 文档同步是完成定义的一部分；没有完成同步，不得将任务标记为完成。
 - 本 `AGENTS.md` 自身也必须遵守本节规定。

@@ -106,6 +106,11 @@ class SQLiteRepository:
         with self._connect() as connection:
             connection.executescript(SCHEMA)
 
+    @property
+    def database_path(self) -> Path:
+        """The on-disk SQLite file this repository owns (read-only)."""
+        return self._database_path
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._database_path, timeout=30.0)

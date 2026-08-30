@@ -1,26 +1,42 @@
-"""Plan-driven, offline screening orchestration."""
+"""Plan-driven, offline screening orchestration (P4-4 sharded execution).
+
+The service keeps its public contract (Web/CLI) unchanged: screen() still
+takes a compiled ScreeningPlan and returns ordered ParameterizedScreeningResult
+objects. Internally, data reads and RuleEngine evaluation are delegated to the
+ScreeningShardExecutor so each shard worker owns its read-only connection and
+evaluates rules inside the worker; a serial fallback path (same per-code
+semantics) is used when no SQLite database_path is available or when
+max_workers=1/small-data thresholds apply.
+"""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from datetime import date
+from pathlib import Path
 
 from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
+    DatasetMetadata,
     DividendRecord,
     ParameterizedScreeningResult,
+    StockIdentity,
 )
 from stock_manager.protocols import LocalRepositoryProtocol
+from stock_manager.read.plan_view import PicklableScreeningPlan
+from stock_manager.read.protocols import MarketDataReaderFactoryProtocol
+from stock_manager.read.sqlite_reader import SQLiteMarketDataReaderFactory
 from stock_manager.rules.base import RuleContext
 from stock_manager.rules.engine import RuleEngine
 from stock_manager.rules.registry import RuleRegistry
-from stock_manager.services.screening_data import ScreeningDataPlanner
+from stock_manager.services.screening_data import ScreeningDataPlan, ScreeningDataPlanner
 from stock_manager.services.screening_service import (
     DatasetUnavailableError,
     StockNotFoundError,
 )
+from stock_manager.services.screening_shard_executor import ScreeningShardExecutor
 from stock_manager.templates.models import ScreeningPlan
 
 
@@ -29,10 +45,30 @@ class ParameterizedScreeningService:
         self,
         repository: LocalRepositoryProtocol,
         registry: RuleRegistry,
+        *,
+        reader_factory: MarketDataReaderFactoryProtocol | None = None,
+        max_workers: int = 4,
+        batch_size: int = 500,
+        small_data_serial_threshold: int = 50,
     ) -> None:
         self._repository = repository
         self._planner = ScreeningDataPlanner()
         self._engine = RuleEngine(registry)
+        self._registry = registry
+        database_path = getattr(repository, "database_path", None)
+        if reader_factory is None and isinstance(database_path, Path):
+            reader_factory = SQLiteMarketDataReaderFactory(database_path)
+        self._executor: ScreeningShardExecutor | None = (
+            ScreeningShardExecutor(
+                reader_factory,
+                registry,
+                max_workers=max_workers,
+                batch_size=batch_size,
+                small_data_serial_threshold=small_data_serial_threshold,
+            )
+            if reader_factory is not None
+            else None
+        )
 
     def screen(
         self,
@@ -72,6 +108,45 @@ class ParameterizedScreeningService:
                 f"local trading calendar does not contain {trading_day.isoformat()}"
             )
         data_plan = self._planner.plan(plan, trading_day, trading_days)
+        if self._executor is not None:
+            return self._executor.execute(
+                PicklableScreeningPlan.from_plan(plan),
+                normalized_dataset_id,
+                trading_day,
+                adjustment,
+                metadata,
+                tuple(stocks.values()),
+                selected,
+                data_plan,
+                progress_callback,
+            )
+        return self._serial_screen(
+            plan,
+            normalized_dataset_id,
+            trading_day,
+            adjustment,
+            stocks,
+            selected,
+            data_plan,
+            metadata,
+            progress_callback,
+        )
+
+    def _serial_screen(
+        self,
+        plan: ScreeningPlan,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+        stocks: dict[str, StockIdentity],
+        selected: tuple[str, ...],
+        data_plan: ScreeningDataPlan,
+        metadata: DatasetMetadata,
+        progress_callback: Callable[[dict[str, object]], None] | None,
+    ) -> tuple[ParameterizedScreeningResult, ...]:
+        """Legacy serial fallback used when no reader factory is available."""
+
+        del dataset_id
         bars = self._repository.get_daily_bars(
             selected, data_plan.market_start, trading_day, adjustment
         )
@@ -102,8 +177,10 @@ class ParameterizedScreeningService:
                         "phase": "screening",
                     }
                 )
+            stock = stocks[code]
+            assert hasattr(stock, "name")
             context = RuleContext(
-                stocks[code],
+                stock,  # type: ignore[arg-type]
                 trading_day,
                 adjustment,
                 metadata,
@@ -115,7 +192,7 @@ class ParameterizedScreeningService:
             output.append(
                 ParameterizedScreeningResult(
                     code,
-                    stocks[code].name,
+                    stock.name,  # type: ignore[attr-defined]
                     trading_day,
                     passed,
                     executions,
