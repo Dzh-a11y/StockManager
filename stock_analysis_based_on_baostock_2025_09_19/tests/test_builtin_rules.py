@@ -21,8 +21,10 @@ def test_default_registry_contains_all_builtin_rules() -> None:
         "n_day_close_above",
         "non_st",
         "pe_positive",
+        "price_range_ratio",
         "volatility_multiple",
         "volume_price_5d",
+        "volume_sum_extreme",
     )
 
 
@@ -68,3 +70,29 @@ def test_new_rules_declare_trading_session_history() -> None:
     floor_requirement = floor.data_requirement(floor_parameters)
     assert floor_requirement.market_history_unit is WindowUnit.TRADING_SESSIONS
     assert floor_requirement.history_length == 3
+
+    volume_extreme = registry.get("volume_sum_extreme")
+    volume_parameters = volume_extreme.parse_parameters(
+        {
+            "lookback_trading_sessions": 60,
+            "target_days": 2,
+            "reference_days": 2,
+            "mode": "min",
+            "minimum_required_trading_sessions": 10,
+        }
+    )
+    volume_requirement = volume_extreme.data_requirement(volume_parameters)
+    assert volume_requirement.market_history_unit is WindowUnit.TRADING_SESSIONS
+    assert volume_requirement.history_length == 60
+
+    range_ratio = registry.get("price_range_ratio")
+    range_parameters = range_ratio.parse_parameters(
+        {
+            "lookback_trading_sessions": 20,
+            "minimum_ratio": "1.3",
+            "maximum_ratio": "1.4",
+        }
+    )
+    range_requirement = range_ratio.data_requirement(range_parameters)
+    assert range_requirement.market_history_unit is WindowUnit.TRADING_SESSIONS
+    assert range_requirement.history_length == 20

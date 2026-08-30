@@ -160,7 +160,7 @@ stock-manager web \
 
 `GET /api/sync/progress`：返回自动回补进度，`{"status":"idle|running|done|error","dataset_id":...,"trading_day":...,"phase":"daily_bars|fundamentals|dividends|starting","batch_phase":...,"batch_completed":N,"batch_total":N,"completed":N,"total":N,"current_code":...,"message":...}`，前端据此显示进度条与当前正在加载的股票。
 
-`GET /api/version`：返回当前包版本，`{"version": "1.5.0"}`，前端在顶部显示 `v1.5.0`。
+`GET /api/version`：返回当前包版本，`{"version": "1.6.0"}`，前端在顶部显示 `v1.6.0`。
 
 `GET /api/sync/status`：返回本地数据覆盖概览，用于界面上的"数据状态"卡片：
 

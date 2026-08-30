@@ -30,9 +30,11 @@ from stock_manager.rules.n_day_close_above import evaluate_n_day_close_above
 from stock_manager.rules.limit_up_breakout import evaluate_limit_up_breakout
 from stock_manager.rules.non_st import evaluate_non_st
 from stock_manager.rules.pe_positive import evaluate_pe_positive
+from stock_manager.rules.price_range_ratio import evaluate_price_range_ratio
 from stock_manager.rules.registry import RuleRegistry
 from stock_manager.rules.volatility_multiple import evaluate_volatility_multiple
 from stock_manager.rules.volume_price_5d import evaluate_volume_price_5d
+from stock_manager.rules.volume_sum_extreme import evaluate_volume_sum_extreme
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,22 @@ class ConsecutiveUpDaysParameters:
 class NDayCloseAboveParameters:
     lookback_trading_sessions: int
     minimum_close: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeSumExtremeParameters:
+    lookback_trading_sessions: int
+    target_days: int
+    reference_days: int
+    mode: str
+    minimum_required_trading_sessions: int
+
+
+@dataclass(frozen=True, slots=True)
+class PriceRangeRatioParameters:
+    lookback_trading_sessions: int
+    minimum_ratio: Decimal
+    maximum_ratio: Decimal
 
 
 def _mapping(raw: object, expected: set[str], rule_id: str) -> dict[str, object]:
@@ -730,6 +748,177 @@ class NDayCloseAboveRule:
         )
 
 
+class VolumeSumExtremeRule:
+    definition = RuleDefinition(
+        "volume_sum_extreme",
+        "连续量能极值",
+        "最近连续N天的成交量之和是所有连续M天成交量之和中的最低值或最高值",
+        (
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                60,
+                "回看交易日数",
+                "在最近多少个交易日内生成所有连续参考窗口。",
+            ),
+            _parameter(
+                "target_days",
+                ParameterType.INTEGER,
+                2,
+                "最近连续天数",
+                "计算最近连续多少个交易日的成交量之和作为目标值。",
+            ),
+            _parameter(
+                "reference_days",
+                ParameterType.INTEGER,
+                2,
+                "参考连续天数",
+                "用所有连续多少个交易日的成交量之和作为比较集合。",
+            ),
+            _parameter(
+                "mode",
+                ParameterType.TEXT,
+                "min",
+                "比较模式",
+                "min 表示目标值必须是所有参考和中的最低值；max 表示必须是最高值。",
+            ),
+            _parameter(
+                "minimum_required_trading_sessions",
+                ParameterType.INTEGER,
+                10,
+                "最少有效交易日数",
+                "回看窗口内至少要有多少个有效交易日；不足直接判定失败。",
+            ),
+        ),
+    )
+
+    def parse_parameters(self, raw: object) -> VolumeSumExtremeParameters:
+        values = _mapping(
+            raw,
+            {
+                "lookback_trading_sessions",
+                "target_days",
+                "reference_days",
+                "mode",
+                "minimum_required_trading_sessions",
+            },
+            self.definition.rule_id,
+        )
+        lookback = _integer(values, "lookback_trading_sessions")
+        target = _integer(values, "target_days")
+        reference = _integer(values, "reference_days")
+        minimum_required = _integer(
+            values, "minimum_required_trading_sessions"
+        )
+        mode = values["mode"]
+        if not isinstance(mode, str) or mode not in ("min", "max"):
+            raise ValueError("mode must be 'min' or 'max'")
+        if lookback < max(target, reference):
+            raise ValueError(
+                "lookback_trading_sessions must be at least max(target_days, reference_days)"
+            )
+        return VolumeSumExtremeParameters(
+            lookback,
+            target,
+            reference,
+            mode,
+            minimum_required,
+        )
+
+    def data_requirement(self, parameters: object) -> RuleDataRequirement:
+        if not isinstance(parameters, VolumeSumExtremeParameters):
+            raise TypeError("parameters must be VolumeSumExtremeParameters")
+        return RuleDataRequirement(
+            market_history_unit=WindowUnit.TRADING_SESSIONS,
+            history_length=parameters.lookback_trading_sessions,
+        )
+
+    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
+        if not isinstance(parameters, VolumeSumExtremeParameters):
+            raise TypeError("parameters must be VolumeSumExtremeParameters")
+        return evaluate_volume_sum_extreme(
+            context.daily_bars,
+            context.metadata,
+            parameters.lookback_trading_sessions,
+            parameters.target_days,
+            parameters.reference_days,
+            parameters.mode,
+            parameters.minimum_required_trading_sessions,
+            context.adjustment,
+        )
+
+
+class PriceRangeRatioRule:
+    definition = RuleDefinition(
+        "price_range_ratio",
+        "N日高低点倍率",
+        "最近N个交易日内最高价相对最低价的倍数落在指定区间内",
+        (
+            _parameter(
+                "lookback_trading_sessions",
+                ParameterType.INTEGER,
+                20,
+                "观察交易日数",
+                "在最近多少个交易日内计算最高价与最低价。",
+            ),
+            _parameter(
+                "minimum_ratio",
+                ParameterType.DECIMAL,
+                "1.3",
+                "倍率下限",
+                "最高价 ÷ 最低价的下限，包含等于。",
+            ),
+            _parameter(
+                "maximum_ratio",
+                ParameterType.DECIMAL,
+                "1.4",
+                "倍率上限",
+                "最高价 ÷ 最低价的上限，包含等于。",
+            ),
+        ),
+    )
+
+    def parse_parameters(self, raw: object) -> PriceRangeRatioParameters:
+        values = _mapping(
+            raw,
+            {"lookback_trading_sessions", "minimum_ratio", "maximum_ratio"},
+            self.definition.rule_id,
+        )
+        minimum_ratio = _decimal(values, "minimum_ratio")
+        maximum_ratio = _decimal(values, "maximum_ratio")
+        if minimum_ratio <= 0:
+            raise ValueError("minimum_ratio must be positive")
+        if maximum_ratio < minimum_ratio:
+            raise ValueError(
+                "maximum_ratio must be greater than or equal to minimum_ratio"
+            )
+        return PriceRangeRatioParameters(
+            _integer(values, "lookback_trading_sessions"),
+            minimum_ratio,
+            maximum_ratio,
+        )
+
+    def data_requirement(self, parameters: object) -> RuleDataRequirement:
+        if not isinstance(parameters, PriceRangeRatioParameters):
+            raise TypeError("parameters must be PriceRangeRatioParameters")
+        return RuleDataRequirement(
+            market_history_unit=WindowUnit.TRADING_SESSIONS,
+            history_length=parameters.lookback_trading_sessions,
+        )
+
+    def evaluate(self, context: RuleContext, parameters: object) -> RuleResult:
+        if not isinstance(parameters, PriceRangeRatioParameters):
+            raise TypeError("parameters must be PriceRangeRatioParameters")
+        return evaluate_price_range_ratio(
+            context.daily_bars,
+            context.metadata,
+            parameters.lookback_trading_sessions,
+            parameters.minimum_ratio,
+            parameters.maximum_ratio,
+            context.adjustment,
+        )
+
+
 def build_default_registry() -> RuleRegistry:
     rules: tuple[ScreeningRule, ...] = (
         PePositiveRule(),
@@ -742,5 +931,7 @@ def build_default_registry() -> RuleRegistry:
         AnnualMinClosePriceRule(),
         ConsecutiveUpDaysRule(),
         NDayCloseAboveRule(),
+        VolumeSumExtremeRule(),
+        PriceRangeRatioRule(),
     )
     return RuleRegistry(rules)

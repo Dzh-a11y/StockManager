@@ -13,8 +13,10 @@ from stock_manager.rules.limit_up_breakout import evaluate_limit_up_breakout
 from stock_manager.rules.n_day_close_above import evaluate_n_day_close_above
 from stock_manager.rules.non_st import evaluate_non_st
 from stock_manager.rules.pe_positive import evaluate_pe_positive
+from stock_manager.rules.price_range_ratio import evaluate_price_range_ratio
 from stock_manager.rules.volatility_multiple import evaluate_volatility_multiple
 from stock_manager.rules.volume_price_5d import evaluate_volume_price_5d
+from stock_manager.rules.volume_sum_extreme import evaluate_volume_sum_extreme
 
 __all__ = [
     "build_default_registry",
@@ -27,8 +29,10 @@ __all__ = [
     "evaluate_n_day_close_above",
     "evaluate_non_st",
     "evaluate_pe_positive",
+    "evaluate_price_range_ratio",
     "evaluate_volatility_multiple",
     "evaluate_volume_price_5d",
+    "evaluate_volume_sum_extreme",
     "load_rules_config",
     "RulesConfig",
 ]

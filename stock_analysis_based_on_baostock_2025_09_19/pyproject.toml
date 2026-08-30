@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stock-manager"
-version = "1.5.1"
+version = "1.6.0"
 description = "A testable research-oriented A-share stock screening core"
 readme = "README.md"
 requires-python = ">=3.11"
