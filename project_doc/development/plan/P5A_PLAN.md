@@ -643,9 +643,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：用反未来函数 fixture 证明 T+1 发布的数据在 T 不可见；退市股票能在适用日期进入股票池；不支持的数据明确拒绝。
 
-### P5A-3：研究策略领域模型与政策注册表
+### P5A-3：研究策略领域模型与政策注册表 —— 已完成（2026-09-02 验收）
 
 **目标**：建立与 Backtrader 解耦、可版本化的策略契约。
+
+**验收结果**：新增 research 包（ResearchStrategySpec/PolicySpec/PolicyKind/EvaluationSchedule/PolicyParameterSpec、PolicyRegistry 白名单参数校验、canonical_json/plan_fingerprint/policy_fingerprint/spec_fingerprint）；内置 8 个政策与三个受控策略规格（selection_rebalance_v1/selection_sma_timing_v1/selection_fixed_holding_v1）；Domain 不导入 Backtrader（子进程断言），未知 policy ID/版本、import path 参数、越界/缺失参数运行前拒绝，相同配置 fingerprint 稳定。pytest 323 通过（新增 10 项）。实现文档：development/implementation/P5A_3_STRATEGY_SPEC.md。
 
 **工作**：
 
