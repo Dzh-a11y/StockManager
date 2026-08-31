@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -12,8 +13,15 @@ from zoneinfo import ZoneInfo
 
 from stock_manager.domain import (
     AdjustmentMethod,
+    BackfillChunkV2,
+    BackfillRunStatus,
+    BackfillRunV2,
     DailyBar,
+    DataCoverageStatus,
+    DatasetCoverage,
     DatasetMetadata,
+    DatasetVersion,
+    DatasetVersionStatus,
     FundamentalSnapshot,
     ProviderSmokeOutcome,
     StockIdentity,
@@ -22,6 +30,12 @@ from stock_manager.domain import (
     SyncStatus,
 )
 from stock_manager.protocols import LocalRepositoryProtocol, ProviderProtocol
+from stock_manager.sync.history_plan import (
+    TRADING_DAYS_PER_YEAR,
+    CoveragePlan,
+    plan_coverage,
+    trading_day_lookback,
+)
 from stock_manager.sync.locks import dataset_lock_path, persistent_file_lock, process_lock
 
 
@@ -42,6 +56,22 @@ class SyncFailedError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class SyncHistoryConfig:
+    """Eight-year history window (config v2) with a fixed coverage policy."""
+
+    target_years: int
+    coverage_policy: str = "latest_completed_trading_day"
+
+    def __post_init__(self) -> None:
+        if self.target_years <= 0:
+            raise ValueError("target_years must be positive")
+        if self.coverage_policy != "latest_completed_trading_day":
+            raise ValueError(
+                f"unsupported coverage policy: {self.coverage_policy}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class SyncConfig:
     cutoff_time: wall_time
     retry_cooldown: timedelta
@@ -49,6 +79,7 @@ class SyncConfig:
     calendar_horizon_days: int
     dividend_lookback_years: int
     retention_days: int = 360
+    history: SyncHistoryConfig | None = None
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -692,3 +723,405 @@ class DataSyncService:
                 raise SyncFailedError(
                     f"trading calendar synchronization failed through {coverage_end.isoformat()}"
                 ) from error
+    # ------------------------------------------------------------------
+    # P5A-1 v2: eight-year coverage backfill (config v2 history path)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _backfill_run_id(
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        target_start: date,
+        as_of: date,
+    ) -> str:
+        """Deterministic run identity bound to the exact target range."""
+        raw = (
+            f"{dataset_id}|{adjustment.value}|"
+            f"{target_start.isoformat()}|{as_of.isoformat()}"
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _resolve_targets_v2(self) -> tuple[date, date]:
+        """Resolve the eight-year window: latest completed day and lookback start."""
+        if self._config.history is None:
+            raise ValueError("history config is required for v2 targets")
+        now = self._now()
+        span_days = self._config.history.target_years * 366 + 45
+        calendar_start = now.date() - timedelta(days=span_days)
+        coverage_end = now.date() + timedelta(
+            days=self._config.calendar_horizon_days
+        )
+        self.sync_trading_calendar(calendar_start, coverage_end)
+        days = self._repository.get_trading_days(calendar_start, now.date())
+        target_end = latest_completed_trading_day(
+            now, days, self._config.cutoff_time
+        )
+        target_start = trading_day_lookback(
+            days,
+            target_end,
+            self._config.history.target_years * TRADING_DAYS_PER_YEAR,
+        )
+        return target_start, target_end
+
+    def _update_coverage_rows(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        target_start: date,
+        target_end: date,
+    ) -> dict[str, DatasetCoverage]:
+        """Recompute and persist per-data-type coverage against the target window."""
+        plan = plan_coverage(
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            target_start=target_start,
+            target_end=target_end,
+            probe=self._repository.actual_coverage,
+        )
+        coverages: dict[str, DatasetCoverage] = {}
+        for type_plan in plan.per_type:
+            gap_markers: list[date] = []
+            for gap in (type_plan.prefix_gap, type_plan.tail_gap):
+                if gap is not None:
+                    gap_markers.extend(gap)
+            item = DatasetCoverage(
+                dataset_id=dataset_id,
+                adjustment=adjustment,
+                data_type=type_plan.data_type,
+                earliest_day=type_plan.actual_earliest,
+                latest_day=type_plan.actual_latest,
+                status=type_plan.status,
+                gap_days=tuple(gap_markers),
+            )
+            self._repository.save_dataset_coverage(item)
+            coverages[type_plan.data_type] = item
+        return coverages
+
+    def _commit_generation(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        target_start: date,
+        target_end: date,
+    ) -> DatasetVersion | None:
+        """Commit an immutable COMPLETE generation once coverage is proven."""
+        plan = plan_coverage(
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            target_start=target_start,
+            target_end=target_end,
+            probe=self._repository.actual_coverage,
+        )
+        if plan.overall_status is not DataCoverageStatus.COMPLETE:
+            return None
+        digest = hashlib.sha256(
+            (
+                f"{dataset_id}|{adjustment.value}|"
+                f"{target_start.isoformat()}|{target_end.isoformat()}"
+            ).encode("utf-8")
+        ).hexdigest()[:8]
+        generation = f"{dataset_id}-{target_end.isoformat()}-{digest}"
+        latest = self._repository.get_latest_dataset_version(
+            dataset_id, adjustment
+        )
+        if latest is not None and latest.generation == generation:
+            return latest
+        version = DatasetVersion(
+            dataset_id=dataset_id,
+            generation=generation,
+            source=self._provider.source_name,
+            adjustment=adjustment,
+            created_at=self._now(),
+            status=DatasetVersionStatus.COMPLETE,
+            coverage_start=target_start,
+            coverage_end=target_end,
+        )
+        self._repository.save_dataset_version(version)
+        return version
+
+    def backfill_on_startup_v2(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> SyncOutcome | None:
+        """v2 startup path: plan the eight-year window and backfill gaps.
+
+        Returns None when the target window is already covered and a
+        COMPLETE generation is committed. Requires config.history.
+        """
+        if self._config.history is None:
+            raise ValueError("backfill_on_startup_v2 requires history in sync config")
+        if not dataset_id.strip():
+            raise ValueError("dataset_id must not be empty")
+        target_start, target_end = self._resolve_targets_v2()
+        plan = plan_coverage(
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            target_start=target_start,
+            target_end=target_end,
+            probe=self._repository.actual_coverage,
+        )
+        if not plan.needs_backfill:
+            self._update_coverage_rows(dataset_id, adjustment, target_start, target_end)
+            self._commit_generation(dataset_id, adjustment, target_start, target_end)
+            return None
+        return self.backfill_history_v2(
+            dataset_id,
+            adjustment,
+            target_start=target_start,
+            as_of=target_end,
+        )
+
+    def backfill_history_v2(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        target_start: date,
+        as_of: date,
+        batch_size: int = 100,
+    ) -> SyncOutcome:
+        """Eight-year range backfill with range-bound checkpoint identity.
+
+        The run identity is a deterministic digest of (dataset, adjustment,
+        target_start, as_of), so a completed one-year chunk can never be
+        reused as an eight-year chunk, and re-running the exact same range is
+        idempotent: an existing SUCCESS run is skipped with a warning, and an
+        interrupted run resumes from its matching checkpoints only.
+
+        Provider requests stay serial and paced inside the provider lock.
+        """
+        if not dataset_id.strip():
+            raise ValueError("dataset_id must not be empty")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if target_start > as_of:
+            raise ValueError("target_start must not be after as_of")
+        run_id = self._backfill_run_id(dataset_id, adjustment, target_start, as_of)
+        lock_key = f"{self._lock_directory.resolve()}:{dataset_id}:backfillv2:{run_id}"
+        dataset_process_lock = process_lock(lock_key)
+        dataset_file_lock = dataset_lock_path(self._lock_directory, dataset_id, as_of)
+        with dataset_process_lock, persistent_file_lock(dataset_file_lock):
+            existing_run = self._repository.get_backfill_run_v2(run_id)
+            if (
+                existing_run is not None
+                and existing_run.status is BackfillRunStatus.SUCCESS
+            ):
+                warnings.warn(
+                    "八年回补已完成,跳过拉取",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                return SyncOutcome(
+                    dataset_id, as_of, SyncStatus.SUCCESS, True, "八年回补已完成,跳过拉取", None
+                )
+            if (
+                existing_run is not None
+                and existing_run.status is BackfillRunStatus.RUNNING
+            ):
+                warnings.warn(
+                    "previous v2 backfill left a RUNNING run; resuming from completed chunks",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            now = self._now()
+            running = BackfillRunV2(
+                run_id,
+                dataset_id,
+                adjustment,
+                target_start,
+                as_of,
+                BackfillRunStatus.RUNNING,
+                now,
+                None,
+                None,
+            )
+            self._repository.save_backfill_run_v2(running)
+            try:
+                plan = plan_coverage(
+                    dataset_id=dataset_id,
+                    adjustment=adjustment,
+                    target_start=target_start,
+                    target_end=as_of,
+                    probe=self._repository.actual_coverage,
+                )
+                daily = plan.by_type("daily_bars")
+                gaps: list[tuple[date, date]] = []
+                if daily.prefix_gap is not None:
+                    gaps.append(daily.prefix_gap)
+                if daily.tail_gap is not None:
+                    gaps.append(daily.tail_gap)
+                if not gaps:
+                    finished = self._now()
+                    self._update_coverage_rows(
+                        dataset_id, adjustment, target_start, as_of
+                    )
+                    self._commit_generation(
+                        dataset_id, adjustment, target_start, as_of
+                    )
+                    self._repository.save_backfill_run_v2(
+                        BackfillRunV2(
+                            run_id,
+                            dataset_id,
+                            adjustment,
+                            target_start,
+                            as_of,
+                            BackfillRunStatus.SUCCESS,
+                            now,
+                            finished,
+                            None,
+                        ),
+                    )
+                    self._repository.save_sync_record(
+                        SyncRecord(
+                            dataset_id,
+                            as_of,
+                            SyncStatus.SUCCESS,
+                            self._provider.source_name,
+                            adjustment,
+                            now,
+                            finished,
+                            None,
+                        ),
+                    )
+                    return SyncOutcome(
+                        dataset_id, as_of, SyncStatus.SUCCESS, True, "数据已覆盖目标区间", None
+                    )
+                with self._provider_process_lock, persistent_file_lock(
+                    self._provider_file_lock
+                ):
+                    trading_days = self._provider_call(
+                        lambda: self._provider.fetch_trading_days(target_start, as_of)
+                    )
+                    self._validate_calendar(trading_days, target_start, as_of)
+                    stocks = self._provider_call(
+                        lambda: self._provider.fetch_stocks(as_of)
+                    )
+                    if not stocks:
+                        raise ValueError("provider returned an empty stock universe")
+                    selected_codes = tuple(stock.code for stock in stocks)
+                    metadata = DatasetMetadata(
+                        dataset_id,
+                        as_of,
+                        self._provider.source_name,
+                        self._now(),
+                        adjustment,
+                    )
+                    self._repository.save_trading_days(trading_days, metadata)
+                    self._repository.save_stocks(stocks, metadata)
+                    completed = self._repository.completed_chunk_codes_v2(run_id)
+                    total_units = len(gaps) * 2 * len(selected_codes)
+                    done_units = 0
+                    for gap_start, gap_end in gaps:
+                        for offset in range(0, len(selected_codes), batch_size):
+                            chunk_index = offset // batch_size
+                            chunk = selected_codes[offset : offset + batch_size]
+                            checkpoint = completed.get(chunk_index)
+                            if checkpoint is not None and any(
+                                item.codes == tuple(chunk)
+                                and item.range_start == gap_start
+                                and item.range_end == gap_end
+                                for item in checkpoint
+                            ):
+                                done_units += 2 * len(chunk)
+                                continue
+                            bars = self._provider_call(
+                                lambda chunk=chunk, gap_start=gap_start, gap_end=gap_end: (
+                                    self._provider.fetch_daily_bars(
+                                        chunk, gap_start, gap_end, adjustment
+                                    )
+                                )
+                            )
+                            self._repository.save_daily_bars(bars, metadata)
+                            done_units += len(chunk)
+                            self._emit_progress(
+                                "daily_bars", done_units, total_units, chunk[-1]
+                            )
+                            fundamentals = self._provider_call(
+                                lambda chunk=chunk: self._provider.fetch_fundamentals(
+                                    chunk, as_of
+                                )
+                            )
+                            self._repository.save_fundamentals(
+                                fundamentals, metadata
+                            )
+                            done_units += len(chunk)
+                            self._emit_progress(
+                                "fundamentals", done_units, total_units, chunk[-1]
+                            )
+                            self._repository.save_backfill_chunk_v2(
+                                BackfillChunkV2(
+                                    run_id,
+                                    chunk_index,
+                                    tuple(chunk),
+                                    gap_start,
+                                    gap_end,
+                                    len(bars),
+                                    BackfillRunStatus.SUCCESS,
+                                ),
+                            )
+                finished_at = self._now()
+                self._update_coverage_rows(
+                    dataset_id, adjustment, target_start, as_of
+                )
+                self._commit_generation(
+                    dataset_id, adjustment, target_start, as_of
+                )
+                self._repository.save_backfill_run_v2(
+                    BackfillRunV2(
+                        run_id,
+                        dataset_id,
+                        adjustment,
+                        target_start,
+                        as_of,
+                        BackfillRunStatus.SUCCESS,
+                        now,
+                        finished_at,
+                        None,
+                    ),
+                )
+                self._repository.save_sync_record(
+                    SyncRecord(
+                        dataset_id,
+                        as_of,
+                        SyncStatus.SUCCESS,
+                        self._provider.source_name,
+                        adjustment,
+                        now,
+                        finished_at,
+                        None,
+                    ),
+                )
+                return SyncOutcome(
+                    dataset_id, as_of, SyncStatus.SUCCESS, False, None, metadata
+                )
+            except Exception as error:
+                failed_at = self._now()
+                self._repository.save_backfill_run_v2(
+                    BackfillRunV2(
+                        run_id,
+                        dataset_id,
+                        adjustment,
+                        target_start,
+                        as_of,
+                        BackfillRunStatus.FAILED,
+                        now,
+                        failed_at,
+                        str(error),
+                    ),
+                )
+                self._repository.save_sync_record(
+                    SyncRecord(
+                        dataset_id,
+                        as_of,
+                        SyncStatus.FAILED,
+                        self._provider.source_name,
+                        adjustment,
+                        now,
+                        failed_at,
+                        str(error),
+                    ),
+                )
+                raise SyncFailedError(
+                    f"v2 backfill failed for {dataset_id} over "
+                    f"{target_start.isoformat()}..{as_of.isoformat()}"
+                ) from error
+

@@ -131,16 +131,26 @@ class WebApp:
                     sync_config,
                     progress=self._on_backfill_progress,
                 )
+                if sync_config.history is not None:
+                    message = "自动回补（八年历史覆盖）…"
+                    backfill = lambda: service.backfill_on_startup_v2(
+                        "market", AdjustmentMethod.QFQ
+                    )
+                else:
+                    message = "自动回补（补一年数据）…"
+                    backfill = lambda: service.backfill_on_startup(
+                        "market", AdjustmentMethod.QFQ
+                    )
                 self._sync_progress.update(
                     {
                         "status": "running",
                         "phase": "starting",
                         "dataset_id": "market",
                         "adjustment": "qfq",
-                        "message": "自动回补（补一年数据）…",
+                        "message": message,
                     }
                 )
-                outcome = service.backfill_on_startup("market", AdjustmentMethod.QFQ)
+                outcome = backfill()
                 if outcome is not None:
                     self._sync_progress.update(
                         {"status": "done", "message": outcome.status.value}

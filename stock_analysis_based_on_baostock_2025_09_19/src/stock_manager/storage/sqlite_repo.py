@@ -11,8 +11,15 @@ from pathlib import Path
 
 from stock_manager.domain import (
     AdjustmentMethod,
+    BackfillChunkV2,
+    BackfillRunStatus,
+    BackfillRunV2,
     DailyBar,
+    DataCoverageStatus,
+    DatasetCoverage,
     DatasetMetadata,
+    DatasetVersion,
+    DatasetVersionStatus,
     DividendRecord,
     FundamentalSnapshot,
     StockIdentity,
@@ -93,6 +100,50 @@ CREATE TABLE IF NOT EXISTS backfill_chunks (
     chunk_index INTEGER NOT NULL,
     codes TEXT NOT NULL,
     PRIMARY KEY (dataset_id, trading_day, adjustment, chunk_index)
+);
+CREATE TABLE IF NOT EXISTS dataset_versions (
+    dataset_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    source TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    coverage_start TEXT,
+    coverage_end TEXT,
+    PRIMARY KEY (dataset_id, generation)
+);
+CREATE TABLE IF NOT EXISTS dataset_coverage (
+    dataset_id TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    data_type TEXT NOT NULL,
+    earliest_day TEXT,
+    latest_day TEXT,
+    status TEXT NOT NULL,
+    gap_days TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (dataset_id, adjustment, data_type)
+);
+CREATE TABLE IF NOT EXISTS backfill_runs_v2 (
+    run_id TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    target_start TEXT NOT NULL,
+    target_end TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    error_message TEXT,
+    data_types TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS backfill_chunks_v2 (
+    run_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    codes TEXT NOT NULL,
+    range_start TEXT NOT NULL,
+    range_end TEXT NOT NULL,
+    bar_count INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (run_id, chunk_index, range_start, range_end)
 );
 """
 
@@ -672,3 +723,294 @@ class SQLiteRepository:
             connection.execute(
                 "DELETE FROM backfill_chunks WHERE trading_day < ?", (cutoff_text,)
             )
+    # ------------------------------------------------------------------
+    # P5A-1 v2 history backfill / coverage / generation bookkeeping
+    # ------------------------------------------------------------------
+
+    def save_backfill_run_v2(self, run: BackfillRunV2) -> None:
+        """Upsert one v2 backfill run (range-bound identity via run_id)."""
+        with self._connect() as connection:
+            self._save_backfill_run_v2(connection, run)
+
+    @staticmethod
+    def _save_backfill_run_v2(
+        connection: sqlite3.Connection, run: BackfillRunV2
+    ) -> None:
+        connection.execute(
+            """INSERT OR REPLACE INTO backfill_runs_v2
+               (run_id, dataset_id, adjustment, target_start, target_end,
+                status, started_at, finished_at, error_message, data_types)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run.run_id,
+                run.dataset_id,
+                run.adjustment.value,
+                run.target_start.isoformat(),
+                run.target_end.isoformat(),
+                run.status.value,
+                run.started_at.isoformat(),
+                None if run.finished_at is None else run.finished_at.isoformat(),
+                run.error_message,
+                ",".join(run.data_types),
+            ),
+        )
+
+    def get_backfill_run_v2(self, run_id: str) -> BackfillRunV2 | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM backfill_runs_v2 WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._backfill_run_v2_from_row(row)
+
+    def list_backfill_runs_v2(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> Sequence[BackfillRunV2]:
+        """Return all v2 runs for a dataset/adjustment, newest first."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM backfill_runs_v2
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY started_at DESC""",
+                (dataset_id, adjustment.value),
+            ).fetchall()
+        return tuple(self._backfill_run_v2_from_row(row) for row in rows)
+
+    @staticmethod
+    def _backfill_run_v2_from_row(row: sqlite3.Row) -> BackfillRunV2:
+        return BackfillRunV2(
+            run_id=row["run_id"],
+            dataset_id=row["dataset_id"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            target_start=date.fromisoformat(row["target_start"]),
+            target_end=date.fromisoformat(row["target_end"]),
+            status=BackfillRunStatus(row["status"]),
+            started_at=datetime.fromisoformat(row["started_at"]),
+            finished_at=(
+                None if row["finished_at"] is None
+                else datetime.fromisoformat(row["finished_at"])
+            ),
+            error_message=row["error_message"],
+            data_types=tuple(row["data_types"].split(",")),
+        )
+
+    def save_backfill_chunk_v2(self, chunk: BackfillChunkV2) -> None:
+        """Upsert one completed v2 code chunk checkpoint."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO backfill_chunks_v2
+                   (run_id, chunk_index, codes, range_start, range_end,
+                    bar_count, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    chunk.run_id,
+                    chunk.chunk_index,
+                    ",".join(chunk.codes),
+                    chunk.range_start.isoformat(),
+                    chunk.range_end.isoformat(),
+                    chunk.bar_count,
+                    chunk.status.value,
+                ),
+            )
+
+    def completed_chunk_codes_v2(
+        self, run_id: str
+    ) -> dict[int, list[BackfillChunkV2]]:
+        """Return v2 checkpoints grouped by chunk index for a run.
+
+        Each chunk may have one checkpoint per fetched gap range; the caller
+        must match both codes and the exact range before skipping.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM backfill_chunks_v2
+                   WHERE run_id = ? ORDER BY chunk_index, range_start""",
+                (run_id,),
+            ).fetchall()
+        grouped: dict[int, list[BackfillChunkV2]] = {}
+        for row in rows:
+            index = int(row["chunk_index"])
+            grouped.setdefault(index, []).append(
+                BackfillChunkV2(
+                    run_id=row["run_id"],
+                    chunk_index=index,
+                    codes=tuple(row["codes"].split(",")),
+                    range_start=date.fromisoformat(row["range_start"]),
+                    range_end=date.fromisoformat(row["range_end"]),
+                    bar_count=int(row["bar_count"]),
+                    status=BackfillRunStatus(row["status"]),
+                )
+            )
+        return grouped
+
+    def get_backfill_chunk_v2(
+        self, run_id: str, chunk_index: int
+    ) -> BackfillChunkV2 | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM backfill_chunks_v2
+                   WHERE run_id = ? AND chunk_index = ?""",
+                (run_id, chunk_index),
+            ).fetchone()
+        if row is None:
+            return None
+        return BackfillChunkV2(
+            run_id=row["run_id"],
+            chunk_index=int(row["chunk_index"]),
+            codes=tuple(row["codes"].split(",")),
+            range_start=date.fromisoformat(row["range_start"]),
+            range_end=date.fromisoformat(row["range_end"]),
+            bar_count=int(row["bar_count"]),
+            status=BackfillRunStatus(row["status"]),
+        )
+
+    def actual_coverage(
+        self,
+        adjustment: AdjustmentMethod,
+        data_type: str,
+    ) -> tuple[date | None, date | None]:
+        """Earliest/latest stored day for one data type (dataset-wide).
+
+        daily_bars is filtered by adjustment; the other types carry no
+        adjustment column and are read dataset-wide.
+        """
+        query_by_type = {
+            "daily_bars": (
+                """SELECT MIN(trading_day) AS earliest, MAX(trading_day) AS latest
+                   FROM daily_bars WHERE adjustment = ?""",
+                (adjustment.value,),
+            ),
+            "fundamentals": (
+                """SELECT MIN(published_on) AS earliest, MAX(published_on) AS latest
+                   FROM fundamentals""",
+                (),
+            ),
+            "stocks": (
+                """SELECT MIN(as_of) AS earliest, MAX(as_of) AS latest
+                   FROM stocks""",
+                (),
+            ),
+            "dividends": (
+                """SELECT MIN(ex_date) AS earliest, MAX(ex_date) AS latest
+                   FROM dividends""",
+                (),
+            ),
+        }
+        if data_type not in query_by_type:
+            raise ValueError(f"unsupported data type for coverage: {data_type}")
+        sql, params = query_by_type[data_type]
+        with self._connect() as connection:
+            row = connection.execute(sql, params).fetchone()
+        earliest = (
+            None if row["earliest"] is None else date.fromisoformat(row["earliest"])
+        )
+        latest = None if row["latest"] is None else date.fromisoformat(row["latest"])
+        return earliest, latest
+
+    def save_dataset_coverage(self, item: DatasetCoverage) -> None:
+        """Upsert one data type coverage row."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO dataset_coverage
+                   (dataset_id, adjustment, data_type, earliest_day, latest_day,
+                    status, gap_days, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item.dataset_id,
+                    item.adjustment.value,
+                    item.data_type,
+                    None if item.earliest_day is None else item.earliest_day.isoformat(),
+                    None if item.latest_day is None else item.latest_day.isoformat(),
+                    item.status.value,
+                    ",".join(day.isoformat() for day in item.gap_days),
+                    datetime.now().astimezone().isoformat(),
+                ),
+            )
+
+    def get_dataset_coverages(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> dict[str, DatasetCoverage]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM dataset_coverage
+                   WHERE dataset_id = ? AND adjustment = ?""",
+                (dataset_id, adjustment.value),
+            ).fetchall()
+        return {
+            row["data_type"]: DatasetCoverage(
+                dataset_id=row["dataset_id"],
+                adjustment=AdjustmentMethod(row["adjustment"]),
+                data_type=row["data_type"],
+                earliest_day=(
+                    None if row["earliest_day"] is None
+                    else date.fromisoformat(row["earliest_day"])
+                ),
+                latest_day=(
+                    None if row["latest_day"] is None
+                    else date.fromisoformat(row["latest_day"])
+                ),
+                status=DataCoverageStatus(row["status"]),
+                gap_days=tuple(
+                    date.fromisoformat(day)
+                    for day in (row["gap_days"].split(",") if row["gap_days"] else [])
+                ),
+            )
+            for row in rows
+        }
+
+    def save_dataset_version(self, version: DatasetVersion) -> None:
+        """Upsert one immutable dataset generation record."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO dataset_versions
+                   (dataset_id, generation, source, adjustment, created_at,
+                    status, coverage_start, coverage_end)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    version.dataset_id,
+                    version.generation,
+                    version.source,
+                    version.adjustment.value,
+                    version.created_at.isoformat(),
+                    version.status.value,
+                    (
+                        None if version.coverage_start is None
+                        else version.coverage_start.isoformat()
+                    ),
+                    (
+                        None if version.coverage_end is None
+                        else version.coverage_end.isoformat()
+                    ),
+                ),
+            )
+
+    def get_latest_dataset_version(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> DatasetVersion | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM dataset_versions
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (dataset_id, adjustment.value),
+            ).fetchone()
+        if row is None:
+            return None
+        return DatasetVersion(
+            dataset_id=row["dataset_id"],
+            generation=row["generation"],
+            source=row["source"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            status=DatasetVersionStatus(row["status"]),
+            coverage_start=(
+                None if row["coverage_start"] is None
+                else date.fromisoformat(row["coverage_start"])
+            ),
+            coverage_end=(
+                None if row["coverage_end"] is None
+                else date.fromisoformat(row["coverage_end"])
+            ),
+        )
+

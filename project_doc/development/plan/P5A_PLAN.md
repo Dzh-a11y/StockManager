@@ -612,9 +612,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：PoC 离线运行；同输入重复结果一致；ADR 和许可说明通过审查；未修改既有筛选语义。
 
-### P5A-1：八年覆盖与向前补齐
+### P5A-1：八年覆盖与向前补齐 —— 已完成（2026-09-02 验收）
 
 **目标**：让本地数据库可证明地覆盖目标八年，而不是只修改保留天数。
+
+**验收结果**：配置 v2（SyncConfig.history）与 v1 兼容读取；新增 dataset_versions/dataset_coverage/backfill_runs_v2/backfill_chunks_v2（checkpoint 身份绑定目标范围与拉取区间，旧一年分片不能冒充八年分片）；前缀/尾部规划器（plan_coverage/trading_day_lookback）；v2 回补幂等（同范围 SUCCESS 零 Provider 调用）、断点恢复只拉缺失缺口、失败记录 FAILED 并抛 SyncFailedError；generation 仅在所有数据类型 COMPLETE 时提交；完整性校验（scripts/verify_db_integrity.py，只读）；Web 启动按 history 有无路由 v2/v1。pytest 298 通过（新增 32 项），v1 行为完全不变。实现文档：development/implementation/P5A_1_HISTORY_V2.md。
 
 **工作**：
 

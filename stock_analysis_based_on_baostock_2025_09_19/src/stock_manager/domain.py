@@ -247,3 +247,136 @@ class ProviderSmokeOutcome:
         )
         if any(count < 0 for count in counts):
             raise ValueError("provider smoke counts must be non-negative")
+
+
+class DataCoverageStatus(str, Enum):
+    """Completeness of one data type over the target history window."""
+
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class DatasetVersionStatus(str, Enum):
+    """Lifecycle of an immutable dataset generation."""
+
+    PENDING = "PENDING"
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+
+
+class BackfillRunStatus(str, Enum):
+    """Lifecycle of a v2 history backfill run."""
+
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetCoverage:
+    """Earliest/latest stored day and completeness of one data type."""
+
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    data_type: str
+    earliest_day: date | None
+    latest_day: date | None
+    status: DataCoverageStatus
+    gap_days: tuple[date, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.data_type, "data_type")
+        if self.earliest_day is not None and self.latest_day is not None:
+            if self.earliest_day > self.latest_day:
+                raise ValueError("earliest_day must not be after latest_day")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetVersion:
+    """Immutable dataset generation committed once coverage is complete."""
+
+    dataset_id: str
+    generation: str
+    source: str
+    adjustment: AdjustmentMethod
+    created_at: datetime
+    status: DatasetVersionStatus
+    coverage_start: date | None
+    coverage_end: date | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.generation, "generation")
+        _require_text(self.source, "source")
+        _require_aware(self.created_at, "created_at")
+        if self.coverage_start is not None and self.coverage_end is not None:
+            if self.coverage_start > self.coverage_end:
+                raise ValueError("coverage_start must not be after coverage_end")
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillRunV2:
+    """One v2 history backfill attempt over an explicit target range."""
+
+    run_id: str
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    target_start: date
+    target_end: date
+    status: BackfillRunStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+    data_types: tuple[str, ...] = ("daily_bars", "fundamentals", "stocks")
+
+    def __post_init__(self) -> None:
+        _require_text(self.run_id, "run_id")
+        _require_text(self.dataset_id, "dataset_id")
+        if self.target_start > self.target_end:
+            raise ValueError("target_start must not be after target_end")
+        _require_aware(self.started_at, "started_at")
+        if self.finished_at is not None:
+            _require_aware(self.finished_at, "finished_at")
+        if self.status is BackfillRunStatus.SUCCESS:
+            if self.finished_at is None:
+                raise ValueError("SUCCESS requires finished_at")
+            if self.error_message is not None:
+                raise ValueError("SUCCESS must not have error_message")
+        if self.status is BackfillRunStatus.FAILED:
+            if self.finished_at is None:
+                raise ValueError("FAILED requires finished_at")
+            if self.error_message is None or not self.error_message.strip():
+                raise ValueError("FAILED requires a non-empty error_message")
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillChunkV2:
+    """Checkpoint of one completed v2 backfill code chunk with its exact range.
+
+    The checkpoint identity (run_id, chunk_index) is bound to the run whose
+    target range is part of run_id, so a one-year chunk can never be reused
+    as an eight-year chunk.
+    """
+
+    run_id: str
+    chunk_index: int
+    codes: tuple[str, ...]
+    range_start: date
+    range_end: date
+    bar_count: int
+    status: BackfillRunStatus
+
+    def __post_init__(self) -> None:
+        _require_text(self.run_id, "run_id")
+        if self.chunk_index < 0:
+            raise ValueError("chunk_index must be non-negative")
+        if not self.codes:
+            raise ValueError("codes must not be empty")
+        if self.range_start > self.range_end:
+            raise ValueError("range_start must not be after range_end")
+        if self.bar_count < 0:
+            raise ValueError("bar_count must be non-negative")
+
+
