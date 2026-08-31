@@ -628,9 +628,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：断点恢复不重复拉取；已有一年数据不损坏；八年范围每种数据类型均能报告 COMPLETE/PARTIAL/UNAVAILABLE；Provider 请求保持串行。
 
-### P5A-2：point-in-time 数据读取契约
+### P5A-2：point-in-time 数据读取契约 —— 已完成（2026-09-02 验收）
 
 **目标**：历史 T 日查询只能看到 T 日当时可知信息。
+
+**验收结果**：新增 PointInTimeRequest/PointInTimeReaderProtocol/SQLitePointInTimeReader（只读；universe_as_of 最近快照+上市/退市边界、fundamentals 按 published_on <= T、bars/dividends 按日期边界、committed_generation、data_fingerprint）；RulePitCapability 枚举与 RuleDefinition.pit_capability 字段（默认 PIT_UNSUPPORTED），12 条内置规则显式声明能力；HistoricalCapabilityValidator 拒绝 PIT_UNSUPPORTED 规则并校验基本面/股票池数据可用性（UnsupportedRuleForHistoricalRunError/HistoricalCapabilityError）。反未来函数 fixture 证明 T+1 上市/发布/分红在 T 不可见、退市股票退市前可见；pytest 313 通过（新增 15 项）。实现文档：development/implementation/P5A_2_PIT_READER.md。
 
 **工作**：
 

@@ -14,6 +14,7 @@ from stock_manager.rules.base import (
     RuleContext,
     RuleDataRequirement,
     RuleDefinition,
+    RulePitCapability,
     ScreeningRule,
     WindowUnit,
 )
@@ -159,6 +160,7 @@ class PePositiveRule:
                 "PE(TTM) 必须严格大于该值才通过。例如 0 表示只接受盈利股票；设负值可放宽到微亏股票。",
             ),
         ),
+        pit_capability=RulePitCapability.FUNDAMENTAL_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> PePositiveConfig:
@@ -177,7 +179,13 @@ class PePositiveRule:
 
 
 class NonStRule:
-    definition = RuleDefinition("non_st", "排除 ST", "股票不得标记为 ST", ())
+    definition = RuleDefinition(
+        "non_st",
+        "排除 ST",
+        "股票不得标记为 ST",
+        (),
+        pit_capability=RulePitCapability.UNIVERSE_STATE_PIT_READY,
+    )
 
     def parse_parameters(self, raw: object) -> NoParameters:
         _mapping(raw, set(), self.definition.rule_id)
@@ -222,6 +230,7 @@ class VolumePriceRule:
                 "信号日收盘价相对前一日收盘价的最小涨幅（百分比）；7 表示当天至少上涨 7%。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> VolumePriceConfig:
@@ -300,6 +309,7 @@ class LimitUpBreakoutRule:
                 "炸板判定：涨停日收盘价较当日最高价回落超过该金额（元）即视为炸板。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> LimitUpBreakoutConfig:
@@ -391,6 +401,7 @@ class LimitUpCountRule:
                 "涨幅超过该比例不计入涨幅；用于排除 20% 涨跌幅的板块。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> LimitUpConfig:
@@ -469,6 +480,7 @@ class VolatilityRule:
                 "窗口内至少要有多少个有数据的交易日；不足（如次新股）直接判定失败。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> VolatilityConfig:
@@ -533,6 +545,7 @@ class AnnualMinVolumeRule:
                 "统计最低成交量时是否忽略零成交量（停牌）的交易日；关闭后停牌日也会参与比较。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> AnnualMinVolumeParameters:
@@ -598,6 +611,7 @@ class AnnualMinClosePriceRule:
                 "统计最低收盘价时是否忽略零收盘价（停牌）的交易日；关闭后零价日也会参与比较。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> AnnualMinClosePriceParameters:
@@ -656,6 +670,7 @@ class ConsecutiveUpDaysRule:
                 "窗口内至少要有多少个连续交易日每个交易日的收盘价都高于前一交易日收盘价；5 表示五连阳。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> ConsecutiveUpDaysParameters:
@@ -713,6 +728,7 @@ class NDayCloseAboveRule:
                 "窗口内每一天的收盘价都必须严格高于该值（元）；恰好等于判定失败。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> NDayCloseAboveParameters:
@@ -790,6 +806,7 @@ class VolumeSumExtremeRule:
                 "回看窗口内至少要有多少个有效交易日；不足直接判定失败。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> VolumeSumExtremeParameters:
@@ -876,6 +893,7 @@ class PriceRangeRatioRule:
                 "最高价 ÷ 最低价的上限，包含等于。",
             ),
         ),
+        pit_capability=RulePitCapability.PRICE_VOLUME_PIT_READY,
     )
 
     def parse_parameters(self, raw: object) -> PriceRangeRatioParameters:

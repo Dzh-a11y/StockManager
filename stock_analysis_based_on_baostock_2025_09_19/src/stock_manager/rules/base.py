@@ -30,6 +30,23 @@ class WindowUnit(str, Enum):
     TRADING_SESSIONS = "trading_sessions"
 
 
+class RulePitCapability(str, Enum):
+    """Point-in-time readiness of a rule for historical backtests.
+
+    - PRICE_VOLUME_PIT_READY: depends only on OHLCV available through T.
+    - FUNDAMENTAL_PIT_READY: depends on fundamentals published on or before T.
+    - UNIVERSE_STATE_PIT_READY: depends on per-day stock/ST/listing state.
+    - PIT_UNSUPPORTED: cannot run in a lookahead-free historical backtest;
+      such rules must be rejected explicitly, never silently replaced by
+      today's values.
+    """
+
+    PRICE_VOLUME_PIT_READY = "PRICE_VOLUME_PIT_READY"
+    FUNDAMENTAL_PIT_READY = "FUNDAMENTAL_PIT_READY"
+    UNIVERSE_STATE_PIT_READY = "UNIVERSE_STATE_PIT_READY"
+    PIT_UNSUPPORTED = "PIT_UNSUPPORTED"
+
+
 @dataclass(frozen=True, slots=True)
 class ParameterDefinition:
     parameter_id: str
@@ -56,6 +73,7 @@ class RuleDefinition:
     name: str
     description: str
     parameters: tuple[ParameterDefinition, ...]
+    pit_capability: RulePitCapability = RulePitCapability.PIT_UNSUPPORTED
 
     def __post_init__(self) -> None:
         if not self.rule_id.strip():
