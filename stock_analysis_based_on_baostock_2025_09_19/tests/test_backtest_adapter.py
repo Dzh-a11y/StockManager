@@ -232,3 +232,83 @@ def test_ranking_policy_order() -> None:
         2,
     )
     assert ranked == ("B", "A")  # 金额降序,同额按代码升序
+
+
+
+def _bar_with(code: str, day: date, *, close: str, preclose: str, volume: str = "1000000") -> DailyBar:
+    value = Decimal(close)
+    return DailyBar(
+        code, day, value, value + Decimal("0.1"), value - Decimal("0.1"), value,
+        Decimal(preclose), Decimal(volume), Decimal("10500000"), True,
+    )
+
+
+def test_limit_up_day_blocks_buy_with_warning(tmp_path: Path) -> None:
+    db = tmp_path / "market.sqlite3"
+    repo = SQLiteRepository(db)
+    metadata = DatasetMetadata("market", DAYS[-1], "fixture", NOW, QFQ)
+    repo.save_trading_days(DAYS, metadata)
+    repo.save_stocks(
+        (StockIdentity("000001.SZ", "股票", "SZSE", False, DAYS[0], None),),
+        metadata,
+    )
+    bars = []
+    for i, day in enumerate(DAYS):
+        if day == DAYS[5]:
+            bars.append(_bar_with("000001.SZ", day, close="11", preclose="10"))  # 涨停
+        elif day < DAYS[5]:
+            bars.append(_bar_with("000001.SZ", day, close="10", preclose="10"))
+        else:
+            bars.append(_bar_with("000001.SZ", day, close=str(10 + i * 0.1), preclose="10"))
+    repo.save_daily_bars(tuple(bars), metadata)
+    from stock_manager.read.historical import (
+        PointInTimeRequest,
+        SQLitePointInTimeReader,
+    )
+
+    with SQLitePointInTimeReader(
+        db, PointInTimeRequest("market", (), DAYS[0], DAYS[-1], QFQ)
+    ) as reader:
+        market = BacktestMarketData(
+            "market", QFQ, reader.trading_days(DAYS[0], DAYS[-1]),
+            reader.bars_through(DAYS[-1]),
+            (StockIdentity("000001.SZ", "股票", "SZSE", False, DAYS[0], None),),
+        )
+    engine = BacktraderBacktestEngine()
+    result = engine.run(_spec(), _eligibility_from(DAYS[5]), market)
+    assert any("limit-up" in warning for warning in result.warnings), result.warnings
+
+
+def test_suspension_day_blocks_buy_with_warning(tmp_path: Path) -> None:
+    db = tmp_path / "market.sqlite3"
+    repo = SQLiteRepository(db)
+    metadata = DatasetMetadata("market", DAYS[-1], "fixture", NOW, QFQ)
+    repo.save_trading_days(DAYS, metadata)
+    repo.save_stocks(
+        (StockIdentity("000001.SZ", "股票", "SZSE", False, DAYS[0], None),),
+        metadata,
+    )
+    bars = []
+    for i, day in enumerate(DAYS):
+        if day == DAYS[5]:
+            bars.append(_bar_with("000001.SZ", day, close="10", preclose="10", volume="0"))  # 停牌
+        else:
+            bars.append(_bar_with("000001.SZ", day, close=str(10 + i * 0.1), preclose=str(10 + (i - 1) * 0.1)))
+    repo.save_daily_bars(tuple(bars), metadata)
+    from stock_manager.read.historical import (
+        PointInTimeRequest,
+        SQLitePointInTimeReader,
+    )
+
+    with SQLitePointInTimeReader(
+        db, PointInTimeRequest("market", (), DAYS[0], DAYS[-1], QFQ)
+    ) as reader:
+        market = BacktestMarketData(
+            "market", QFQ, reader.trading_days(DAYS[0], DAYS[-1]),
+            reader.bars_through(DAYS[-1]),
+            (StockIdentity("000001.SZ", "股票", "SZSE", False, DAYS[0], None),),
+        )
+    engine = BacktraderBacktestEngine()
+    result = engine.run(_spec(), _eligibility_from(DAYS[5]), market)
+    assert any("suspended" in warning for warning in result.warnings), result.warnings
+

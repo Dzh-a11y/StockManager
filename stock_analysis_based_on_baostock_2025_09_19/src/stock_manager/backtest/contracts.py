@@ -100,6 +100,7 @@ class BacktestMarketData:
     adjustment: AdjustmentMethod
     trading_days: tuple[date, ...]
     bars: tuple[object, ...]
+    stocks: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.dataset_id.strip():

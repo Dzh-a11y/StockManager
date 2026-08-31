@@ -705,9 +705,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：Services/Domain 不泄露 Backtrader 类型；T 信号不会在 T 之前成交；同输入确定性一致；没有网络访问；Backtrader 异常转换为明确业务错误。
 
-### P5A-7：A 股执行与成交语义
+### P5A-7：A 股执行与成交语义 —— 已完成（2026-09-02 验收）
 
 **目标**：把已确认的 A 股限制做成可测试执行政策。
+
+**验收结果**：AShareExecutionModel 纯函数（整手/余股、T+1、停牌/零量、涨跌停含 ST 5% 与主板 10%、佣金最低收费/印花税/过户费、滑点、现金不足与部分成交）；AShareCommission 接入 broker；策略接入执行决策并逐限制产生 execution 警告；逐日 equity_curve 归一化；T+1 语义与涨跌停一字板近似文档化。固定 fixtures 覆盖全部限制（含端到端涨停/停牌警告断言）。pytest 361 通过（新增 12 项）。实现文档：development/implementation/P5A_7_EXECUTION_MODEL.md。
 
 **工作**：
 
