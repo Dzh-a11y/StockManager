@@ -674,9 +674,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：与逐日调用现有 RuleEngine 的参考结果完全相等；无嵌套池；worker 失败整体失败；数据变化可检测；五年运行不按日期重复全市场读取。
 
-### P5A-5：历史信号缓存和运行存储
+### P5A-5：历史信号缓存和运行存储 —— 已完成（2026-09-02 验收）
 
 **目标**：让筛选资格可复用，并为异步任务提供可恢复状态。
+
+**验收结果**：完整缓存键（dataset/generation/adjustment/universe/窗口/schedule/模板 id+revision/plan fingerprint/规则实现版本/交易日历 fingerprint；策略费用与资金参数不进入键）；运行状态机 QUEUED→VALIDATING→BUILDING_SIGNALS→SUCCEEDED 及 FAILED/CANCEL_REQUESTED→CANCELLED/INTERRUPTED(重启恢复+可重新入队)；eligibility_days/members 落库、分页、按 cache_key 命中查询、keep=N 清理级联删除。pytest 340 通过（新增 9 项）。实现文档：development/implementation/P5A_5_RUN_STORAGE.md。
 
 **工作**：
 

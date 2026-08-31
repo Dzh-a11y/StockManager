@@ -11,6 +11,8 @@ from pathlib import Path
 
 from stock_manager.domain import (
     AdjustmentMethod,
+    HistoricalRunStatus,
+    HistoricalScreeningRun,
     BackfillChunkV2,
     BackfillRunStatus,
     BackfillRunV2,
@@ -144,6 +146,38 @@ CREATE TABLE IF NOT EXISTS backfill_chunks_v2 (
     bar_count INTEGER NOT NULL,
     status TEXT NOT NULL,
     PRIMARY KEY (run_id, chunk_index, range_start, range_end)
+);
+CREATE TABLE IF NOT EXISTS historical_screening_runs (
+    run_id TEXT PRIMARY KEY,
+    cache_key TEXT NOT NULL,
+    dataset_id TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    generation TEXT,
+    template_id TEXT NOT NULL,
+    template_revision INTEGER NOT NULL,
+    plan_fingerprint TEXT NOT NULL,
+    rule_implementation_version TEXT NOT NULL,
+    universe_policy TEXT NOT NULL,
+    evaluation_start TEXT NOT NULL,
+    evaluation_end TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress_completed INTEGER NOT NULL,
+    progress_total INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    error_message TEXT
+);
+CREATE TABLE IF NOT EXISTS eligibility_days (
+    run_id TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
+    selected_count INTEGER NOT NULL,
+    PRIMARY KEY (run_id, trading_day)
+);
+CREATE TABLE IF NOT EXISTS eligibility_members (
+    run_id TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
+    code TEXT NOT NULL,
+    PRIMARY KEY (run_id, trading_day, code)
 );
 """
 
@@ -1013,4 +1047,233 @@ class SQLiteRepository:
                 else date.fromisoformat(row["coverage_end"])
             ),
         )
+    # ------------------------------------------------------------------
+    # P5A-5 historical screening runs / eligibility storage
+    # ------------------------------------------------------------------
+
+    def save_historical_run(self, run: HistoricalScreeningRun) -> None:
+        """Upsert one historical screening run row."""
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO historical_screening_runs
+                   (run_id, cache_key, dataset_id, adjustment, generation,
+                    template_id, template_revision, plan_fingerprint,
+                    rule_implementation_version, universe_policy,
+                    evaluation_start, evaluation_end, status,
+                    progress_completed, progress_total, started_at,
+                    finished_at, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run.run_id,
+                    run.cache_key,
+                    run.dataset_id,
+                    run.adjustment.value,
+                    run.generation,
+                    run.template_id,
+                    run.template_revision,
+                    run.plan_fingerprint,
+                    run.rule_implementation_version,
+                    run.universe_policy,
+                    run.evaluation_start.isoformat(),
+                    run.evaluation_end.isoformat(),
+                    run.status.value,
+                    run.progress_completed,
+                    run.progress_total,
+                    run.started_at.isoformat(),
+                    (
+                        None if run.finished_at is None
+                        else run.finished_at.isoformat()
+                    ),
+                    run.error_message,
+                ),
+            )
+
+    def get_historical_run(self, run_id: str) -> HistoricalScreeningRun | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM historical_screening_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return None if row is None else self._historical_run_from_row(row)
+
+    def find_successful_run_by_cache_key(
+        self, cache_key: str
+    ) -> HistoricalScreeningRun | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM historical_screening_runs
+                   WHERE cache_key = ? AND status = ?
+                   ORDER BY started_at DESC LIMIT 1""",
+                (cache_key, HistoricalRunStatus.SUCCEEDED.value),
+            ).fetchone()
+        return None if row is None else self._historical_run_from_row(row)
+
+    def list_historical_runs(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[HistoricalScreeningRun, ...]:
+        if offset < 0 or limit <= 0:
+            raise ValueError("offset must be non-negative and limit positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM historical_screening_runs
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                (dataset_id, adjustment.value, limit, offset),
+            ).fetchall()
+        return tuple(self._historical_run_from_row(row) for row in rows)
+
+    @staticmethod
+    def _historical_run_from_row(row: sqlite3.Row) -> HistoricalScreeningRun:
+        return HistoricalScreeningRun(
+            run_id=row["run_id"],
+            cache_key=row["cache_key"],
+            dataset_id=row["dataset_id"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            generation=row["generation"],
+            template_id=row["template_id"],
+            template_revision=int(row["template_revision"]),
+            plan_fingerprint=row["plan_fingerprint"],
+            rule_implementation_version=row["rule_implementation_version"],
+            universe_policy=row["universe_policy"],
+            evaluation_start=date.fromisoformat(row["evaluation_start"]),
+            evaluation_end=date.fromisoformat(row["evaluation_end"]),
+            status=HistoricalRunStatus(row["status"]),
+            progress_completed=int(row["progress_completed"]),
+            progress_total=int(row["progress_total"]),
+            started_at=datetime.fromisoformat(row["started_at"]),
+            finished_at=(
+                None if row["finished_at"] is None
+                else datetime.fromisoformat(row["finished_at"])
+            ),
+            error_message=row["error_message"],
+        )
+
+    def save_eligibility_day(
+        self, run_id: str, trading_day: date, selected_count: int
+    ) -> None:
+        if selected_count < 0:
+            raise ValueError("selected_count must be non-negative")
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO eligibility_days
+                   (run_id, trading_day, selected_count) VALUES (?, ?, ?)""",
+                (run_id, trading_day.isoformat(), selected_count),
+            )
+
+    def save_eligibility_members(
+        self, run_id: str, trading_day: date, codes: Sequence[str]
+    ) -> None:
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO eligibility_members
+                   (run_id, trading_day, code) VALUES (?, ?, ?)""",
+                ((run_id, trading_day.isoformat(), code) for code in codes),
+            )
+
+    def list_eligibility_days(
+        self, run_id: str, *, offset: int = 0, limit: int = 100
+    ) -> tuple[tuple[date, int], ...]:
+        if offset < 0 or limit <= 0:
+            raise ValueError("offset must be non-negative and limit positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT trading_day, selected_count FROM eligibility_days
+                   WHERE run_id = ? ORDER BY trading_day LIMIT ? OFFSET ?""",
+                (run_id, limit, offset),
+            ).fetchall()
+        return tuple(
+            (date.fromisoformat(row["trading_day"]), int(row["selected_count"]))
+            for row in rows
+        )
+
+    def list_eligible_codes(
+        self, run_id: str, trading_day: date
+    ) -> tuple[str, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT code FROM eligibility_members
+                   WHERE run_id = ? AND trading_day = ? ORDER BY code""",
+                (run_id, trading_day.isoformat()),
+            ).fetchall()
+        return tuple(row["code"] for row in rows)
+
+    def count_eligibility_days(self, run_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM eligibility_days WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return int(row["c"])
+
+    def mark_interrupted_runs(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        finished_at: datetime,
+    ) -> int:
+        """Mark non-terminal runs INTERRUPTED after a process restart."""
+        active = (
+            HistoricalRunStatus.QUEUED.value,
+            HistoricalRunStatus.VALIDATING.value,
+            HistoricalRunStatus.BUILDING_SIGNALS.value,
+            HistoricalRunStatus.CANCEL_REQUESTED.value,
+        )
+        placeholders = ",".join("?" for _ in active)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"""UPDATE historical_screening_runs
+                    SET status = ?, finished_at = ?, error_message = ?
+                    WHERE dataset_id = ? AND adjustment = ?
+                    AND status IN ({placeholders})""",
+                (
+                    HistoricalRunStatus.INTERRUPTED.value,
+                    finished_at.isoformat(),
+                    "interrupted by process restart",
+                    dataset_id,
+                    adjustment.value,
+                    *active,
+                ),
+            )
+        return cursor.rowcount
+
+    def prune_historical_runs(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        keep_newest: int,
+    ) -> int:
+        """Delete runs (and their eligibility rows) beyond the newest N."""
+        if keep_newest < 0:
+            raise ValueError("keep_newest must be non-negative")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT run_id FROM historical_screening_runs
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY started_at DESC LIMIT -1 OFFSET ?""",
+                (dataset_id, adjustment.value, keep_newest),
+            ).fetchall()
+        old_run_ids = tuple(row["run_id"] for row in rows)
+        if not old_run_ids:
+            return 0
+        placeholders = ",".join("?" for _ in old_run_ids)
+        with self._connect() as connection:
+            connection.execute(
+                f"DELETE FROM eligibility_members WHERE run_id IN ({placeholders})",
+                old_run_ids,
+            )
+            connection.execute(
+                f"DELETE FROM eligibility_days WHERE run_id IN ({placeholders})",
+                old_run_ids,
+            )
+            cursor = connection.execute(
+                f"DELETE FROM historical_screening_runs WHERE run_id IN ({placeholders})",
+                old_run_ids,
+            )
+        return cursor.rowcount
 

@@ -379,4 +379,67 @@ class BackfillChunkV2:
         if self.bar_count < 0:
             raise ValueError("bar_count must be non-negative")
 
+class HistoricalRunStatus(str, Enum):
+    """Lifecycle of one historical screening run (async job state machine)."""
+
+    QUEUED = "QUEUED"
+    VALIDATING = "VALIDATING"
+    BUILDING_SIGNALS = "BUILDING_SIGNALS"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCELLED = "CANCELLED"
+    INTERRUPTED = "INTERRUPTED"
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalScreeningRun:
+    """Persisted state of one historical signal-generation run."""
+
+    run_id: str
+    cache_key: str
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    generation: str | None
+    template_id: str
+    template_revision: int
+    plan_fingerprint: str
+    rule_implementation_version: str
+    universe_policy: str
+    evaluation_start: date
+    evaluation_end: date
+    status: HistoricalRunStatus
+    progress_completed: int
+    progress_total: int
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.run_id, "run_id")
+        _require_text(self.cache_key, "cache_key")
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.template_id, "template_id")
+        _require_text(self.rule_implementation_version, "rule_implementation_version")
+        if self.template_revision <= 0:
+            raise ValueError("template_revision must be positive")
+        if self.evaluation_start > self.evaluation_end:
+            raise ValueError("evaluation_start must not be after evaluation_end")
+        if self.progress_completed < 0 or self.progress_total < 0:
+            raise ValueError("progress counters must be non-negative")
+        _require_aware(self.started_at, "started_at")
+        if self.finished_at is not None:
+            _require_aware(self.finished_at, "finished_at")
+        terminal = (
+            HistoricalRunStatus.SUCCEEDED,
+            HistoricalRunStatus.FAILED,
+            HistoricalRunStatus.CANCELLED,
+            HistoricalRunStatus.INTERRUPTED,
+        )
+        if self.status in terminal:
+            if self.finished_at is None:
+                raise ValueError(f"{self.status.value} requires finished_at")
+            if self.status is HistoricalRunStatus.FAILED:
+                if self.error_message is None or not self.error_message.strip():
+                    raise ValueError("FAILED requires a non-empty error_message")
 
