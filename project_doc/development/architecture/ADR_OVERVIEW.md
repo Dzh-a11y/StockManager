@@ -84,7 +84,7 @@ Domain（不可变领域对象）被各层共享引用
 
 - 采用语义化版本 `MAJOR.MINOR.PATCH`：主版本=不兼容破坏；次版本=新增规则/功能（向后兼容）；修订版本=新增 UI 内容（向后兼容）。
 - 版本号必须同步三处并保持一致：`pyproject.toml` 的 `version`、`src/stock_manager/__init__.py` 的 `__version__`、`tests/test_package_structure.py` 的版本断言。
-- 当前基线版本：**1.7.1**。
+- 当前基线版本：**1.7.2**。
 
 ### 9. 平台与启动
 

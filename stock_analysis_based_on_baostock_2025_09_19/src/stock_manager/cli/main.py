@@ -305,4 +305,7 @@ def main(
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # 无害 no-op（非 frozen）；frozen 下阻止 spawn 重入
     raise SystemExit(main())

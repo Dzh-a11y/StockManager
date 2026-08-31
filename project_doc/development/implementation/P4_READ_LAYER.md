@@ -152,7 +152,8 @@ MINOR 修复：fundamentals 平局排序加 `report_date`（m1）；dividends �
 
 筛选分片执行使用 `ProcessPoolExecutor`（macOS/Windows 默认 spawn）。spawn 子进程会重新导入主模块，因此任何触发并发筛选路径的脚本入口必须带 `if __name__ == "__main__"` 保护，否则子进程会递归执行顶层代码导致 `BrokenProcessPool`。
 
-- 内置入口已满足：`src/stock_manager/cli/main.py` 与 `src/stock_manager/cli/__main__.py`（P4 修复）均带保护；Web/CLI 调用方无需额外处理。
+- 内置入口已满足：`src/stock_manager/cli/main.py`、`src/stock_manager/cli/__main__.py` 与 `scripts/exe_entry.py` 均带 `if __name__ == "__main__"` 保护并调用 `multiprocessing.freeze_support()`；Web/CLI 调用方无需额外处理。
+- **Windows/PyInstaller（v1.7.1 修复）**：frozen 应用中 spawn 子进程会重新执行整个 exe，若入口缺少 `multiprocessing.freeze_support()`，每个 worker 都会重入 `main()` 导致「多开程序」（重复启动 Web 服务/回填/浏览器）。三个可执行入口均已在 `__main__` 块中调用 `freeze_support()`，回归测试 `tests/test_frozen_entries.py` 锁定该约束。
 - 自定义脚本调用 `ParameterizedScreeningService.screen`（且数据量超过串行阈值、`max_workers > 1`）时必须自行添加主模块保护。
 
 ## 错误语义

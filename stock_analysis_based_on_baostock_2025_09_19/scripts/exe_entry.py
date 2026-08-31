@@ -111,4 +111,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # PyInstaller frozen 应用使用 multiprocessing 时必须调用 freeze_support()，
+    # 否则 spawn 的每个 worker 子进程都会重新执行整个 main()（多开程序）。
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     raise SystemExit(main())
