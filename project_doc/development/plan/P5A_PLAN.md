@@ -689,9 +689,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：同一键缓存命中；数据/模板/规则版本变化必失效；策略费用变化不重算纯资格；部分结果不标成功。
 
-### P5A-6：Backtrader 适配器与通用组合策略
+### P5A-6：Backtrader 适配器与通用组合策略 —— 已完成（2026-09-02 验收）
 
 **目标**：把资格时间线送入 Backtrader，形成第一个端到端研究回测。
+
+**验收结果**：BacktestEngine Protocol 与 BacktraderBacktestEngine 适配器（唯一导入 bt 的模块）；StockManagerPortfolioStrategy 桥接六类政策（entry/exit/rebalance/allocation/ranking/execution）；交易日历 dummy feed + 资格并集股票 feed；T 日信号最早 T+1 开盘成交（测试断言买入成交日严格晚于信号日）；三策略规格（rebalance/sma_timing/fixed_holding）全部运行；analyzer 归一化为 BacktestMetrics（unavailable 显式不冒充 0）；重复运行确定性一致；BacktestInputError/BacktestEngineError 明确转换；contracts/research 无 backtrader 泄露（子进程断言）。pytest 349 通过（新增 9 项）。实现文档：development/implementation/P5A_6_BACKTEST_ADAPTER.md。
 
 **工作**：
 
