@@ -99,7 +99,7 @@ Domain（不可变领域对象）被各层共享引用
 - `MarketDataReadService` 负责代码分片、受控线程池并发、稳定合并（`code ASC, trading_day ASC`）、`max_workers=1` 串行回退与失败传播（`ShardReadError` 携带分片标识与原始异常链）；快照在并发读取前冻结，版本变化抛 `SnapshotConsistencyError`，禁止返回混合数据。
 - `ScreeningShardExecutor` 只属于参数化筛选通道：进程池 worker 各自创建只读 reader/连接，在 worker 内读取行情/基本面/分红并执行 `RuleEngine.evaluate()`，只回传结构化结果与进度；同一调用链禁止嵌套线程池/进程池；`max_workers=1` 或小数据量回退串行（逐股进度回调与旧实现一致）。
 - 并发约束：SQLite 连接只读且每 worker 独立；worker 数配置化有上限（读取默认 1；筛选 Web 可配置 1-16、默认 4）；代码分片避免超大 IN 查询；合并结果与串行结果逐项相等；写入、同步、重试与上游限速不受 P4 影响。
-- 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s；Web 工作台可在 1-16 内配置筛选 worker 数并显示本次筛选用时（`elapsed_seconds`）。
+- 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s；Web 工作台可在 1-16 内配置筛选 worker 数并显示本次筛选用时（`elapsed_seconds`）。worker 数上限固定为 16：实测（18 核全市场）8→16 尚有约 7% 收益，超过 16（24/32/48）不再变快反而略慢，故不随 CPU 数扩张。
 - 对后续阶段：P5-A 回测、P5-B CAPM、P6 只依赖 `MarketDataReadService` 与数据库无关类型；未来数据库升级只替换 reader 实现与连接配置；未来 CAPM/回测各自增加独立执行器，不得复用 `ScreeningPlan` 或 `RuleEngine` 承载其他模块业务。
 
 ### 12. 内置规则清单
