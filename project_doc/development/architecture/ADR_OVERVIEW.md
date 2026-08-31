@@ -102,6 +102,18 @@ Domain（不可变领域对象）被各层共享引用
 - 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s；Web 工作台可在 1-16 内配置筛选 worker 数并显示本次筛选用时（`elapsed_seconds`）。worker 数上限固定为 16：实测（18 核全市场）8→16 尚有约 7% 收益，超过 16（24/32/48）不再变快反而略慢，故不随 CPU 数扩张。
 - 对后续阶段：P5-A 回测、P5-B CAPM、P6 只依赖 `MarketDataReadService` 与数据库无关类型；未来数据库升级只替换 reader 实现与连接配置；未来 CAPM/回测各自增加独立执行器，不得复用 `ScreeningPlan` 或 `RuleEngine` 承载其他模块业务。
 
+### 11. P5A 回测引擎与八年数据决策（2026-09-01 接受）
+
+- **引擎选型**：回测引擎采用 Backtrader（1.9.78.123，GPLv3），在 Python 3.14.7 上完成离线 PoC 验证（多 feed、analyzer、重复运行结果哈希一致）；Backtrader 只存在于适配层（BacktraderBacktestEngine 实现项目自有 BacktestEngine Protocol），Services/Domain 不导入 bt 类型，不持久化 Backtrader pickle；使用单一受控 StockManagerPortfolioStrategy，禁止动态生成策略子类或运行用户上传代码。明细：ADR_P5A_BACKTEST_ENGINE.md。
+- **不做时间轴并行**：组合状态（现金/持仓/待成交/T+1 可卖/指标）依赖前一时点，Backtrader 单次组合运行沿唯一时间线顺序推进；并行只发生在历史筛选的股票轴（每 worker 一次读整段历史，worker 内沿 T 顺序滚动）。
+- **复权口径**：筛选输入与回测成交统一 qfq；qfq 除权拼接断层按对策 a（检测除权事件后重拉受影响股票）处理。明细：ADR_P5A_SEED_DISTRIBUTION.md。
+- **成交时点**：T 日收盘生成资格信号，策略 T 日收盘形成目标订单，市价单最早 T+1 开盘成交；严禁默认 cheat-on-close/open。
+- **A 股约束等级**：P5A-7 实现完整组合——100 股整手与余股、T+1 可卖、停牌不可成交、涨跌停不可买/卖、佣金最低收费、印花税、过户费及生效日期、滑点、现金不足与部分成交；未实现项显式显示，不静默降级。
+- **候选排名**：候选超过最大持仓时按评估日及之前 20 个交易日平均成交金额降序取前 N，同额按代码升序（稳定同分键）。
+- **八年数据起止**：终点=最新已完成交易日，起点=终点向前第 2080 个交易日；真实 coverage_start/coverage_end 落库，缺口按实际报告。
+- **性能门禁**：先建可重复基准（JSON schema_version 1，scripts/bench_results/）再锁门槛；4 worker 无真实收益则回退；每 shard 只读一次，禁止按交易日重复全市场查询；结果确定性一致。
+- **依赖变更**：backtrader==1.9.78.123 已装入 .venv（用户确认）；pyproject.toml 正式声明随 P5A-6 适配器实现一并处理。
+
 ### 12. 内置规则清单
 
 | rule_id | 名称 | 归属 |

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "mode": "p5a-0-poc",
+  "generated_at": "2026-09-01T02:18:49.754558+08:00",
+  "environment": {
+    "machine": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7",
+    "sqlite": "3.50.4",
+    "backtrader": "1.9.78.123",
+    "pandas": "2.3.3",
+    "numpy": "2.5.2",
+    "commit": "d44201b2f185d4bdc0bb5c1f4f644f0c4ed5f378",
+    "branch": "p5a-0-poc",
+    "dirty": "yes"
+  },
+  "poc": {
+    "fixture": {
+      "symbols": 3,
+      "days_per_symbol": 520,
+      "seed": 20260901,
+      "start": "2018-09-03",
+      "end": "2020-08-28"
+    },
+    "cerebro": {
+      "feed_count": 3,
+      "initial_cash": 100000.0,
+      "final_value_first": 99865.0,
+      "final_value_second": 99865.0,
+      "hash_first": "d1aa5647d571bd98",
+      "hash_second": "d1aa5647d571bd98",
+      "deterministic": true,
+      "trade_count": 8,
+      "warnings": []
+    },
+    "timing": {
+      "first_run_seconds": 0.0541,
+      "second_run_seconds": 0.0533,
+      "peak_rss_mb": 97.2
+    }
+  }
+}
