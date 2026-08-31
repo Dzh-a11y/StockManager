@@ -192,6 +192,7 @@ class ResearchBacktestService:
         try:
             store.start_validating(run_id)
             if self._runner.should_cancel(f"backtest:{run_id}"):
+                store.request_cancel(run_id)
                 store.finish_cancelled(run_id)
                 return
             # 数据校验:generation 绑定与规则能力
@@ -212,6 +213,7 @@ class ResearchBacktestService:
                 calendar_fp = self._calendar_fingerprint(dataset_id)
             store.start_building(run_id)
             if self._runner.should_cancel(f"backtest:{run_id}"):
+                store.request_cancel(run_id)
                 store.finish_cancelled(run_id)
                 return
             eligibility = self._build_eligibility(
@@ -219,6 +221,7 @@ class ResearchBacktestService:
             )
             store.start_backtest(run_id)
             if self._runner.should_cancel(f"backtest:{run_id}"):
+                store.request_cancel(run_id)
                 store.finish_cancelled(run_id)
                 return
             market_data = self._load_market_data(spec, dataset_id, adjustment)

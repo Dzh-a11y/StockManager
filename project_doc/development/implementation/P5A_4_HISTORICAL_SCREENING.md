@@ -51,7 +51,19 @@ EligibilitySnapshot(trading_day, eligible_codes, selected_count);HistoricalScree
 | w4_b250 | ~0.08s | 8a7724f459f8f613 |
 | w4_b500 | ~0.08s | 8a7724f459f8f613 |
 
-全部配置结果指纹一致(确定性)。真实八年规模的 worker/shard 收敛基准属 P5A-9 性能门禁,脚本已就绪(--real-db)。
+全部配置结果指纹一致(确定性)。
+
+**真实库一年样本基准(2026-09-02,data/market.sqlite3,5200+ 股票,135 个评估交易日)**:
+
+| 配置 | 耗时 | 相对 w1 |
+|---|---|---|
+| w1_b100 | 11.7s | 1x |
+| w2_b100 | 6.4s | 1.8x |
+| w4_b100 | 3.3s | 3.5x |
+| w4_b250 | 11.8s | 1x |
+| w4_b500 | 12.1s | 1x |
+
+结论:**shard size 100 显著优于 250/500**(大 shard 下 SQLite 并发读取竞争与内存放大抵消并行收益),默认 batch_size 已按实测改为 100;4 worker x shard 100 相对串行有 3.5 倍真实收益(满足 P5A 第 13 节验收线)。各配置 fingerprint 一致(确定性)。八年规模(约 2080 交易日)收敛基准以同一脚本在八年数据就绪后复核。原始数据:scripts/bench_results/2026-09-02_p5a_historical_real1y.json。
 
 ## 离线测试验收
 

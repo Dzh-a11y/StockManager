@@ -1,0 +1,55 @@
+{
+  "benchmark": "P5A-4 historical screening scaling",
+  "fixture": {
+    "stocks": 0,
+    "days": 0,
+    "real_db": true
+  },
+  "results": {
+    "w1_b100": {
+      "elapsed_seconds": 11.689,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w1_b250": {
+      "elapsed_seconds": 11.444,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w1_b500": {
+      "elapsed_seconds": 11.727,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w2_b100": {
+      "elapsed_seconds": 6.371,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w2_b250": {
+      "elapsed_seconds": 11.827,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w2_b500": {
+      "elapsed_seconds": 12.191,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w4_b100": {
+      "elapsed_seconds": 3.301,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w4_b250": {
+      "elapsed_seconds": 11.802,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    },
+    "w4_b500": {
+      "elapsed_seconds": 12.055,
+      "snapshots": 135,
+      "fingerprint": "44decc48c4b61f54"
+    }
+  }
+}

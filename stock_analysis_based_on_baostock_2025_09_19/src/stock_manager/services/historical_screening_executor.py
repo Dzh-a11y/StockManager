@@ -248,7 +248,7 @@ class HistoricalScreeningExecutor:
         *,
         database_path: str,
         max_workers: int = 4,
-        batch_size: int = 250,
+        batch_size: int = 100,
         small_serial_threshold: int = 50,
         reader_factory: Callable[[], PointInTimeReaderProtocol] | None = None,
     ) -> None:
