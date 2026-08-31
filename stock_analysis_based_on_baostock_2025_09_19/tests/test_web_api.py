@@ -810,3 +810,45 @@ def test_sync_status_marks_partial_bar_day_as_incomplete(tmp_path: Path) -> None
     # 最新交易日有 bar 但只覆盖 20/120 → 未完全同步 → incomplete(Orange)。
     latest = next(e for e in payload["recent_days"] if e["day"] == DAY.isoformat())
     assert latest["status"] == "incomplete"
+
+
+
+# ---------- max_workers & elapsed (worker 配置) ----------
+def test_screen_accepts_max_workers_and_reports_elapsed(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    body = _screen_body(_default_template())
+    body["max_workers"] = 2
+    status, payload = _post(app, "/api/screen", body)
+    assert status == 200
+    assert payload["max_workers"] == 2
+    assert isinstance(payload["elapsed_seconds"], (int, float))
+    assert payload["elapsed_seconds"] >= 0
+
+
+def test_screen_max_workers_upper_bound_is_16(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    body = _screen_body(_default_template())
+    body["max_workers"] = 17
+    status, payload = _post(app, "/api/screen", body)
+    assert status == 400
+    assert payload["error"]["code"] == "BAD_REQUEST"
+    assert "max_workers" in payload["error"]["message"]
+
+
+def test_screen_max_workers_rejects_non_integer(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    body = _screen_body(_default_template())
+    body["max_workers"] = "fast"
+    status, payload = _post(app, "/api/screen", body)
+    assert status == 400
+    assert payload["error"]["code"] == "BAD_REQUEST"
+
+
+def test_screen_max_workers_one_works(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    body = _screen_body(_default_template())
+    body["max_workers"] = 1
+    status, payload = _post(app, "/api/screen", body)
+    assert status == 200
+    assert payload["summary"]["total"] == 1
+    assert payload["max_workers"] == 1

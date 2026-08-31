@@ -67,6 +67,8 @@ P4 完成后，P5-A 回测、P5-B CAPM 和 P6 高维统计可以通过同一只�
 
 同一筛选调用链只允许一层并发调度；`max_workers=1` 复用相同逻辑并串行执行（逐股进度回调与旧实现一致）。默认 `max_workers=4`（进程池实测 3.8 倍加速）。
 
+**Web 可配置 worker 数（v1.7.1）**：`/api/screen` 请求体支持可选 `max_workers`（整数 1~16，默认 4），逐请求覆盖进程池大小；超出范围或非整数返回 `400`。响应新增 `elapsed_seconds`（筛选耗时秒数）与回显 `max_workers`。Web 工作台「运行条件」区提供 Worker 数输入框（1-16，默认 4），并提示 worker 越多越快但内存与 CPU 占用越高；结果区展示本次用时。实测（Apple M5 Pro，全市场 5212 只）：1 worker 6.22s、4 workers 2.01s、16 workers 0.98s，各配置结果逐项等价。
+
 ## 模块清单
 
 ```text

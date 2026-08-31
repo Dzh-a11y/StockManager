@@ -46,6 +46,11 @@
           </select>
         </label>
         <label class="field">
+          <span class="field__label">筛选并发数（Worker 数，1-16）<span class="term__help" data-tip="同时启动的筛选进程数：数量越多越快，但内存占用与 CPU 占用越高；小数据量时效果不明显。">?</span></span>
+          <input id="max-workers" class="input" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
+          <span class="field__hint">worker 越多越快，但内存占用越多、CPU 要求越高</span>
+        </label>
+        <label class="field">
           <span class="field__label">股票代码（可选，逗号分隔）</span>
           <input id="codes" class="input" type="text" placeholder="如 sh.600000,sz.000001" autocomplete="off">
         </label>

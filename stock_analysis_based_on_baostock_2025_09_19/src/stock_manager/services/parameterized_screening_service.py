@@ -40,6 +40,9 @@ from stock_manager.services.screening_shard_executor import ScreeningShardExecut
 from stock_manager.templates.models import ScreeningPlan
 
 
+MAX_WORKERS_LIMIT = 16
+
+
 class ParameterizedScreeningService:
     def __init__(
         self,
@@ -47,7 +50,7 @@ class ParameterizedScreeningService:
         registry: RuleRegistry,
         *,
         reader_factory: MarketDataReaderFactoryProtocol | None = None,
-        max_workers: int = 4,
+        max_workers: int = MAX_WORKERS_LIMIT,
         batch_size: int = 500,
         small_data_serial_threshold: int = 50,
     ) -> None:
@@ -78,6 +81,7 @@ class ParameterizedScreeningService:
         adjustment: AdjustmentMethod,
         codes: Sequence[str] = (),
         progress_callback: Callable[[dict[str, object]], None] | None = None,
+        max_workers: int | None = None,
     ) -> tuple[ParameterizedScreeningResult, ...]:
         normalized_dataset_id = dataset_id.strip()
         if not normalized_dataset_id:
@@ -119,6 +123,7 @@ class ParameterizedScreeningService:
                 selected,
                 data_plan,
                 progress_callback,
+                max_workers,
             )
         return self._serial_screen(
             plan,

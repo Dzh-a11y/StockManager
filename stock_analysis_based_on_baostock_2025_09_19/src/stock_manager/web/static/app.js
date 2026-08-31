@@ -444,7 +444,10 @@ function runtimeConditions() {
   const adjustment = $('#adjustment').value;
   const codesRaw = $('#codes').value.trim();
   const codes = codesRaw ? codesRaw.split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean) : undefined;
-  return { dataset_id: dataset, trading_day: tradingDay, adjustment, codes };
+  const workersInput = $('#max-workers').value;
+  const workers = workersInput ? Math.min(16, Math.max(1, Math.floor(Number(workersInput) || 4))) : 4;
+  $('#max-workers').value = workers;
+  return { dataset_id: dataset, trading_day: tradingDay, adjustment, codes, max_workers: workers };
 }
 
 let screenPollTimer = null;
@@ -703,6 +706,13 @@ function renderResults() {
     return;
   }
   $('#result-revision').textContent = data.template_id + ' · rev ' + data.template_revision + ' · ' + data.trading_day;
+  const timing = data.elapsed_seconds != null
+    ? ' · 用时 ' + (Number(data.elapsed_seconds) >= 60
+        ? (Number(data.elapsed_seconds) / 60).toFixed(1) + ' 分钟'
+        : Number(data.elapsed_seconds).toFixed(2) + ' 秒')
+        + ' · ' + (data.max_workers != null ? data.max_workers + ' workers' : '')
+    : '';
+  $('#result-revision').textContent += timing;
   const filtered = data.results.filter((r) => {
     if (state.resultFilter === 'passed') return r.passed;
     if (state.resultFilter === 'failed') return !r.passed;

@@ -1,5 +1,5 @@
 ---
-date: 2026-08-28
+date: 2026-08-31
 purpose: 记录 StockManager P3 本地 Web 工作台的启动方式、接口契约与错误映射。
 project: StockManager
 status: active
@@ -97,8 +97,11 @@ stock-manager web \
   "dataset_id": "market",
   "trading_day": "2026-08-25",
   "adjustment": "qfq",
-  "codes": ["sh.600001"]
+  "codes": ["sh.600001"],
+  "max_workers": 4
 }
+
+`max_workers`（可选，整数 1~16，默认 4）：筛选并发 worker 数。worker 越多越快，但内存与 CPU 占用越高；小数据量时收益不明显。超出 1~16 或非整数返回 `400`。
 ```
 
 响应：
@@ -110,6 +113,8 @@ stock-manager web \
   "dataset_id": "market",
   "trading_day": "2026-08-25",
   "adjustment": "qfq",
+  "max_workers": 4,
+  "elapsed_seconds": 1.234,
   "metadata": {...},
   "summary": {"total": 1, "passed": 1, "failed": 0},
   "results": [

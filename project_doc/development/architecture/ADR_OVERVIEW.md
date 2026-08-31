@@ -84,7 +84,7 @@ Domain（不可变领域对象）被各层共享引用
 
 - 采用语义化版本 `MAJOR.MINOR.PATCH`：主版本=不兼容破坏；次版本=新增规则/功能（向后兼容）；修订版本=新增 UI 内容（向后兼容）。
 - 版本号必须同步三处并保持一致：`pyproject.toml` 的 `version`、`src/stock_manager/__init__.py` 的 `__version__`、`tests/test_package_structure.py` 的版本断言。
-- 当前基线版本：**1.7.0**。
+- 当前基线版本：**1.7.1**。
 
 ### 9. 平台与启动
 
@@ -93,16 +93,16 @@ Domain（不可变领域对象）被各层共享引用
 - **Windows**：双击 `scripts\StockManager.bat` 自动装依赖、启动并自动生成桌面快捷方式；`scripts\setup_windows.bat` 手动补救快捷方式；`scripts\build_windows_exe.bat` 可打包单文件 `dist\StockManager.exe`（免装 Python，数据存放于 exe 所在目录）。
 - 手动启动等价命令：`stock-manager web --db data/market.sqlite3 --system-templates config/rule_templates --user-templates data/user-templates --static src/stock_manager/web/static --sync-config config/sync.json --lock-dir data/locks --host 127.0.0.1 --port 8000`。
 
-### 9. P4 只读访问与分片筛选基础设施
+### 10. P4 只读访问与分片筛选基础设施
 
 - 新增数据库无关只读访问层 `stock_manager.read`：`MarketDataReadRequest`、`DatasetReadSnapshot`、`MarketDataBatch` 为不可变领域契约（无 SQL）；`MarketDataReaderProtocol` / `MarketDataReaderFactoryProtocol` 为数据库无关协议（禁止 sqlite3.Connection、SQL 文本与 PRAGMA）；`SQLiteMarketDataReader` 为 P4 唯一实现（只读 URI `mode=ro` + `PRAGMA query_only`）。
 - `MarketDataReadService` 负责代码分片、受控线程池并发、稳定合并（`code ASC, trading_day ASC`）、`max_workers=1` 串行回退与失败传播（`ShardReadError` 携带分片标识与原始异常链）；快照在并发读取前冻结，版本变化抛 `SnapshotConsistencyError`，禁止返回混合数据。
 - `ScreeningShardExecutor` 只属于参数化筛选通道：进程池 worker 各自创建只读 reader/连接，在 worker 内读取行情/基本面/分红并执行 `RuleEngine.evaluate()`，只回传结构化结果与进度；同一调用链禁止嵌套线程池/进程池；`max_workers=1` 或小数据量回退串行（逐股进度回调与旧实现一致）。
-- 并发约束：SQLite 连接只读且每 worker 独立；worker 数配置化有上限（默认读取 1、筛选 4）；代码分片避免超大 IN 查询；合并结果与串行结果逐项相等；写入、同步、重试与上游限速不受 P4 影响。
-- 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s。
+- 并发约束：SQLite 连接只读且每 worker 独立；worker 数配置化有上限（读取默认 1；筛选 Web 可配置 1-16、默认 4）；代码分片避免超大 IN 查询；合并结果与串行结果逐项相等；写入、同步、重试与上游限速不受 P4 影响。
+- 性能证据（Apple M5 Pro / 48 GB，2026-08-31，全市场 5212 只）：SQLite 只读并发读取无收益（串行 5.73s vs 4 workers 15.21s），默认串行；参数化筛选进程池 4 workers 1.95s vs 串行 7.42s（3.8 倍加速），Web `/api/screen` 真实链路 2.35s；Web 工作台可在 1-16 内配置筛选 worker 数并显示本次筛选用时（`elapsed_seconds`）。
 - 对后续阶段：P5-A 回测、P5-B CAPM、P6 只依赖 `MarketDataReadService` 与数据库无关类型；未来数据库升级只替换 reader 实现与连接配置；未来 CAPM/回测各自增加独立执行器，不得复用 `ScreeningPlan` 或 `RuleEngine` 承载其他模块业务。
 
-### 11. 内置规则清单
+### 12. 内置规则清单
 
 | rule_id | 名称 | 归属 |
 | --- | --- | --- |

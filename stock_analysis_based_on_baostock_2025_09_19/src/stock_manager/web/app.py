@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Callable, Mapping
@@ -254,7 +255,7 @@ class WebApp:
 
     def _handle_screen(self, body: object) -> Response:
         data = self._object(body, "body")
-        unknown = set(data) - {"template", "dataset_id", "trading_day", "adjustment", "codes"}
+        unknown = set(data) - {"template", "dataset_id", "trading_day", "adjustment", "codes", "max_workers"}
         if unknown:
             raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
         required = {"template", "dataset_id", "trading_day", "adjustment"}
@@ -267,6 +268,7 @@ class WebApp:
         template = parse_template_wrapper({"template": data["template"]})
         plan = self._services.compiler.compile(template)
         codes = self._codes(data.get("codes"))
+        max_workers = self._max_workers_value(data.get("max_workers"))
         self._screen_progress = {
             "status": "running",
             "dataset_id": dataset_id,
@@ -278,6 +280,7 @@ class WebApp:
             "current_code": None,
             "message": "正在筛选…",
         }
+        started = time.perf_counter()
         try:
             results = self._services.screening_service.screen(
                 plan,
@@ -286,6 +289,7 @@ class WebApp:
                 adjustment,
                 codes,
                 progress_callback=self._on_screen_progress,
+                max_workers=max_workers,
             )
             self._screen_progress["status"] = "done"
             self._screen_progress["message"] = "筛选完成"
@@ -298,10 +302,13 @@ class WebApp:
         )
         if metadata is None:
             raise NotFoundError("local dataset is unavailable")
-        return self._json(
-            200,
-            screen_response(dataset_id, trading_day, adjustment, plan, metadata, results),
+        elapsed = round(time.perf_counter() - started, 3)
+        payload = screen_response(
+            dataset_id, trading_day, adjustment, plan, metadata, results
         )
+        payload["elapsed_seconds"] = elapsed
+        payload["max_workers"] = max_workers
+        return self._json(200, payload)
 
     def _handle_bars(self, query: Mapping[str, list[str]]) -> Response:
         """Return recent local daily bars for one stock (K-line + volume source).
@@ -699,6 +706,17 @@ class WebApp:
         if isinstance(parsed, bool) or not (minimum <= parsed <= maximum):
             raise BadRequestError(f"{name} must be between {minimum} and {maximum}")
         return parsed
+
+    @staticmethod
+    def _max_workers_value(value: object) -> int:
+        """Parse max_workers (1..16); None defaults to 4."""
+        if value is None:
+            return 4
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise BadRequestError("max_workers must be an integer")
+        if not 1 <= value <= 16:
+            raise BadRequestError("max_workers must be between 1 and 16")
+        return value
 
     @staticmethod
     def _codes(value: object) -> tuple[str, ...]:

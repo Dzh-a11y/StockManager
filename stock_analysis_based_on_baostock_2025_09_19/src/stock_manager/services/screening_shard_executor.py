@@ -206,12 +206,17 @@ class ScreeningShardExecutor:
         codes: tuple[str, ...],
         data_plan: ScreeningDataPlan,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
+        max_workers: int | None = None,
     ) -> tuple[ParameterizedScreeningResult, ...]:
         """Screen codes with one level of controlled concurrency.
 
         Results are merged in codes order (codes are already sorted by the
         caller), matching the serial reference path exactly. Any worker failure
         propagates as-is; partial results are never returned.
+
+        ``max_workers`` overrides the constructor default for this call when
+        provided; it must be positive and is clamped to the configured upper
+        bound.
         """
         if not codes:
             return ()
@@ -222,8 +227,9 @@ class ScreeningShardExecutor:
                 f"codes absent from the local stock snapshot: ",
                 f"{', '.join(missing_codes)}",
             )
+        workers = self._resolve_workers(max_workers)
         shards = self._split_shards(codes)
-        serial = self._should_run_serial(shards)
+        serial = self._should_run_serial(shards, workers)
         if serial:
             return self._execute_serial(
                 plan, dataset_id, trading_day, adjustment, metadata,
@@ -232,7 +238,25 @@ class ScreeningShardExecutor:
         return self._execute_parallel(
             plan, dataset_id, trading_day, adjustment, metadata,
             stocks, shards, data_plan, progress_callback,
+            workers,
         )
+
+    def _resolve_workers(self, requested: int | None) -> int:
+        if requested is None:
+            return self._max_workers
+        if requested <= 0:
+            raise ValueError("max_workers must be positive")
+        return min(requested, self._max_workers)
+
+    def _should_run_serial(
+        self,
+        shards: Sequence[tuple[str, ...]],
+        workers: int,
+    ) -> bool:
+        if workers == 1:
+            return True
+        total = sum(len(shard) for shard in shards)
+        return total <= self._serial_threshold
 
     def _split_shards(self, codes: Sequence[str]) -> tuple[tuple[str, ...], ...]:
         size = max(1, self._batch_size)
@@ -241,11 +265,6 @@ class ScreeningShardExecutor:
             for index in range(0, len(codes), size)
         )
 
-    def _should_run_serial(self, shards: Sequence[tuple[str, ...]]) -> bool:
-        if self._max_workers == 1:
-            return True
-        total = sum(len(shard) for shard in shards)
-        return total <= self._serial_threshold
 
     def _execute_serial(
         self,
@@ -304,6 +323,7 @@ class ScreeningShardExecutor:
         shards: Sequence[tuple[str, ...]],
         data_plan: ScreeningDataPlan,
         progress_callback: Callable[[dict[str, object]], None] | None,
+        workers: int,
     ) -> tuple[ParameterizedScreeningResult, ...]:
         stock_by_code = {item.code: item for item in stocks}
         payloads = [
@@ -323,7 +343,7 @@ class ScreeningShardExecutor:
             for index, codes in enumerate(shards)
         ]
         ordered: dict[int, ScreeningShardResult] = {}
-        with ProcessPoolExecutor(max_workers=self._max_workers) as pool:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(_screening_shard_worker, payload): payload.shard_index
                 for payload in payloads
