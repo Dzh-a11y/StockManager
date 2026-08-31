@@ -179,6 +179,40 @@ CREATE TABLE IF NOT EXISTS eligibility_members (
     code TEXT NOT NULL,
     PRIMARY KEY (run_id, trading_day, code)
 );
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    run_id TEXT PRIMARY KEY,
+    spec_id TEXT NOT NULL,
+    plan_fingerprint TEXT NOT NULL,
+    adjustment TEXT NOT NULL,
+    score_start TEXT NOT NULL,
+    score_end TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    warnings_json TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS backtest_orders (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    trading_day TEXT NOT NULL,
+    code TEXT NOT NULL,
+    side TEXT NOT NULL,
+    price TEXT NOT NULL,
+    shares TEXT NOT NULL,
+    value TEXT NOT NULL,
+    fee TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS backtest_equity (
+    run_id TEXT NOT NULL,
+    trading_day TEXT NOT NULL,
+    equity TEXT NOT NULL,
+    cash TEXT NOT NULL,
+    holdings_value TEXT NOT NULL,
+    PRIMARY KEY (run_id, trading_day)
+);
 """
 
 
@@ -1276,4 +1310,154 @@ class SQLiteRepository:
                 old_run_ids,
             )
         return cursor.rowcount
+    # ------------------------------------------------------------------
+    # P5A-8 backtest result storage
+    # ------------------------------------------------------------------
+
+    def save_backtest_result(
+        self,
+        *,
+        run_id: str,
+        spec_id: str,
+        plan_fingerprint: str,
+        adjustment: AdjustmentMethod,
+        score_start: date,
+        score_end: date,
+        metrics_json: str,
+        warnings_json: str,
+        provenance_json: str,
+        created_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO backtest_runs
+                   (run_id, spec_id, plan_fingerprint, adjustment, score_start,
+                    score_end, metrics_json, warnings_json, provenance_json,
+                    created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    spec_id,
+                    plan_fingerprint,
+                    adjustment.value,
+                    score_start.isoformat(),
+                    score_end.isoformat(),
+                    metrics_json,
+                    warnings_json,
+                    provenance_json,
+                    created_at.isoformat(),
+                ),
+            )
+
+    def get_backtest_result(self, run_id: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM backtest_runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row["run_id"],
+            "spec_id": row["spec_id"],
+            "plan_fingerprint": row["plan_fingerprint"],
+            "adjustment": row["adjustment"],
+            "score_start": row["score_start"],
+            "score_end": row["score_end"],
+            "metrics_json": row["metrics_json"],
+            "warnings_json": row["warnings_json"],
+            "provenance_json": row["provenance_json"],
+            "created_at": row["created_at"],
+        }
+
+    def save_backtest_orders(
+        self, run_id: str, orders: Sequence[object]
+    ) -> None:
+        """orders: BacktestTrade-like with .trading_day/.code/.side/.price/
+        .shares/.value/.fee/.status/.reason."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO backtest_orders
+                   (run_id, seq, trading_day, code, side, price, shares, value,
+                    fee, status, reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (
+                        run_id,
+                        index,
+                        order.trading_day.isoformat(),
+                        order.code,
+                        order.side,
+                        str(order.price),
+                        str(order.shares),
+                        str(order.value),
+                        str(order.fee),
+                        order.status,
+                        order.reason,
+                    )
+                    for index, order in enumerate(orders)
+                ),
+            )
+
+    def list_backtest_orders(
+        self, run_id: str, *, offset: int = 0, limit: int = 100
+    ) -> tuple[dict[str, object], ...]:
+        if offset < 0 or limit <= 0:
+            raise ValueError("offset must be non-negative and limit positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM backtest_orders
+                   WHERE run_id = ? ORDER BY seq LIMIT ? OFFSET ?""",
+                (run_id, limit, offset),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def count_backtest_orders(self, run_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM backtest_orders WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return int(row["c"])
+
+    def save_backtest_equity(
+        self, run_id: str, points: Sequence[object]
+    ) -> None:
+        """points: EquityPoint-like with .trading_day/.equity/.cash/.holdings_value."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO backtest_equity
+                   (run_id, trading_day, equity, cash, holdings_value)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    (
+                        run_id,
+                        point.trading_day.isoformat(),
+                        str(point.equity),
+                        str(point.cash),
+                        str(point.holdings_value),
+                    )
+                    for point in points
+                ),
+            )
+
+    def list_backtest_equity(
+        self, run_id: str, *, offset: int = 0, limit: int = 500
+    ) -> tuple[dict[str, object], ...]:
+        if offset < 0 or limit <= 0:
+            raise ValueError("offset must be non-negative and limit positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM backtest_equity
+                   WHERE run_id = ? ORDER BY trading_day LIMIT ? OFFSET ?""",
+                (run_id, limit, offset),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def count_backtest_equity(self, run_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM backtest_equity WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return int(row["c"])
 

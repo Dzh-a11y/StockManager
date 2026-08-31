@@ -719,9 +719,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：固定 fixtures 覆盖停牌、ST、涨停、跌停、零成交量、资金不足、最低佣金、余股和跨日可卖数量；未实现能力不能静默降级。
 
-### P5A-8：异步 API 与统一前端工作台
+### P5A-8：异步 API 与统一前端工作台 —— 已完成（2026-09-02 验收）
 
 **目标**：在现有 UI 中完成“模板 → 当前筛选 → 回测 → 结果”闭环。
+
+**验收结果**：研究命名空间 API（提交/状态/取消/equity/orders/provenance/列表）；BoundedJobRunner 单任务并发 + key 去重 + 阶段边界取消（防重复点击）；ResearchBacktestService 全流程（模板重读校验 revision、plan_fingerprint、缓存命中复用 eligibility、生成→回测→归一化落库、失败原因持久化）；状态机扩展 RUNNING_BACKTEST/NORMALIZING；前端回测面板（策略/区间/资金/持仓配置、进度轮询、metrics 摘要与警告、净值/订单明细、刷新恢复）。HTTP 请求不阻塞（后台 job），重复提交不重复创建同一运行（job key 去重），页面不接收任意代码（仅内置策略 ID）。pytest 368 通过（新增 7 项）。实现文档：development/implementation/P5A_8_RESEARCH_API.md。
 
 **工作**：
 

@@ -385,6 +385,8 @@ class HistoricalRunStatus(str, Enum):
     QUEUED = "QUEUED"
     VALIDATING = "VALIDATING"
     BUILDING_SIGNALS = "BUILDING_SIGNALS"
+    RUNNING_BACKTEST = "RUNNING_BACKTEST"
+    NORMALIZING = "NORMALIZING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCEL_REQUESTED = "CANCEL_REQUESTED"
@@ -436,6 +438,13 @@ class HistoricalScreeningRun:
             HistoricalRunStatus.CANCELLED,
             HistoricalRunStatus.INTERRUPTED,
         )
+        backtest_phases = (
+            HistoricalRunStatus.RUNNING_BACKTEST,
+            HistoricalRunStatus.NORMALIZING,
+        )
+        if self.status in backtest_phases:
+            if self.finished_at is not None:
+                raise ValueError(f"{self.status.value} must not have finished_at")
         if self.status in terminal:
             if self.finished_at is None:
                 raise ValueError(f"{self.status.value} requires finished_at")

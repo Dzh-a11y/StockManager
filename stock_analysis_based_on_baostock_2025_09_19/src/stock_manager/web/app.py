@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from decimal import Decimal
+from pathlib import Path
 import signal
 import subprocess
 import threading
@@ -38,6 +41,7 @@ from stock_manager.web.errors import (
     NotFoundError,
     map_exception,
 )
+from stock_manager.services.research_backtest_service import ResearchBacktestService
 from stock_manager.web.screen import screen_response
 from stock_manager.web.serialization import to_jsonable
 from stock_manager.web.templates import (
@@ -85,6 +89,7 @@ class WebApp:
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._sync_progress: dict[str, object] = {"status": "idle"}
         self._screen_progress: dict[str, object] = {"status": "idle"}
+        self._research: ResearchBacktestService | None = None
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
         compiler = TemplateCompiler(registry)
@@ -99,6 +104,16 @@ class WebApp:
             template_service=TemplateService(template_repository, compiler),
             screening_service=ParameterizedScreeningService(repository, registry),
         )
+        database_path = getattr(self._services.repository, "database_path", None)
+        if isinstance(database_path, Path):
+            self._research = ResearchBacktestService(
+                self._services.repository,
+                self._services.registry,
+                database_path=str(database_path),
+                template_loader=self._services.template_service,
+                compiler=self._services.compiler,
+                max_workers=2,
+            )
         self._start_backfill_if_needed()
 
     def _start_backfill_if_needed(self) -> None:
@@ -218,6 +233,15 @@ class WebApp:
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
                 return self._json(200, {"instances": self._list_instances()})
+            if path == "/api/research/backtests":
+                if self._research is None:
+                    return self._error(NotFoundError("research service unavailable"))
+                runs = self._research.list_runs()
+                return self._json(200, {"runs": runs})
+            research_match = self._research_run_id_from_path(path)
+            if research_match is not None:
+                run_id, suffix = research_match
+                return self._handle_research_get(run_id, suffix)
             if path == "/api/bars":
                 return self._handle_bars(query)
             match = self._template_id_from_path(path)
@@ -247,6 +271,15 @@ class WebApp:
         if method == "POST" and path == "/api/screen":
             return self._handle_screen(body)
 
+        if method == "POST" and path == "/api/research/backtests":
+            return self._handle_research_submit(body)
+
+        research_match = self._research_run_id_from_path(path)
+        if research_match is not None and method == "POST":
+            run_id, suffix = research_match
+            if suffix == "cancel":
+                return self._handle_research_cancel(run_id)
+
         if method == "POST" and path == "/api/shutdown":
             return self._handle_shutdown(body)
 
@@ -262,6 +295,74 @@ class WebApp:
                 return self._handle_template_delete(template_id, body)
 
         raise NotFoundError("resource not found")
+
+    @staticmethod
+    def _research_run_id_from_path(path: str) -> tuple[str, str | None] | None:
+        match = re.fullmatch(
+            r"/api/research/backtests/([^/]+)(?:/(equity|orders|provenance|cancel))?",
+            path,
+        )
+        if match is None:
+            return None
+        return match.group(1), match.group(2)
+
+    def _handle_research_submit(self, body: object) -> Response:
+        if self._research is None:
+            return self._error(NotFoundError("research service unavailable"))
+        data = self._object(body, "body")
+        try:
+            template_id = str(data["template_id"]).strip()
+            template_revision = int(data["template_revision"])
+            strategy_spec_id = str(data["strategy_spec_id"]).strip()
+            start = date.fromisoformat(str(data["backtest_start"]))
+            end = date.fromisoformat(str(data["backtest_end"]))
+            initial_cash = Decimal(str(data["initial_cash"]))
+            max_positions = int(data.get("max_positions", 20))
+        except (KeyError, ValueError, TypeError) as error:
+            return self._error(BadRequestError("invalid research request: " + str(error)))
+        try:
+            run_id = self._research.submit(
+                template_id=template_id,
+                template_revision=template_revision,
+                strategy_spec_id=strategy_spec_id,
+                backtest_start=start,
+                backtest_end=end,
+                initial_cash=initial_cash,
+                max_positions=max_positions,
+            )
+        except Exception as error:
+            return self._error(BadRequestError(str(error)))
+        return self._json(202, {"run_id": run_id})
+
+    def _handle_research_get(self, run_id: str, suffix: str | None) -> Response:
+        if self._research is None:
+            return self._error(NotFoundError("research service unavailable"))
+        if suffix == "equity":
+            points = self._research.equity(run_id)
+            return self._json(200, {"run_id": run_id, "points": points, "count": len(points)})
+        if suffix == "orders":
+            orders = self._research.orders(run_id)
+            return self._json(200, {"run_id": run_id, "orders": orders, "count": len(orders)})
+        if suffix == "provenance":
+            result = self._research.result(run_id)
+            if result is None:
+                return self._error(NotFoundError(f"no result for run {run_id}"))
+            return self._json(200, {"run_id": run_id, "provenance": json.loads(result["provenance_json"])})
+        status = self._research.status(run_id)
+        if status is None:
+            return self._error(NotFoundError(f"run {run_id} not found"))
+        payload: dict[str, object] = dict(status)
+        result = self._research.result(run_id)
+        if result is not None:
+            payload["metrics"] = json.loads(result["metrics_json"])
+            payload["warnings"] = json.loads(result["warnings_json"] or "[]")
+        return self._json(200, payload)
+
+    def _handle_research_cancel(self, run_id: str) -> Response:
+        if self._research is None:
+            return self._error(NotFoundError("research service unavailable"))
+        cancelled = self._research.cancel(run_id)
+        return self._json(200, {"run_id": run_id, "cancel_requested": cancelled})
 
     def _handle_screen(self, body: object) -> Response:
         data = self._object(body, "body")

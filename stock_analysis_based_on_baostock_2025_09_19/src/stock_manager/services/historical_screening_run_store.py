@@ -35,8 +35,17 @@ _TRANSITIONS: dict[HistoricalRunStatus, frozenset[HistoricalRunStatus]] = {
          HistoricalRunStatus.CANCEL_REQUESTED, HistoricalRunStatus.INTERRUPTED}
     ),
     HistoricalRunStatus.BUILDING_SIGNALS: frozenset(
-        {HistoricalRunStatus.SUCCEEDED, HistoricalRunStatus.FAILED,
+        {HistoricalRunStatus.SUCCEEDED, HistoricalRunStatus.RUNNING_BACKTEST,
+         HistoricalRunStatus.FAILED, HistoricalRunStatus.CANCEL_REQUESTED,
+         HistoricalRunStatus.INTERRUPTED}
+    ),
+    HistoricalRunStatus.RUNNING_BACKTEST: frozenset(
+        {HistoricalRunStatus.NORMALIZING, HistoricalRunStatus.FAILED,
          HistoricalRunStatus.CANCEL_REQUESTED, HistoricalRunStatus.INTERRUPTED}
+    ),
+    HistoricalRunStatus.NORMALIZING: frozenset(
+        {HistoricalRunStatus.SUCCEEDED, HistoricalRunStatus.FAILED,
+         HistoricalRunStatus.INTERRUPTED}
     ),
     HistoricalRunStatus.CANCEL_REQUESTED: frozenset(
         {HistoricalRunStatus.CANCELLED, HistoricalRunStatus.INTERRUPTED}
@@ -150,6 +159,12 @@ class HistoricalScreeningRunStore:
         )
         self._repository.save_historical_run(updated)
         return updated
+
+    def start_backtest(self, run_id: str) -> HistoricalScreeningRun:
+        return self._transition(run_id, HistoricalRunStatus.RUNNING_BACKTEST)
+
+    def start_normalizing(self, run_id: str) -> HistoricalScreeningRun:
+        return self._transition(run_id, HistoricalRunStatus.NORMALIZING)
 
     def succeed(
         self, run_id: str, completed: int, total: int
