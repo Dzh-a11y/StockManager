@@ -658,9 +658,11 @@ P5A 不先拍脑袋承诺秒级五年回测。先建立可重复基准，再锁�
 
 **验收**：Domain 不导入 Backtrader；任意 import path 和未知 policy ID 被拒绝；相同配置 fingerprint 稳定。
 
-### P5A-4：HistoricalScreeningExecutor
+### P5A-4：HistoricalScreeningExecutor —— 已完成（2026-09-02 验收）
 
 **目标**：复用现有规则能力，完成股票轴并行、时间轴顺序的五年逐日信号生成。
+
+**验收结果**：HistoricalScreeningRequest/EligibilitySnapshot/HistoricalScreeningResult 契约；worker 一次读整段（bars/fundamentals/all_universe_snapshots）后沿评估日顺序滚动；单层 ProcessPoolExecutor（无嵌套池），max_workers=1 走同一逻辑串行；确定性合并 + result_fingerprint；任一 shard 失败整体失败（HistoricalScreeningError）；generation 绑定校验（DatasetGenerationMismatchError）；每 shard 恰好一次 bars_through（计数测试断言）。并行与参考结果逐项相等、重复运行确定性一致；基准脚本 scripts/bench_p5a_historical.py 就绪（fixture 300 股 × 120 日各配置 fingerprint 一致）。pytest 331 通过（新增 8 项）。实现文档：development/implementation/P5A_4_HISTORICAL_SCREENING.md。
 
 **工作**：
 
