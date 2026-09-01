@@ -234,6 +234,8 @@ class WebApp:
                 return self._json(200, self._sync_progress)
             if path == "/api/sync/status":
                 return self._json(200, self._sync_status())
+            if path == "/api/sync/backfill/progress":
+                return self._json(200, self._backfill_v2_progress())
             if path == "/api/screen/progress":
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
@@ -605,6 +607,60 @@ class WebApp:
             "recent_days": recent,
             "older_bands": bands,
             "year_bands": year_bands,
+        }
+
+    def _backfill_v2_progress(self) -> dict[str, object]:
+        """Report eight-year backfill progress from the v2 run bookkeeping.
+
+        Works for backfills started by the web startup thread or by the
+        standalone runner script: both persist run/chunk state in the same
+        database. Progress = completed chunk groups / expected chunk count
+        (stock pool size / 100-code batches); multi-gap runs clamp at 1.0.
+        """
+        repo = self._services.repository
+        runs = repo.list_backfill_runs_v2("market", AdjustmentMethod.QFQ)
+        if not runs:
+            return {"status": "none"}
+        running = [r for r in runs if r.status.value == "RUNNING"]
+        # 仅在"正在回补"或"已确认完成"时返回进度;其余状态(含遗留/幂等
+        # 跳过的 SUCCESS 空 run)前端隐藏,避免误显示 0% 或残留区间。
+        if not running:
+            latest = runs[0]
+            done = sum(
+                len(chunks)
+                for chunks in repo.completed_chunk_codes_v2(latest.run_id).values()
+            )
+            stocks_count = len(repo.get_stocks(latest.target_end))
+            total = max(1, -(-stocks_count // 100))
+            if latest.status.value == "SUCCESS" and done >= total:
+                return {
+                    "status": "complete",
+                    "run_id": latest.run_id,
+                    "target_start": latest.target_start.isoformat(),
+                    "target_end": latest.target_end.isoformat(),
+                    "progress": 1.0,
+                    "done_chunks": done,
+                    "total_chunks": total,
+                    "started_at": latest.started_at.isoformat(),
+                }
+            return {"status": "none"}
+        run = running[0]
+        done_groups = sum(
+            len(chunks) for chunks in repo.completed_chunk_codes_v2(run.run_id).values()
+        )
+        stocks_count = len(repo.get_stocks(run.target_end))
+        batch_size = 100
+        total_chunks = max(1, -(-stocks_count // batch_size))
+        progress = min(1.0, done_groups / total_chunks)
+        return {
+            "status": run.status.value,
+            "run_id": run.run_id,
+            "target_start": run.target_start.isoformat(),
+            "target_end": run.target_end.isoformat(),
+            "progress": round(progress, 4),
+            "done_chunks": done_groups,
+            "total_chunks": total_chunks,
+            "started_at": run.started_at.isoformat(),
         }
 
     def _list_instances(self) -> list[dict[str, object]]:

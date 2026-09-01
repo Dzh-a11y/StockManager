@@ -623,7 +623,33 @@ let syncPollTimer = null;
 function startSyncPolling() {
   if (syncPollTimer) return;
   pollSyncProgress();
-  syncPollTimer = setInterval(pollSyncProgress, 1000);
+  pollBackfillV2();
+  syncPollTimer = setInterval(function () { pollSyncProgress(); pollBackfillV2(); }, 1000);
+}
+
+async function pollBackfillV2() {
+  try {
+    const p = await api('GET', '/api/sync/backfill/progress');
+    const label = $('#backfill-v2-label');
+    const track = $('#backfill-v2-track');
+    const fill = $('#backfill-v2-fill');
+    if (!p || p.status === 'none') {
+      if (label) { label.hidden = true; }
+      if (track) { track.hidden = true; }
+      return;
+    }
+    const pct = Math.round((p.progress || 0) * 100);
+    if (label) {
+      label.hidden = false;
+      label.textContent = '八年回补：' + (p.status === 'RUNNING' ? '进行中' : p.status)
+        + ' · ' + p.target_start + ' ~ ' + p.target_end
+        + '（' + p.done_chunks + '/' + p.total_chunks + ' 批，' + pct + '%）';
+    }
+    if (track) {
+      track.hidden = false;
+      if (fill) { fill.style.width = pct + '%'; }
+    }
+  } catch (e) { /* ignore */ }
 }
 function renderSyncProgress(p) {
   const track = $('#sync-progress-track');
