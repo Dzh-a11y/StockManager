@@ -808,7 +808,7 @@ async function pollBackfillV2() {
     track.hidden = false;
     fill.style.width = pct + '%';
     current.hidden = false;
-    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）'
+    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.covered_days + '/' + p.total_days + ' 天）'
       + (batchPhaseLabel ? ' · ' + batchPhaseLabel : '');
     meta.hidden = true; // 去掉第一行静态描述,动态信息并入最后一行
   } catch (e) {

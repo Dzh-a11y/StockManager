@@ -664,12 +664,14 @@ class WebApp:
         }
 
     def _backfill_v2_progress(self) -> dict[str, object]:
-        """Report eight-year backfill progress from the v2 run bookkeeping.
+        """Report eight-year backfill progress from actual data coverage.
 
         Works for backfills started by the web startup thread or by the
-        standalone runner script: both persist run/chunk state in the same
-        database. Progress = completed chunk groups / expected chunk count
-        (stock pool size / 100-code batches); multi-gap runs clamp at 1.0.
+        standalone runner script. Progress = the share of trading days in the
+        eight-year window whose bar universe covers >= 95% of the stock pool,
+        so it reflects how much of the window is actually complete instead of
+        one run's chunk bookkeeping (a new trading day re-runs under a fresh
+        run id and would otherwise show a misleadingly low percentage).
         """
         repo = self._services.repository
         runs = repo.list_backfill_runs_v2("market", AdjustmentMethod.QFQ)
@@ -680,32 +682,22 @@ class WebApp:
         # 跳过的 SUCCESS 空 run)前端隐藏,避免误显示 0% 或残留区间。
         if not running:
             latest = runs[0]
-            done = sum(
-                len(chunks)
-                for chunks in repo.completed_chunk_codes_v2(latest.run_id).values()
-            )
-            stocks_count = len(repo.get_stocks(latest.target_end))
-            total = max(1, -(-stocks_count // 100))
-            if latest.status.value == "SUCCESS" and done >= total:
-                return {
-                    "status": "complete",
-                    "run_id": latest.run_id,
-                    "target_start": latest.target_start.isoformat(),
-                    "target_end": latest.target_end.isoformat(),
-                    "progress": 1.0,
-                    "done_chunks": done,
-                    "total_chunks": total,
-                    "started_at": latest.started_at.isoformat(),
-                }
+            if latest.status.value == "SUCCESS":
+                covered, total, _ = self._v2_window_coverage(repo, latest)
+                if total and covered >= total:
+                    return {
+                        "status": "complete",
+                        "run_id": latest.run_id,
+                        "target_start": latest.target_start.isoformat(),
+                        "target_end": latest.target_end.isoformat(),
+                        "progress": 1.0,
+                        "covered_days": covered,
+                        "total_days": total,
+                        "started_at": latest.started_at.isoformat(),
+                    }
             return {"status": "none"}
         run = running[0]
-        done_groups = sum(
-            len(chunks) for chunks in repo.completed_chunk_codes_v2(run.run_id).values()
-        )
-        stocks_count = len(repo.get_stocks(run.target_end))
-        batch_size = 20
-        total_chunks = max(1, -(-stocks_count // batch_size))
-        progress = min(1.0, done_groups / total_chunks)
+        covered, total, progress = self._v2_window_coverage(repo, run)
         batch = repo.get_backfill_batch_progress(run.run_id)
         return {
             "status": run.status.value,
@@ -713,11 +705,43 @@ class WebApp:
             "target_start": run.target_start.isoformat(),
             "target_end": run.target_end.isoformat(),
             "progress": round(progress, 4),
-            "done_chunks": done_groups,
-            "total_chunks": total_chunks,
+            "covered_days": covered,
+            "total_days": total,
             "started_at": run.started_at.isoformat(),
             "batch": batch or {},
         }
+
+    def _v2_window_coverage(
+        self,
+        repo: SQLiteRepository,
+        run: object,
+    ) -> tuple[int, int, float]:
+        """Return ``(covered_days, total_days, progress)`` for a v2 run window.
+
+        The stock universe grows year over year, so comparing each historical
+        day's bar count to the *current* pool would mislabel older years as
+        incomplete. A day instead counts as covered when its bar universe
+        reaches at least 95% of the maximum reached that calendar year, which
+        reflects how well the window was actually fetched per period and rises
+        monotonically as the backfill fills more code history.
+        """
+        trading_days = repo.get_trading_days(run.target_start, run.target_end)
+        counts = repo.daily_bar_stock_counts(
+            run.target_start, run.target_end, AdjustmentMethod.QFQ
+        )
+        year_max: dict[str, int] = {}
+        for day, n in counts.items():
+            year = day.isoformat()[:4]
+            if n > year_max.get(year, 0):
+                year_max[year] = n
+        covered = 0
+        for day in trading_days:
+            threshold = max(1, int(year_max.get(day.isoformat()[:4], 0) * 0.95))
+            if counts.get(day, 0) >= threshold:
+                covered += 1
+        total = len(trading_days)
+        progress = (covered / total) if total else 0.0
+        return covered, total, progress
 
     def _list_instances(self) -> list[dict[str, object]]:
         """Enumerate this host's stock-manager processes (duplicate diagnosis)."""

@@ -11,6 +11,8 @@ from stock_manager.domain import (
     BackfillRunStatus,
     BackfillRunV2,
     BackfillChunkV2,
+    DailyBar,
+    DatasetMetadata,
     HistoricalRunStatus,
 )
 from stock_manager.storage.sqlite_repo import SQLiteRepository
@@ -56,6 +58,25 @@ def test_progress_none_when_no_run(tmp_path: Path) -> None:
     assert payload["status"] == "none"
 
 
+def _save_window(repo: SQLiteRepository) -> None:
+    """Save three trading days and bars for all stocks on the first day only."""
+    from decimal import Decimal
+
+    from stock_manager.domain import DailyBar
+
+    meta = DatasetMetadata("market", date(2026, 8, 31), "fixture", NOW, QFQ)
+    days = (date(2026, 8, 25), date(2026, 8, 26), date(2026, 8, 27))
+    repo.save_trading_days(days, meta)
+    bars = tuple(
+        DailyBar(
+            f"{i:06d}.SZ", days[0], Decimal("10"), Decimal("11"), Decimal("9"),
+            Decimal("10.5"), Decimal("10"), Decimal("1000"), Decimal("10500"), True,
+        )
+        for i in range(1, 101)
+    )
+    repo.save_daily_bars(bars, meta)
+
+
 def test_progress_reports_running_run(tmp_path: Path) -> None:
     app = _app(tmp_path)
     repo = SQLiteRepository(tmp_path / "market.sqlite3")
@@ -72,9 +93,7 @@ def test_progress_reports_running_run(tmp_path: Path) -> None:
             None,
         )
     )
-    repo.save_backfill_chunk_v2(
-        BackfillChunkV2("run-1", 0, ("000001.SZ",), date(2018, 7, 12), date(2025, 8, 31), 1900, BackfillRunStatus.SUCCESS)
-    )
+    _save_window(repo)
     status, _c, data = app.route("GET", "/api/sync/backfill/progress", {}, None)
     assert status == 200
     import json
@@ -83,9 +102,10 @@ def test_progress_reports_running_run(tmp_path: Path) -> None:
     assert payload["status"] == "RUNNING"
     assert payload["target_start"] == "2018-07-12"
     assert payload["target_end"] == "2026-08-31"
-    assert payload["done_chunks"] == 1
-    assert payload["total_chunks"] >= 1
-    assert 0 <= payload["progress"] <= 1
+    # 覆盖率按实际完整交易日计算:首日 100 支 >= 95% 记为覆盖,其余未覆盖。
+    assert payload["covered_days"] == 1
+    assert payload["total_days"] == 3
+    assert 0 < payload["progress"] < 1
 
 
 def test_progress_complete_when_success_and_done(tmp_path: Path) -> None:
@@ -104,12 +124,26 @@ def test_progress_complete_when_success_and_done(tmp_path: Path) -> None:
             None,
         )
     )
-    # 100 只股票 / 100 批 = 1 个 chunk 组
-    repo.save_backfill_chunk_v2(
-        BackfillChunkV2("run-1", 0, ("000001.SZ",), date(2018, 7, 12), date(2025, 8, 31), 1900, BackfillRunStatus.SUCCESS)
+    # 完整覆盖:三个交易日全部补齐 -> 判定 complete,progress=1.0。
+    _save_window(repo)
+    from decimal import Decimal
+
+    from stock_manager.domain import DailyBar
+
+    meta = DatasetMetadata("market", date(2026, 8, 31), "fixture", NOW, QFQ)
+    days = (date(2026, 8, 25), date(2026, 8, 26), date(2026, 8, 27))
+    bars = tuple(
+        DailyBar(
+            f"{i:06d}.SZ", d, Decimal("10"), Decimal("11"), Decimal("9"),
+            Decimal("10.5"), Decimal("10"), Decimal("1000"), Decimal("10500"), True,
+        )
+        for i in range(1, 101)
+        for d in days
     )
+    repo.save_daily_bars(bars, meta)
     status, _c, data = app.route("GET", "/api/sync/backfill/progress", {}, None)
     import json
 
     payload = json.loads(data.decode("utf-8"))
     assert payload["status"] == "complete"
+    assert payload["progress"] == 1.0
