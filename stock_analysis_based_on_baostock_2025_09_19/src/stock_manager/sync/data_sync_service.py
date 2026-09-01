@@ -970,7 +970,7 @@ class DataSyncService:
         *,
         target_start: date,
         as_of: date,
-        batch_size: int = 100,
+        batch_size: int = 20,
     ) -> SyncOutcome:
         """Eight-year range backfill with range-bound checkpoint identity.
 

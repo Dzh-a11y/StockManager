@@ -701,7 +701,7 @@ class WebApp:
             len(chunks) for chunks in repo.completed_chunk_codes_v2(run.run_id).values()
         )
         stocks_count = len(repo.get_stocks(run.target_end))
-        batch_size = 100
+        batch_size = 20
         total_chunks = max(1, -(-stocks_count // batch_size))
         progress = min(1.0, done_groups / total_chunks)
         batch = repo.get_backfill_batch_progress(run.run_id)

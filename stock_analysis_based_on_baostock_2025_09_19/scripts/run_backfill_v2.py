@@ -32,7 +32,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="run the P5A-1 eight-year v2 backfill")
     parser.add_argument("--config", type=Path, default=Path("config/sync.json"))
     parser.add_argument("--db", type=Path, default=Path("data/market.sqlite3"))
-    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument(
         "--max-attempts",
         type=int,
