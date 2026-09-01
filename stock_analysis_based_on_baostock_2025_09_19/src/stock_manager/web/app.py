@@ -88,6 +88,11 @@ class WebApp:
         self._shutdown_handler = shutdown_handler
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._sync_progress: dict[str, object] = {"status": "idle"}
+        self._sync_config = (
+            load_sync_config(config.sync_config_path)
+            if config.sync_config_path is not None
+            else None
+        )
         self._screen_progress: dict[str, object] = {"status": "idle"}
         self._research: ResearchBacktestService | None = None
         repository = SQLiteRepository(config.database_path)
@@ -551,12 +556,20 @@ class WebApp:
             )
             band_end = band_start - timedelta(days=1)
 
-        # 年度覆盖条:每个块一个自然年,从数据库最早 bar 年份到最新年份。
-        # 八年回补后数据库跨度超过一年,30 天段无法表达,这里按年聚合。
+        # 年度覆盖条:每个块一个自然年,固定显示目标窗口(如八年)的年份范围,
+        # 而不是只显示已有数据的年份——未回补的年份显示"无数据"(浅灰),
+        # 回补进行中逐年变绿。
         year_bands: list[dict[str, object]] = []
         earliest, _latest = repo.actual_coverage(qfq, "daily_bars")
+        target_years = 8
+        if self._sync_config is not None and self._sync_config.history is not None:
+            target_years = self._sync_config.history.target_years
+        # 目标窗口起点所在的年份:终点年份 - target_years(如 2026-8=2018,
+        # 覆盖 2018-07~2026-08 的八年窗口跨 2018..2026 共 9 个年块)
+        start_year = anchor.year - target_years
         if earliest is not None:
-            for year in range(earliest.year, anchor.year + 1):
+            start_year = min(start_year, earliest.year)
+        for year in range(start_year, anchor.year + 1):
                 y_start = date(year, 1, 1)
                 y_end = date(year, 12, 31)
                 cal = set(repo.get_trading_days(y_start, y_end))
