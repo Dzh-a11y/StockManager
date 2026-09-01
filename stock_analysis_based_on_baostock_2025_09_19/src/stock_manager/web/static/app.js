@@ -811,7 +811,8 @@ async function pollBackfillV2() {
     current.textContent = '八年回补 总进度 ' + pct + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）· '
       + p.target_start + ' ~ ' + p.target_end;
     meta.hidden = false;
-    meta.textContent = '八年回补进行中…';
+    meta.textContent = '八年回补进行中 · ' + (batchPhaseLabel || '准备中') + ' · 总进度 ' + pct
+      + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）';
   } catch (e) {
     backfillV2Active = false;
   }
