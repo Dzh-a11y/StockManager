@@ -43,6 +43,9 @@ def _parse_policy(root: dict[str, Any]) -> dict[str, Any]:
     retention = policy.get("retention_days", 360)
     if not isinstance(retention, int) or isinstance(retention, bool):
         raise ValueError("retention_days must be an integer")
+    pipeline_default = policy.get("pipeline_default", False)
+    if not isinstance(pipeline_default, bool):
+        raise ValueError("pipeline_default must be a boolean")
     return {
         "cutoff_time": cutoff_time,
         "retry_cooldown": timedelta(seconds=_integer(policy, "retry_cooldown_seconds")),
@@ -52,6 +55,7 @@ def _parse_policy(root: dict[str, Any]) -> dict[str, Any]:
         "calendar_horizon_days": _integer(policy, "calendar_horizon_days"),
         "dividend_lookback_years": _integer(policy, "dividend_lookback_years"),
         "retention_days": retention,
+        "pipeline_default": pipeline_default,
         "backfill_request_interval_seconds": (
             _number(policy, "backfill_request_interval_seconds")
             if "backfill_request_interval_seconds" in policy

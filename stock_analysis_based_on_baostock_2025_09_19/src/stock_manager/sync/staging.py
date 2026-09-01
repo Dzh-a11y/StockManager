@@ -226,7 +226,7 @@ class StagingWriter:
                     (
                         batch_id,
                         row.code,
-                        row.as_of,
+                        task.range_end.isoformat(),
                         row.name,
                         row.exchange,
                         int(row.is_st),

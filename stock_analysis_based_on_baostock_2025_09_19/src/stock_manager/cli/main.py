@@ -274,6 +274,33 @@ def _sync_command(args: argparse.Namespace, stdout: TextIO) -> int:
         request_interval_seconds=config.minimum_request_interval_seconds
     )
     service = DataSyncService(provider, repository, args.lock_dir, config)
+    if config.pipeline_default:
+        # P5 默认入口:单日同步 → 执行/补齐当日计划。
+        from stock_manager.domain import SyncPlanMode
+
+        print(
+            f"pipeline syncing dataset={args.dataset} date={args.date.isoformat()}",
+            file=stdout,
+        )
+        output = service.run_pipeline_plan(
+            mode="BOOTSTRAP",
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            target_start=args.date,
+            target_end=args.date,
+            data_types=("stocks", "daily_bars", "fundamentals"),
+        )
+        run = service.run_pipeline_execute(output.plan.plan_id)
+        _print_json(
+            {
+                "plan_id": run.plan_id,
+                "plan_status": run.plan_status.value,
+                "published": run.published,
+                "warning": run.warning,
+            },
+            stdout,
+        )
+        return 0
     print(
         f"syncing dataset={args.dataset} date={args.date.isoformat()}",
         file=stdout,

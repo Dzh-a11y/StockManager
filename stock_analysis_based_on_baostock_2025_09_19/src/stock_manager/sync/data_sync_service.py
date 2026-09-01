@@ -82,6 +82,7 @@ class SyncConfig:
     retention_days: int = 360
     history: SyncHistoryConfig | None = None
     backfill_request_interval_seconds: float | None = None
+    pipeline_default: bool = False
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -1385,3 +1386,60 @@ class DataSyncService:
             self._provider_file_lock
         ):
             return pipeline.execute(plan_id)
+
+    def startup_sync(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+    ) -> object:
+        """Startup sync through the P5 pipeline (default entry when enabled).
+
+        When ``config.pipeline_default`` is true, startup auto-sync plans an
+        INCREMENTAL (or first-time BOOTSTRAP) run to the latest completed
+        trading day and executes it through SyncPipeline; the result is a
+        PipelineRun. Otherwise it falls back to the legacy
+        ``backfill_on_startup_v2`` path so current behavior is unchanged.
+        """
+        if not self._config.pipeline_default:
+            if self._config.history is not None:
+                return self.backfill_on_startup_v2(dataset_id, adjustment)
+            return self.backfill_on_startup(dataset_id, adjustment)
+        target = self._latest_completed_trading_day()
+        pipeline = self.build_pipeline()
+        active = self._repository.get_active_generation(dataset_id, adjustment)
+        from stock_manager.domain import SyncPlanMode
+
+        if active is None:
+            # 首次启动:无 active generation → BOOTSTRAP 到最新已完成交易日。
+            plan_start = target - timedelta(
+                days=self._config.retention_days
+            )
+            output = pipeline.plan(
+                mode=SyncPlanMode.BOOTSTRAP,
+                dataset_id=dataset_id,
+                adjustment=adjustment,
+                target_start=plan_start,
+                target_end=target,
+                required_data_types=(
+                    "stocks",
+                    "daily_bars",
+                    "fundamentals",
+                ),
+            )
+        else:
+            output = pipeline.plan(
+                mode=SyncPlanMode.INCREMENTAL,
+                dataset_id=dataset_id,
+                adjustment=adjustment,
+                target_start=target,
+                target_end=target,
+                required_data_types=(
+                    "stocks",
+                    "daily_bars",
+                    "fundamentals",
+                ),
+            )
+        with self._provider_process_lock, persistent_file_lock(
+            self._provider_file_lock
+        ):
+            return pipeline.execute(output.plan.plan_id)

@@ -155,7 +155,7 @@ class WebApp:
                 )
                 if sync_config.history is not None:
                     message = "自动回补（八年历史覆盖）…"
-                    backfill = lambda: service.backfill_on_startup_v2(
+                    backfill = lambda: service.startup_sync(
                         "market", AdjustmentMethod.QFQ
                     )
                 else:
@@ -174,8 +174,12 @@ class WebApp:
                 )
                 outcome = backfill()
                 if outcome is not None:
+                    status = getattr(outcome, "plan_status", None)
+                    message = (
+                        status.value if status is not None else outcome.status.value
+                    )
                     self._sync_progress.update(
-                        {"status": "done", "message": outcome.status.value}
+                        {"status": "done", "message": message}
                     )
                 else:
                     self._sync_progress.update(

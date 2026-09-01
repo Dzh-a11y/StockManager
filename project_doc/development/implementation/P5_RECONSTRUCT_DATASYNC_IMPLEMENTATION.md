@@ -117,7 +117,17 @@ stock-manager db-verify-transfer --db ... --manifest <file>
 
 - 复用同一 provider 实例（串行限速/socket 超时/重登录保护继承），构造 planner/worker/staging/verifier/committer/gate/legacy。
 - `run_pipeline_execute` 在 `_provider_process_lock + persistent_file_lock(_provider_file_lock)` 内执行，保持「Baostock 只能由 DataSyncService 边界调用」与并发保护红线。
-- 旧同步路径（`sync` / `backfill_history_v2` 等）保留兼容，未切换默认入口（灰度切换见计划 §11.2）。
+- 旧同步路径（`sync` / `backfill_history_v2` 等）保留兼容。
+
+### 9.5 默认入口切换（灰度开关）
+
+新增配置项 `policy.pipeline_default: bool`（默认 `false`，`SyncConfig.pipeline_default`，`config/sync.json` 未启用时行为与旧版完全一致）：
+
+- `DataSyncService.startup_sync(...)`：Web 启动自动回补的默认入口。`pipeline_default=true` 时通过 SyncPipeline 规划并执行（首次启动 BOOTSTRAP，已有 active generation 则 INCREMENTAL）；`false` 时回退 `backfill_on_startup_v2`（八年）或 `backfill_on_startup`（一年），现状不变。
+- CLI `sync`：`pipeline_default=true` 时走 pipeline（BOOTSTRAP 单日计划 + 执行）；`false` 时走旧 `service.sync(...)`。
+- 切换开关不修改 `config/sync.json` 线上配置：是否启用由用户显式设置，实网验收由用户执行。
+
+新增测试：`tests/test_p5_facade.py::TestPipelineDefaultSwitch`（配置解析、启动路由到 pipeline、未启用回退旧路径）。全量 **561 passed**（版本保持 1.12.0）。
 
 ### 9.3 CLI 与 Web
 
