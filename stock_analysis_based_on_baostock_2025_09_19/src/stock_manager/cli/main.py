@@ -115,6 +115,52 @@ def _build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--adjustment", type=_adjustment, required=True)
     sync.add_argument("--retry", action="store_true")
 
+    # P5-RD-8:DataSync 重构同步控制子命令
+    sync_plan = commands.add_parser(
+        "sync-plan", help="build a deterministic P5 sync plan (offline)"
+    )
+    sync_plan.add_argument("--db", type=Path, required=True)
+    sync_plan.add_argument("--dataset", default="market")
+    sync_plan.add_argument("--adjustment", type=_adjustment, required=True)
+    sync_plan.add_argument("--mode", choices=("BOOTSTRAP", "INCREMENTAL", "LEGACY_IMPORT"), default="BOOTSTRAP")
+    sync_plan.add_argument("--start", type=_iso_date, required=True)
+    sync_plan.add_argument("--end", type=_iso_date, required=True)
+    sync_plan.add_argument(
+        "--data-types",
+        default="stocks,daily_bars,fundamentals,dividends",
+        help="comma-separated data types",
+    )
+
+    sync_verify = commands.add_parser(
+        "sync-verify", help="verify a candidate's staged partitions (offline)"
+    )
+    sync_verify.add_argument("--db", type=Path, required=True)
+    sync_verify.add_argument("--candidate", required=True)
+    sync_verify.add_argument("--adjustment", type=_adjustment, required=True)
+    sync_verify.add_argument("--start", type=_iso_date, required=True)
+    sync_verify.add_argument("--end", type=_iso_date, required=True)
+
+    sync_import_legacy = commands.add_parser(
+        "sync-import-legacy", help="import legacy shared tables as LEGACY_IMPORT candidate"
+    )
+    sync_import_legacy.add_argument("--db", type=Path, required=True)
+    sync_import_legacy.add_argument("--dataset", default="market")
+    sync_import_legacy.add_argument("--adjustment", type=_adjustment, required=True)
+    sync_import_legacy.add_argument("--date", type=_iso_date, required=True)
+    sync_import_legacy.add_argument("--plan-id", default="plan-legacy")
+
+    db_prepare = commands.add_parser(
+        "db-prepare-transfer", help="checkpoint WAL and write a transfer manifest"
+    )
+    db_prepare.add_argument("--db", type=Path, required=True)
+    db_prepare.add_argument("--out", type=Path, required=True)
+
+    db_verify = commands.add_parser(
+        "db-verify-transfer", help="verify a transferred database against its manifest"
+    )
+    db_verify.add_argument("--db", type=Path, required=True)
+    db_verify.add_argument("--manifest", type=Path, required=True)
+
     status = commands.add_parser("status", help="inspect local sync state")
     status.add_argument("--db", type=Path, required=True)
     status.add_argument("--lock-dir", type=Path, required=True)
@@ -252,6 +298,195 @@ def _smoke_command(args: argparse.Namespace, stdout: TextIO) -> int:
     return 0
 
 
+def _sync_plan_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.sync.planner import DATA_TYPE_ORDER, SyncPlanner
+
+    repository = _open_existing_repository(args.db)
+    data_types = tuple(
+        t for t in DATA_TYPE_ORDER if t in args.data_types.split(",")
+    )
+    if not data_types:
+        raise ValueError("--data-types must include at least one known type")
+
+    def calendar(start: date, end: date) -> tuple[date, ...]:
+        return repository.get_trading_days(start, end)
+
+    def coverage(
+        adjustment: AdjustmentMethod, data_type: str
+    ) -> tuple[date | None, date | None]:
+        return repository.actual_coverage(adjustment, data_type)
+
+    def universe(as_of: date) -> tuple[str, ...]:
+        return tuple(stock.code for stock in repository.get_stocks(as_of))
+
+    def now() -> datetime:
+        return datetime.now().astimezone()
+
+    planner = SyncPlanner(
+        calendar=calendar,
+        coverage=coverage,
+        universe_codes=universe,
+        now=now,
+    )
+    if args.mode == "BOOTSTRAP":
+        output = planner.plan_bootstrap(
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            target_start=args.start,
+            target_end=args.end,
+            required_data_types=data_types,
+        )
+    elif args.mode == "INCREMENTAL":
+        active = repository.get_active_generation(args.dataset, args.adjustment)
+        if active is None:
+            raise ValueError("no active generation for INCREMENTAL plan")
+        output = planner.plan_incremental(
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            active_generation=active.generation,
+            coverage_end=args.start,
+            target_end=args.end,
+            required_data_types=data_types,
+        )
+    else:
+        output = planner.plan_legacy_import(
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            target_start=args.start,
+            target_end=args.end,
+            required_data_types=data_types,
+        )
+    _print_json(
+        {
+            "plan": output.plan,
+            "candidate": output.candidate,
+            "task_count": len(output.tasks),
+            "tasks": output.tasks,
+        },
+        stdout,
+    )
+    return 0
+
+
+def _sync_verify_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    import sqlite3 as _sqlite3
+
+    from stock_manager.sync.verifier import CoverageVerifier
+
+    repository = _open_existing_repository(args.db)
+    candidate = repository.get_candidate_generation(args.candidate)
+    if candidate is None:
+        raise ValueError(f"candidate not found: {args.candidate}")
+
+    def factory() -> _sqlite3.Connection:
+        connection = _sqlite3.connect(repository.database_path, timeout=30.0)
+        connection.row_factory = _sqlite3.Row
+        return connection
+
+    verifier = CoverageVerifier(
+        factory,
+        trading_days=lambda start, end: repository.get_trading_days(start, end),
+        expected_universe_size=lambda day: max(
+            1, len(repository.get_stocks(day))
+        ),
+    )
+    tasks = repository.list_sync_tasks(candidate.plan_id)
+    outcome = verifier.verify(
+        candidate,
+        adjustment=args.adjustment,
+        target_start=args.start,
+        target_end=args.end,
+        tasks=tasks,
+    )
+    _print_json(
+        {
+            "report": outcome.report,
+            "records": outcome.records,
+        },
+        stdout,
+    )
+    return 0
+
+
+def _sync_import_legacy_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    import sqlite3 as _sqlite3
+
+    from stock_manager.sync.legacy import LegacyImporter
+
+    repository = _open_existing_repository(args.db)
+
+    def factory() -> _sqlite3.Connection:
+        connection = _sqlite3.connect(repository.database_path, timeout=30.0)
+        connection.row_factory = _sqlite3.Row
+        return connection
+
+    def now() -> datetime:
+        return datetime.now().astimezone()
+
+    importer = LegacyImporter(factory, now=now)
+    candidate_id = f"cand-legacy-{args.date.isoformat()}"
+    candidate = importer.build_candidate(
+        dataset_id=args.dataset,
+        adjustment=args.adjustment,
+        plan_id=args.plan_id,
+        candidate_id=candidate_id,
+    )
+    batches: list[object] = []
+    for data_type, adjustment in (
+        ("stocks", None),
+        ("daily_bars", args.adjustment),
+        ("fundamentals", None),
+        ("dividends", None),
+    ):
+        batch = importer.import_partition(
+            candidate,
+            data_type=data_type,
+            partition_key=args.date.isoformat(),
+            batch_id=f"batch-{data_type}-{args.date.isoformat()}",
+            source="legacy",
+            adjustment=adjustment,
+        )
+        if batch is not None:
+            batches.append(batch)
+    finished = importer.finish_candidate(candidate)
+    _print_json(
+        {
+            "candidate": finished,
+            "batches": batches,
+            "partitions": importer.partitions_for(
+                finished.candidate_generation_id,
+                generation=finished.candidate_generation_id,
+            ),
+        },
+        stdout,
+    )
+    return 0
+
+
+def _db_prepare_transfer_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.sync.seed import TransferPreparer
+
+    def now() -> datetime:
+        return datetime.now().astimezone()
+
+    preparer = TransferPreparer(now=now, expected_schema_version=1)
+    manifest_path = preparer.prepare(args.db, args.out)
+    _print_json({"manifest": str(manifest_path)}, stdout)
+    return 0
+
+
+def _db_verify_transfer_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.sync.seed import TransferPreparer
+
+    def now() -> datetime:
+        return datetime.now().astimezone()
+
+    preparer = TransferPreparer(now=now, expected_schema_version=1)
+    preparer.verify_transfer(args.db, args.manifest)
+    _print_json({"verified": True, "database": str(args.db)}, stdout)
+    return 0
+
+
 def _web_command(args: argparse.Namespace, stdout: TextIO) -> int:
     config = WebConfig(
         database_path=args.db,
@@ -288,6 +523,16 @@ def main(
             return _status_command(args, stdout)
         if args.command == "web":
             return _web_command(args, stdout)
+        if args.command == "sync-plan":
+            return _sync_plan_command(args, stdout)
+        if args.command == "sync-verify":
+            return _sync_verify_command(args, stdout)
+        if args.command == "sync-import-legacy":
+            return _sync_import_legacy_command(args, stdout)
+        if args.command == "db-prepare-transfer":
+            return _db_prepare_transfer_command(args, stdout)
+        if args.command == "db-verify-transfer":
+            return _db_verify_transfer_command(args, stdout)
         return _smoke_command(args, stdout)
     except (
         BaostockProviderError,
@@ -298,6 +543,11 @@ def main(
         SyncFailedError,
         ValueError,
     ) as error:
+        _print_json(
+            {"error": type(error).__name__, "message": str(error)}, stderr
+        )
+        return 1
+    except Exception as error:
         _print_json(
             {"error": type(error).__name__, "message": str(error)}, stderr
         )

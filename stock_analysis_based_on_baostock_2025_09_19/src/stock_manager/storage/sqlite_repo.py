@@ -10,12 +10,16 @@ from decimal import Decimal
 from pathlib import Path
 
 from stock_manager.domain import (
+    ActiveGeneration,
     AdjustmentMethod,
     HistoricalRunStatus,
     HistoricalScreeningRun,
     BackfillChunkV2,
     BackfillRunStatus,
     BackfillRunV2,
+    CandidateGeneration,
+    CandidateGenerationStatus,
+    CoverageVerification,
     DailyBar,
     DataCoverageStatus,
     DatasetCoverage,
@@ -24,10 +28,21 @@ from stock_manager.domain import (
     DatasetVersionStatus,
     DividendRecord,
     FundamentalSnapshot,
+    GenerationPartition,
+    IngestBatch,
+    PublishedGeneration,
     StockIdentity,
+    SyncPlan,
+    SyncPlanMode,
+    SyncPlanStatus,
     SyncRecord,
+    SyncSource,
     SyncStatus,
+    SyncTask,
+    SyncTaskStatus,
+    VerificationStatus,
 )
+from stock_manager.storage.migrations import migrate_database
 
 
 SCHEMA = """
@@ -234,6 +249,8 @@ class SQLiteRepository:
                 connection.execute(
                     "ALTER TABLE backfill_runs_v2 ADD COLUMN progress_json TEXT"
                 )
+            # P5-RD-1:版本化幂等迁移(batch_id 绑定、书签表、user_version)。
+            migrate_database(connection)
 
     @property
     def database_path(self) -> Path:
@@ -1515,3 +1532,525 @@ class SQLiteRepository:
             ).fetchone()
         return int(row["c"])
 
+
+    # ------------------------------------------------------------------
+    # P5-RD-1 DataSync reconstruction bookkeeping
+    # ------------------------------------------------------------------
+
+    def save_sync_plan(self, plan: SyncPlan) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO sync_plans
+                   (plan_id, plan_version, mode, source, dataset_id, adjustment,
+                    universe_policy, target_start, target_end,
+                    latest_completed_trading_day, parent_generation,
+                    candidate_generation_id, required_data_types, task_count,
+                    plan_fingerprint, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    plan.plan_id,
+                    plan.plan_version,
+                    plan.mode.value,
+                    plan.source.value,
+                    plan.dataset_id,
+                    plan.adjustment.value,
+                    plan.universe_policy,
+                    plan.target_start.isoformat(),
+                    plan.target_end.isoformat(),
+                    (
+                        None if plan.latest_completed_trading_day is None
+                        else plan.latest_completed_trading_day.isoformat()
+                    ),
+                    plan.parent_generation,
+                    plan.candidate_generation_id,
+                    ",".join(plan.required_data_types),
+                    plan.task_count,
+                    plan.plan_fingerprint,
+                    plan.status.value,
+                    plan.created_at.isoformat(),
+                    plan.updated_at.isoformat(),
+                ),
+            )
+
+    def get_sync_plan(self, plan_id: str) -> SyncPlan | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sync_plans WHERE plan_id = ?", (plan_id,)
+            ).fetchone()
+        return None if row is None else self._sync_plan_from_row(row)
+
+    def list_sync_plans(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> Sequence[SyncPlan]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM sync_plans
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY created_at DESC""",
+                (dataset_id, adjustment.value),
+            ).fetchall()
+        return tuple(self._sync_plan_from_row(row) for row in rows)
+
+    def update_sync_plan_status(
+        self, plan_id: str, status: object, updated_at: datetime
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE sync_plans SET status = ?, updated_at = ? WHERE plan_id = ?",
+                (status.value, updated_at.isoformat(), plan_id),
+            )
+
+    @staticmethod
+    def _sync_plan_from_row(row: sqlite3.Row) -> SyncPlan:
+        return SyncPlan(
+            plan_id=row["plan_id"],
+            plan_version=int(row["plan_version"]),
+            mode=SyncPlanMode(row["mode"]),
+            source=SyncSource(row["source"]),
+            dataset_id=row["dataset_id"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            universe_policy=row["universe_policy"],
+            target_start=date.fromisoformat(row["target_start"]),
+            target_end=date.fromisoformat(row["target_end"]),
+            latest_completed_trading_day=(
+                None if row["latest_completed_trading_day"] is None
+                else date.fromisoformat(row["latest_completed_trading_day"])
+            ),
+            parent_generation=row["parent_generation"],
+            candidate_generation_id=row["candidate_generation_id"],
+            required_data_types=tuple(
+                row["required_data_types"].split(",")
+                if row["required_data_types"]
+                else ()
+            ),
+            task_count=int(row["task_count"]),
+            plan_fingerprint=row["plan_fingerprint"],
+            status=SyncPlanStatus(row["status"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def save_sync_task(self, task: SyncTask) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO sync_tasks
+                   (task_id, plan_id, sequence_no, data_type, partition_key,
+                    codes, range_start, range_end, dependencies, status,
+                    attempt_count, not_before, row_count, error_code,
+                    error_message, started_at, finished_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    task.task_id,
+                    task.plan_id,
+                    task.sequence_no,
+                    task.data_type,
+                    task.partition_key,
+                    ",".join(task.codes),
+                    task.range_start.isoformat(),
+                    task.range_end.isoformat(),
+                    ",".join(task.dependencies),
+                    task.status.value,
+                    task.attempt_count,
+                    (
+                        None if task.not_before is None
+                        else task.not_before.isoformat()
+                    ),
+                    task.row_count,
+                    task.error_code,
+                    task.error_message,
+                    (
+                        None if task.started_at is None
+                        else task.started_at.isoformat()
+                    ),
+                    (
+                        None if task.finished_at is None
+                        else task.finished_at.isoformat()
+                    ),
+                ),
+            )
+
+    def get_sync_task(self, task_id: str) -> SyncTask | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sync_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        return None if row is None else self._sync_task_from_row(row)
+
+    def list_sync_tasks(self, plan_id: str) -> Sequence[SyncTask]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM sync_tasks WHERE plan_id = ? ORDER BY sequence_no",
+                (plan_id,),
+            ).fetchall()
+        return tuple(self._sync_task_from_row(row) for row in rows)
+
+    def update_sync_task_status(self, task: SyncTask) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE sync_tasks SET status = ?, attempt_count = ?,
+                   not_before = ?, row_count = ?, error_code = ?,
+                   error_message = ?, started_at = ?, finished_at = ?
+                   WHERE task_id = ?""",
+                (
+                    task.status.value,
+                    task.attempt_count,
+                    (
+                        None if task.not_before is None
+                        else task.not_before.isoformat()
+                    ),
+                    task.row_count,
+                    task.error_code,
+                    task.error_message,
+                    (
+                        None if task.started_at is None
+                        else task.started_at.isoformat()
+                    ),
+                    (
+                        None if task.finished_at is None
+                        else task.finished_at.isoformat()
+                    ),
+                    task.task_id,
+                ),
+            )
+
+    def tasks_by_status(
+        self, plan_id: str, statuses: Sequence[object]
+    ) -> Sequence[SyncTask]:
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT * FROM sync_tasks WHERE plan_id = ?
+                    AND status IN ({placeholders}) ORDER BY sequence_no""",
+                (plan_id, *(s.value for s in statuses)),
+            ).fetchall()
+        return tuple(self._sync_task_from_row(row) for row in rows)
+
+    @staticmethod
+    def _sync_task_from_row(row: sqlite3.Row) -> SyncTask:
+        return SyncTask(
+            task_id=row["task_id"],
+            plan_id=row["plan_id"],
+            sequence_no=int(row["sequence_no"]),
+            data_type=row["data_type"],
+            partition_key=row["partition_key"],
+            codes=tuple(row["codes"].split(",")) if row["codes"] else (),
+            range_start=date.fromisoformat(row["range_start"]),
+            range_end=date.fromisoformat(row["range_end"]),
+            dependencies=(
+                tuple(row["dependencies"].split(",")) if row["dependencies"] else ()
+            ),
+            status=SyncTaskStatus(row["status"]),
+            attempt_count=int(row["attempt_count"]),
+            not_before=(
+                None if row["not_before"] is None
+                else datetime.fromisoformat(row["not_before"])
+            ),
+            row_count=(
+                None if row["row_count"] is None else int(row["row_count"])
+            ),
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            started_at=(
+                None if row["started_at"] is None
+                else datetime.fromisoformat(row["started_at"])
+            ),
+            finished_at=(
+                None if row["finished_at"] is None
+                else datetime.fromisoformat(row["finished_at"])
+            ),
+        )
+
+    def save_candidate_generation(self, candidate: CandidateGeneration) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO candidate_generations
+                   (candidate_generation_id, plan_id, parent_generation,
+                    write_revision, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate.candidate_generation_id,
+                    candidate.plan_id,
+                    candidate.parent_generation,
+                    candidate.write_revision,
+                    candidate.status.value,
+                    candidate.created_at.isoformat(),
+                    candidate.updated_at.isoformat(),
+                ),
+            )
+
+    def get_candidate_generation(
+        self, candidate_generation_id: str
+    ) -> CandidateGeneration | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM candidate_generations WHERE candidate_generation_id = ?",
+                (candidate_generation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CandidateGeneration(
+            candidate_generation_id=row["candidate_generation_id"],
+            plan_id=row["plan_id"],
+            parent_generation=row["parent_generation"],
+            write_revision=int(row["write_revision"]),
+            status=CandidateGenerationStatus(row["status"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def update_candidate_status(
+        self,
+        candidate_generation_id: str,
+        status: CandidateGenerationStatus,
+        updated_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE candidate_generations SET status = ?, updated_at = ?
+                   WHERE candidate_generation_id = ?""",
+                (status.value, updated_at.isoformat(), candidate_generation_id),
+            )
+
+    def save_ingest_batch(self, batch: IngestBatch) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO ingest_batches
+                   (batch_id, candidate_generation_id, data_type, partition_key,
+                    codes, range_start, range_end, row_count, source,
+                    batch_sha256, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    batch.batch_id,
+                    batch.candidate_generation_id,
+                    batch.data_type,
+                    batch.partition_key,
+                    ",".join(batch.codes),
+                    batch.range_start.isoformat(),
+                    batch.range_end.isoformat(),
+                    batch.row_count,
+                    batch.source,
+                    batch.batch_sha256,
+                    batch.created_at.isoformat(),
+                ),
+            )
+
+    def get_ingest_batch(self, batch_id: str) -> IngestBatch | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM ingest_batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        return None if row is None else self._ingest_batch_from_row(row)
+
+    def list_ingest_batches(
+        self, candidate_generation_id: str
+    ) -> Sequence[IngestBatch]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM ingest_batches
+                   WHERE candidate_generation_id = ?
+                   ORDER BY data_type, partition_key, range_start""",
+                (candidate_generation_id,),
+            ).fetchall()
+        return tuple(self._ingest_batch_from_row(row) for row in rows)
+
+    @staticmethod
+    def _ingest_batch_from_row(row: sqlite3.Row) -> IngestBatch:
+        return IngestBatch(
+            batch_id=row["batch_id"],
+            candidate_generation_id=row["candidate_generation_id"],
+            data_type=row["data_type"],
+            partition_key=row["partition_key"],
+            codes=tuple(row["codes"].split(",")) if row["codes"] else (),
+            range_start=date.fromisoformat(row["range_start"]),
+            range_end=date.fromisoformat(row["range_end"]),
+            row_count=int(row["row_count"]),
+            source=row["source"],
+            batch_sha256=row["batch_sha256"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def save_coverage_verification(
+        self, verification: CoverageVerification
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO coverage_verifications
+                   (candidate_generation_id, data_type, partition_key,
+                    expected_count, actual_count, distinct_count,
+                    duplicate_count, invalid_count, coverage_ratio,
+                    missing_items, status, verified_revision,
+                    manifest_sha256, verified_at, details_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    verification.candidate_generation_id,
+                    verification.data_type,
+                    verification.partition_key,
+                    verification.expected_count,
+                    verification.actual_count,
+                    verification.distinct_count,
+                    verification.duplicate_count,
+                    verification.invalid_count,
+                    str(verification.coverage_ratio),
+                    ",".join(verification.missing_items),
+                    verification.status.value,
+                    verification.verified_revision,
+                    verification.manifest_sha256,
+                    verification.verified_at.isoformat(),
+                    verification.details_json,
+                ),
+            )
+
+    def list_coverage_verifications(
+        self, candidate_generation_id: str
+    ) -> Sequence[CoverageVerification]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM coverage_verifications
+                   WHERE candidate_generation_id = ?
+                   ORDER BY data_type, partition_key""",
+                (candidate_generation_id,),
+            ).fetchall()
+        return tuple(self._coverage_verification_from_row(row) for row in rows)
+
+    @staticmethod
+    def _coverage_verification_from_row(
+        row: sqlite3.Row,
+    ) -> CoverageVerification:
+        from decimal import Decimal as _Decimal
+
+        return CoverageVerification(
+            candidate_generation_id=row["candidate_generation_id"],
+            data_type=row["data_type"],
+            partition_key=row["partition_key"],
+            expected_count=int(row["expected_count"]),
+            actual_count=int(row["actual_count"]),
+            distinct_count=int(row["distinct_count"]),
+            duplicate_count=int(row["duplicate_count"]),
+            invalid_count=int(row["invalid_count"]),
+            coverage_ratio=_Decimal(row["coverage_ratio"]),
+            missing_items=(
+                tuple(row["missing_items"].split(","))
+                if row["missing_items"]
+                else ()
+            ),
+            status=VerificationStatus(row["status"]),
+            verified_revision=int(row["verified_revision"]),
+            manifest_sha256=row["manifest_sha256"],
+            verified_at=datetime.fromisoformat(row["verified_at"]),
+            details_json=row["details_json"],
+        )
+
+    def save_generation_partition(self, partition: GenerationPartition) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO generation_partitions
+                   (generation, data_type, partition_key, batch_id)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    partition.generation,
+                    partition.data_type,
+                    partition.partition_key,
+                    partition.batch_id,
+                ),
+            )
+
+    def list_generation_partitions(
+        self, generation: str
+    ) -> Sequence[GenerationPartition]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM generation_partitions
+                   WHERE generation = ? ORDER BY data_type, partition_key""",
+                (generation,),
+            ).fetchall()
+        return tuple(
+            GenerationPartition(
+                generation=row["generation"],
+                data_type=row["data_type"],
+                partition_key=row["partition_key"],
+                batch_id=row["batch_id"],
+            )
+            for row in rows
+        )
+
+    def save_published_generation(self, published: PublishedGeneration) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO dataset_versions
+                   (dataset_id, generation, source, adjustment, created_at,
+                    status, coverage_start, coverage_end, manifest_sha256,
+                    parent_generation)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    published.dataset_id,
+                    published.generation,
+                    "published",
+                    published.adjustment.value,
+                    published.published_at.isoformat(),
+                    published.status.value,
+                    None,
+                    None,
+                    published.manifest_sha256,
+                    published.parent_generation,
+                ),
+            )
+
+    def get_latest_published_generation(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> PublishedGeneration | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM dataset_versions
+                   WHERE dataset_id = ? AND adjustment = ?
+                     AND status IN (?, ?)
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (
+                    dataset_id,
+                    adjustment.value,
+                    CandidateGenerationStatus.PUBLISHED.value,
+                    CandidateGenerationStatus.SUPERSEDED.value,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return PublishedGeneration(
+            generation=row["generation"],
+            dataset_id=row["dataset_id"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            parent_generation=row["parent_generation"],
+            manifest_sha256=row["manifest_sha256"] or "",
+            published_at=datetime.fromisoformat(row["created_at"]),
+            status=CandidateGenerationStatus(row["status"]),
+        )
+
+    def save_active_generation(self, active: ActiveGeneration) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO active_generations
+                   (dataset_id, adjustment, generation, activated_at)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    active.dataset_id,
+                    active.adjustment.value,
+                    active.generation,
+                    active.activated_at.isoformat(),
+                ),
+            )
+
+    def get_active_generation(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> ActiveGeneration | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM active_generations
+                   WHERE dataset_id = ? AND adjustment = ?""",
+                (dataset_id, adjustment.value),
+            ).fetchone()
+        if row is None:
+            return None
+        return ActiveGeneration(
+            dataset_id=row["dataset_id"],
+            adjustment=AdjustmentMethod(row["adjustment"]),
+            generation=row["generation"],
+            activated_at=datetime.fromisoformat(row["activated_at"]),
+        )

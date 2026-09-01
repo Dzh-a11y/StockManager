@@ -452,3 +452,415 @@ class HistoricalScreeningRun:
                 if self.error_message is None or not self.error_message.strip():
                     raise ValueError("FAILED requires a non-empty error_message")
 
+
+# ---------------------------------------------------------------------------
+# P5 DataSync reconstruction domain contracts (P5-RD-1)
+# ---------------------------------------------------------------------------
+
+
+class SyncPlanMode(str, Enum):
+    """Top-level mode of a deterministic synchronization plan."""
+
+    BOOTSTRAP = "BOOTSTRAP"
+    INCREMENTAL = "INCREMENTAL"
+    REPAIR = "REPAIR"
+    LEGACY_IMPORT = "LEGACY_IMPORT"
+
+
+class SyncSource(str, Enum):
+    """Where the plan's data comes from."""
+
+    BAOSTOCK = "BAOSTOCK"
+    SEED = "SEED"
+    LEGACY_DATABASE = "LEGACY_DATABASE"
+
+
+class SyncPlanStatus(str, Enum):
+    """Lifecycle of one deterministic sync plan."""
+
+    PLANNED = "PLANNED"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class SyncTaskStatus(str, Enum):
+    """Lifecycle of one serial fetch/write task within a plan."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    INTERRUPTED = "INTERRUPTED"
+
+
+class CandidateGenerationStatus(str, Enum):
+    """Lifecycle of a candidate generation (P5 plan section 6.3)."""
+
+    PLANNED = "PLANNED"
+    WRITING = "WRITING"
+    VERIFYING = "VERIFYING"
+    VERIFIED = "VERIFIED"
+    PUBLISHED = "PUBLISHED"
+    NEEDS_REPAIR = "NEEDS_REPAIR"
+    VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+    INVALIDATED = "INVALIDATED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class VerificationStatus(str, Enum):
+    """Outcome of one coverage verification partition."""
+
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+    UNAVAILABLE = "UNAVAILABLE"
+    FAILED = "FAILED"
+
+
+class IssueType(str, Enum):
+    """Machine-consumable problem classification in a VerificationReport."""
+
+    MISSING = "MISSING"
+    INVALID = "INVALID"
+    DUPLICATE = "DUPLICATE"
+    ADJUSTMENT_MISMATCH = "ADJUSTMENT_MISMATCH"
+    PIT_VIOLATION = "PIT_VIOLATION"
+
+
+class Repairability(str, Enum):
+    """Whether a verification issue can be fixed by a provider refetch."""
+
+    REFETCH = "REFETCH"
+    REBUILD = "REBUILD"
+    MANUAL = "MANUAL"
+
+
+class ReadinessStatus(str, Enum):
+    """Result of a ReadinessGate evaluation for a read request."""
+
+    READY = "READY"
+    NO_GENERATION = "NO_GENERATION"
+    OUT_OF_RANGE = "OUT_OF_RANGE"
+    MISSING_DATA_TYPE = "MISSING_DATA_TYPE"
+    ADJUSTMENT_MISMATCH = "ADJUSTMENT_MISMATCH"
+    INCOMPLETE = "INCOMPLETE"
+
+
+@dataclass(frozen=True, slots=True)
+class SyncPlan:
+    """A deterministic, reproducible synchronization plan (P5 section 4.2).
+
+    ``plan_id`` and ``plan_fingerprint`` must be deterministically derived
+    from the normalized plan inputs (dataset, adjustment, universe policy,
+    target range, data types, provider identity, planner version); the same
+    inputs always produce the same plan identity.
+    """
+
+    plan_id: str
+    plan_version: int
+    mode: SyncPlanMode
+    source: SyncSource
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    universe_policy: str
+    target_start: date
+    target_end: date
+    latest_completed_trading_day: date | None
+    parent_generation: str | None
+    candidate_generation_id: str | None
+    required_data_types: tuple[str, ...]
+    task_count: int
+    plan_fingerprint: str
+    status: SyncPlanStatus
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text(self.plan_id, "plan_id")
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.universe_policy, "universe_policy")
+        _require_text(self.plan_fingerprint, "plan_fingerprint")
+        if self.plan_version <= 0:
+            raise ValueError("plan_version must be positive")
+        if self.target_start > self.target_end:
+            raise ValueError("target_start must not be after target_end")
+        if not self.required_data_types:
+            raise ValueError("required_data_types must not be empty")
+        if self.task_count < 0:
+            raise ValueError("task_count must be non-negative")
+        _require_aware(self.created_at, "created_at")
+        _require_aware(self.updated_at, "updated_at")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at must not precede created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class SyncTask:
+    """One serial fetch/write task within a sync plan (P5 section 4.3)."""
+
+    task_id: str
+    plan_id: str
+    sequence_no: int
+    data_type: str
+    partition_key: str
+    codes: tuple[str, ...]
+    range_start: date
+    range_end: date
+    dependencies: tuple[str, ...]
+    status: SyncTaskStatus
+    attempt_count: int
+    not_before: datetime | None
+    row_count: int | None
+    error_code: str | None
+    error_message: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.task_id, "task_id")
+        _require_text(self.plan_id, "plan_id")
+        _require_text(self.data_type, "data_type")
+        _require_text(self.partition_key, "partition_key")
+        if self.sequence_no < 0:
+            raise ValueError("sequence_no must be non-negative")
+        if not self.codes:
+            raise ValueError("codes must not be empty")
+        if self.range_start > self.range_end:
+            raise ValueError("range_start must not be after range_end")
+        if self.attempt_count < 0:
+            raise ValueError("attempt_count must be non-negative")
+        if self.not_before is not None:
+            _require_aware(self.not_before, "not_before")
+        if self.row_count is not None and self.row_count < 0:
+            raise ValueError("row_count must be non-negative")
+        if self.started_at is not None:
+            _require_aware(self.started_at, "started_at")
+        if self.finished_at is not None:
+            _require_aware(self.finished_at, "finished_at")
+        if self.status is SyncTaskStatus.SUCCESS:
+            if self.finished_at is None:
+                raise ValueError("SUCCESS task requires finished_at")
+            if self.error_message is not None:
+                raise ValueError("SUCCESS task must not have error_message")
+        if self.status is SyncTaskStatus.FAILED:
+            if self.finished_at is None:
+                raise ValueError("FAILED task requires finished_at")
+            if self.error_message is None or not self.error_message.strip():
+                raise ValueError("FAILED task requires a non-empty error_message")
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateGeneration:
+    """A candidate generation being written/verified before publish."""
+
+    candidate_generation_id: str
+    plan_id: str
+    parent_generation: str | None
+    write_revision: int
+    status: CandidateGenerationStatus
+    created_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text(self.candidate_generation_id, "candidate_generation_id")
+        _require_text(self.plan_id, "plan_id")
+        if self.write_revision < 0:
+            raise ValueError("write_revision must be non-negative")
+        _require_aware(self.created_at, "created_at")
+        _require_aware(self.updated_at, "updated_at")
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at must not precede created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class IngestBatch:
+    """An immutable data batch bound to a candidate generation (P5 section 6)."""
+
+    batch_id: str
+    candidate_generation_id: str
+    data_type: str
+    partition_key: str
+    codes: tuple[str, ...]
+    range_start: date
+    range_end: date
+    row_count: int
+    source: str
+    batch_sha256: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text(self.batch_id, "batch_id")
+        _require_text(self.candidate_generation_id, "candidate_generation_id")
+        _require_text(self.data_type, "data_type")
+        _require_text(self.partition_key, "partition_key")
+        _require_text(self.source, "source")
+        _require_text(self.batch_sha256, "batch_sha256")
+        if not self.codes:
+            raise ValueError("codes must not be empty")
+        if self.range_start > self.range_end:
+            raise ValueError("range_start must not be after range_end")
+        if self.row_count < 0:
+            raise ValueError("row_count must be non-negative")
+        _require_aware(self.created_at, "created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageVerification:
+    """Evidence for one data type/partition verification (P5 section 7.6)."""
+
+    candidate_generation_id: str
+    data_type: str
+    partition_key: str
+    expected_count: int
+    actual_count: int
+    distinct_count: int
+    duplicate_count: int
+    invalid_count: int
+    coverage_ratio: Decimal
+    missing_items: tuple[str, ...]
+    status: VerificationStatus
+    verified_revision: int
+    manifest_sha256: str
+    verified_at: datetime
+    details_json: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.candidate_generation_id, "candidate_generation_id")
+        _require_text(self.data_type, "data_type")
+        _require_text(self.partition_key, "partition_key")
+        _require_text(self.manifest_sha256, "manifest_sha256")
+        counts = (
+            self.expected_count,
+            self.actual_count,
+            self.distinct_count,
+            self.duplicate_count,
+            self.invalid_count,
+        )
+        if any(count < 0 for count in counts):
+            raise ValueError("verification counts must be non-negative")
+        if self.coverage_ratio < Decimal("0") or self.coverage_ratio > Decimal("1"):
+            raise ValueError("coverage_ratio must be within [0, 1]")
+        if self.verified_revision < 0:
+            raise ValueError("verified_revision must be non-negative")
+        _require_aware(self.verified_at, "verified_at")
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationPartition:
+    """Immutable mapping of one generation partition to a batch."""
+
+    generation: str
+    data_type: str
+    partition_key: str
+    batch_id: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.generation, "generation")
+        _require_text(self.data_type, "data_type")
+        _require_text(self.partition_key, "partition_key")
+        _require_text(self.batch_id, "batch_id")
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedGeneration:
+    """A generation that has been atomically published and is immutable."""
+
+    generation: str
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    parent_generation: str | None
+    manifest_sha256: str
+    published_at: datetime
+    status: CandidateGenerationStatus
+
+    def __post_init__(self) -> None:
+        _require_text(self.generation, "generation")
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.manifest_sha256, "manifest_sha256")
+        _require_aware(self.published_at, "published_at")
+        if self.status not in (CandidateGenerationStatus.PUBLISHED, CandidateGenerationStatus.SUPERSEDED):
+            raise ValueError("published generation status must be PUBLISHED or SUPERSEDED")
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveGeneration:
+    """The current readable generation pointer for one dataset/adjustment."""
+
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    generation: str
+    activated_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        _require_text(self.generation, "generation")
+        _require_aware(self.activated_at, "activated_at")
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationIssue:
+    """One machine-consumable problem entry in a VerificationReport (P5 7.7)."""
+
+    issue_id: str
+    candidate_generation_id: str
+    data_type: str
+    partition_key: str
+    trading_day: date | None
+    codes: tuple[str, ...]
+    issue_type: IssueType
+    expected_count: int
+    actual_count: int
+    repairability: Repairability
+    details: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.issue_id, "issue_id")
+        _require_text(self.candidate_generation_id, "candidate_generation_id")
+        _require_text(self.data_type, "data_type")
+        _require_text(self.partition_key, "partition_key")
+        _require_text(self.details, "details")
+        if self.expected_count < 0 or self.actual_count < 0:
+            raise ValueError("issue counts must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationReport:
+    """Structured output of a coverage verification run (P5 section 7.7)."""
+
+    candidate_generation_id: str
+    issues: tuple[VerificationIssue, ...]
+    generated_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_text(self.candidate_generation_id, "candidate_generation_id")
+        _require_aware(self.generated_at, "generated_at")
+        for issue in self.issues:
+            if issue.candidate_generation_id != self.candidate_generation_id:
+                raise ValueError("issue candidate must match the report candidate")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessResult:
+    """Outcome of a ReadinessGate evaluation (P5 section 8)."""
+
+    status: ReadinessStatus
+    dataset_id: str
+    adjustment: AdjustmentMethod
+    generation: str | None
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        _require_text(self.dataset_id, "dataset_id")
+        if self.status is ReadinessStatus.READY:
+            if self.generation is None:
+                raise ValueError("READY requires a generation")
+            if self.reason is not None:
+                raise ValueError("READY must not carry a reason")
+        elif self.generation is not None:
+            raise ValueError("non-READY result must not carry a generation")
+        if self.status is not ReadinessStatus.READY:
+            if self.reason is None or not self.reason.strip():
+                raise ValueError("non-READY result requires a reason")

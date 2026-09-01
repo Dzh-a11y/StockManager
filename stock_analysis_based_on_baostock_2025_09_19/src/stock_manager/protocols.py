@@ -1,16 +1,26 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Protocol, Sequence, runtime_checkable
 
 from stock_manager.domain import (
     AdjustmentMethod,
+    ActiveGeneration,
+    CandidateGeneration,
+    CandidateGenerationStatus,
+    CoverageVerification,
     DailyBar,
     DatasetMetadata,
     DividendRecord,
     FundamentalSnapshot,
+    GenerationPartition,
+    IngestBatch,
+    PublishedGeneration,
     StockIdentity,
+    SyncPlan,
     SyncRecord,
+    SyncTask,
+    SyncTaskStatus,
 )
 
 
@@ -163,3 +173,83 @@ class LocalRepositoryProtocol(Protocol):
     def get_trading_days(self, start: date, end: date) -> Sequence[date]: ...
 
     def prune_before(self, cutoff: date) -> None: ...
+
+
+@runtime_checkable
+class DataSyncAdminRepositoryProtocol(Protocol):
+    """Bookkeeping surface for the P5 DataSync reconstruction (P5-RD-1).
+
+    Implemented by ``SQLiteRepository``; isolates plan/task/candidate/batch/
+    verification/generation persistence from the rest of the repository so
+    tests can swap in a fake without SQL.
+    """
+
+    # -- sync plans ----------------------------------------------------------
+    def save_sync_plan(self, plan: SyncPlan) -> None: ...
+
+    def get_sync_plan(self, plan_id: str) -> SyncPlan | None: ...
+
+    def list_sync_plans(self, dataset_id: str, adjustment: AdjustmentMethod) -> Sequence[SyncPlan]: ...
+
+    def update_sync_plan_status(
+        self, plan_id: str, status: object, updated_at: datetime
+    ) -> None: ...
+
+    # -- sync tasks ----------------------------------------------------------
+    def save_sync_task(self, task: SyncTask) -> None: ...
+
+    def get_sync_task(self, task_id: str) -> SyncTask | None: ...
+
+    def list_sync_tasks(self, plan_id: str) -> Sequence[SyncTask]: ...
+
+    def update_sync_task_status(self, task: SyncTask) -> None: ...
+
+    def tasks_by_status(self, plan_id: str, statuses: Sequence[object]) -> Sequence[SyncTask]: ...
+
+    # -- candidate generations ----------------------------------------------
+    def save_candidate_generation(self, candidate: CandidateGeneration) -> None: ...
+
+    def get_candidate_generation(
+        self, candidate_generation_id: str
+    ) -> CandidateGeneration | None: ...
+
+    def update_candidate_status(
+        self,
+        candidate_generation_id: str,
+        status: CandidateGenerationStatus,
+        updated_at: datetime,
+    ) -> None: ...
+
+    # -- ingest batches ------------------------------------------------------
+    def save_ingest_batch(self, batch: IngestBatch) -> None: ...
+
+    def get_ingest_batch(self, batch_id: str) -> IngestBatch | None: ...
+
+    def list_ingest_batches(
+        self, candidate_generation_id: str
+    ) -> Sequence[IngestBatch]: ...
+
+    # -- coverage verifications ----------------------------------------------
+    def save_coverage_verification(self, verification: CoverageVerification) -> None: ...
+
+    def list_coverage_verifications(
+        self, candidate_generation_id: str
+    ) -> Sequence[CoverageVerification]: ...
+
+    # -- generation partitions -----------------------------------------------
+    def save_generation_partition(self, partition: GenerationPartition) -> None: ...
+
+    def list_generation_partitions(self, generation: str) -> Sequence[GenerationPartition]: ...
+
+    # -- published generations / active pointer ------------------------------
+    def save_published_generation(self, published: PublishedGeneration) -> None: ...
+
+    def get_latest_published_generation(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> PublishedGeneration | None: ...
+
+    def save_active_generation(self, active: ActiveGeneration) -> None: ...
+
+    def get_active_generation(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> ActiveGeneration | None: ...
