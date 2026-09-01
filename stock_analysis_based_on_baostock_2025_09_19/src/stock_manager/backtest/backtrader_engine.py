@@ -39,6 +39,9 @@ from stock_manager.backtest.policies import (
     exit_on_fixed_holding,
     exit_on_sma,
     rank_candidates,
+    should_add_on_dip,
+    should_pullback_entry,
+    should_take_profit,
 )
 from stock_manager.domain import AdjustmentMethod, DailyBar, StockIdentity
 from stock_manager.research.models import PolicySpec, ResearchStrategySpec
@@ -86,6 +89,8 @@ class StockManagerPortfolioStrategy(bt.Strategy):
                 )
         self.held_since: dict[str, date] = {}
         self.prev_close: dict[str, Decimal] = {}
+        self.cost_by_code: dict[str, Decimal] = {}
+        self.add_count: dict[str, int] = {}
         self.trades_log: list[BacktestTrade] = []
         self.warnings_list: list[str] = []
         self.equity_points: list[EquityPoint] = []
@@ -176,15 +181,30 @@ class StockManagerPortfolioStrategy(bt.Strategy):
                     int(exit_policy.parameters.get("holding_trading_days", 20)),
                 )
             )
+        elif exit_policy.policy_id == "take_profit_partial_v1":
+            tp_ratio = Decimal(str(exit_policy.parameters.get("take_profit_ratio", "0.10")))
+            partial = Decimal(str(exit_policy.parameters.get("partial_ratio", "0.50")))
+            for code in held_codes:
+                closes = self._closes(code)
+                cost = self.cost_by_code.get(code)
+                if cost and closes and should_take_profit(cost, closes[-1], tp_ratio):
+                    self._partial_sell(code, today, partial)
         for code in sorted(exits):
             self._sell(code, today, "exit")
-        # 2) 买入:候选按排名取 max_positions
+        # 2) 买入:候选按排名取 max_positions(回调入场时先过滤未达回调的)
         held_after = self._holdings()
         candidates = tuple(
             RankingEntry(code, self._turnover().get(code, Decimal("0")))
             for code in eligible
             if code not in held_after
         )
+        if self.spec.entry_policy.policy_id == "pullback_entry_v1":
+            lb = int(self.spec.entry_policy.parameters.get("lookback_trading_days", 20))
+            dr = Decimal(str(self.spec.entry_policy.parameters.get("drawdown_ratio", "0.05")))
+            candidates = tuple(
+                c for c in candidates
+                if self._pullback_ok(c.code, lb, dr)
+            )
         max_positions = int(
             self.spec.allocation_policy.parameters.get("max_positions", 20)
         )
@@ -203,6 +223,22 @@ class StockManagerPortfolioStrategy(bt.Strategy):
             if code in held_after:
                 continue
             self._buy(code, today, allocation.target_value)
+        # 2b) 补仓:买入后回调到阈值且有现金则加仓
+        if self.spec.allocation_policy.policy_id == "add_position_on_dip_v1":
+            alloc = self.spec.allocation_policy.parameters
+            add_ratio = Decimal(str(alloc.get("add_drawdown_ratio", "0.10")))
+            add_fraction = Decimal(str(alloc.get("add_fraction", "0.50")))
+            max_add = int(alloc.get("max_additions", 2))
+            for code in list(held_after):
+                cost = self.cost_by_code.get(code)
+                closes = self._closes(code)
+                if not cost or not closes:
+                    continue
+                if should_add_on_dip(
+                    cost, closes[-1], add_ratio,
+                    self.add_count.get(code, 0), max_add,
+                ):
+                    self._add_position(code, today, add_fraction)
         # 3) 记录逐日净值与 prev_close
         for code in self._codes():
             data = self._data_by_name(code)
@@ -218,7 +254,19 @@ class StockManagerPortfolioStrategy(bt.Strategy):
         data = self._data_by_name(code)
         if data is None:
             return ()
-        return tuple(Decimal(str(v)) for v in data.close.get(size=0, ago=0))
+        # get(size=N) 取当前时刻往前 N 根;size=0 会得到空切片,故用 idx+1 取全部历史。
+        return tuple(Decimal(str(v)) for v in data.close.get(size=data.close.idx + 1))
+
+    def _pullback_ok(self, code: str, lookback: int, drawdown_ratio: Decimal) -> bool:
+        """回调入场:近 N 日高点回落 drawdown_ratio 才允许买入。"""
+        data = self._data_by_name(code)
+        if data is None:
+            return False
+        highs = tuple(Decimal(str(v)) for v in data.high.get(size=lookback))
+        closes = tuple(Decimal(str(v)) for v in data.close.get(size=1))
+        return should_pullback_entry(
+            closes, highs, lookback=lookback, drawdown_ratio=drawdown_ratio
+        )
 
     def _codes(self) -> tuple[str, ...]:
         return tuple(data._name for data in self.datas[1:])
@@ -243,6 +291,41 @@ class StockManagerPortfolioStrategy(bt.Strategy):
         order = self.buy(data=data, size=decision.shares)
         if order is None:
             self.warnings_list.append(f"execution: broker rejected buy for {code}")
+
+    def _partial_sell(self, code: str, today: date, partial_ratio: Decimal) -> None:
+        """止盈减仓:卖出当前持仓的一部分(整手向下取整,保留余股)。"""
+        data = self._data_by_name(code)
+        if data is None or self.getposition(data).size <= 0:
+            return
+        held = int(self.getposition(data).size)
+        raw_sell = int(held * partial_ratio)
+        lot = self.execution.lot_size
+        sell_size = (raw_sell // lot) * lot if raw_sell >= lot else 0
+        if sell_size <= 0 or sell_size >= held:
+            return
+        decision = decide_sell(
+            code=code,
+            bar=self._bar_for(code),
+            is_st=self.is_st.get(code, False),
+            parameters=self.execution,
+            bought_day=self.held_since.get(code),
+            today=today,
+        )
+        if not decision.allowed:
+            self.warnings_list.append(f"execution: {decision.reason}")
+            return
+        order = self.sell(data=data, size=sell_size)
+        if order is None:
+            self.warnings_list.append(f"execution: partial sell rejected for {code}")
+
+    def _add_position(self, code: str, today: date, add_fraction: Decimal) -> None:
+        """补仓:按当前持仓市值的 add_fraction 加仓(现金约束由 decide_buy 处理)。"""
+        data = self._data_by_name(code)
+        if data is None or self.getposition(data).size <= 0:
+            return
+        pos_value = Decimal(str(data.close[0])) * Decimal(self.getposition(data).size)
+        self._buy(code, today, pos_value * add_fraction)
+        self.add_count[code] = self.add_count.get(code, 0) + 1
 
     def _sell(self, code: str, today: date, reason: str) -> None:
         data = self._data_by_name(code)
@@ -292,6 +375,9 @@ class StockManagerPortfolioStrategy(bt.Strategy):
                 )
                 if side == "buy":
                     self.held_since.setdefault(data_name, self._date())
+                    # 记录首次买入成本(供止盈/补仓判定;补仓不改基准成本)
+                    if data_name not in self.cost_by_code:
+                        self.cost_by_code[data_name] = price
             elif order.status == order.Rejected:
                 self.trades_log.append(
                     BacktestTrade(

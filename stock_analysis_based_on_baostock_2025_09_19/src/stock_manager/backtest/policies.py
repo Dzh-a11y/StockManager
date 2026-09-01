@@ -94,3 +94,42 @@ def exit_on_fixed_holding(
         for code, entered in held_since.items()
         if (today - entered).days >= holding_trading_days
     )
+
+
+def should_pullback_entry(
+    closes: tuple[Decimal, ...],
+    highs: tuple[Decimal, ...],
+    *,
+    lookback: int,
+    drawdown_ratio: Decimal,
+) -> bool:
+    """回调入场:收盘价低于近 N 日最高价回落 drawdown_ratio 才允许买入。"""
+    if not closes or not highs:
+        return False
+    window = highs[-lookback:] if len(highs) >= lookback else highs
+    window_high = max(window) if window else Decimal("0")
+    if window_high <= 0:
+        return False
+    return closes[-1] <= window_high * (Decimal("1") - drawdown_ratio)
+
+
+def should_take_profit(
+    cost: Decimal, close: Decimal, take_profit_ratio: Decimal
+) -> bool:
+    """止盈:收盘价相对成本的涨幅达到 take_profit_ratio 即触发减仓。"""
+    if cost <= 0:
+        return False
+    return close >= cost * (Decimal("1") + take_profit_ratio)
+
+
+def should_add_on_dip(
+    cost: Decimal,
+    close: Decimal,
+    add_drawdown_ratio: Decimal,
+    add_count: int,
+    max_additions: int,
+) -> bool:
+    """补仓:持仓成本回撤达到 add_drawdown_ratio 且未超过最大补仓次数。"""
+    if cost <= 0 or add_count >= max_additions:
+        return False
+    return close <= cost * (Decimal("1") - add_drawdown_ratio)
