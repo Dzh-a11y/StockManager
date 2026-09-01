@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS backfill_runs_v2 (
     started_at TEXT NOT NULL,
     finished_at TEXT,
     error_message TEXT,
-    data_types TEXT NOT NULL
+    data_types TEXT NOT NULL,
+    progress_json TEXT
 );
 CREATE TABLE IF NOT EXISTS backfill_chunks_v2 (
     run_id TEXT NOT NULL,
@@ -224,6 +225,15 @@ class SQLiteRepository:
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(SCHEMA)
+            # 迁移:旧库补 progress_json 列(幂等)
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(backfill_runs_v2)").fetchall()
+            }
+            if "progress_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE backfill_runs_v2 ADD COLUMN progress_json TEXT"
+                )
 
     @property
     def database_path(self) -> Path:
@@ -831,6 +841,50 @@ class SQLiteRepository:
         if row is None:
             return None
         return self._backfill_run_v2_from_row(row)
+
+    def update_backfill_batch_progress(
+        self,
+        run_id: str,
+        *,
+        phase: str,
+        completed: int,
+        total: int,
+        current_code: str,
+    ) -> None:
+        """Persist the in-batch progress of a running v2 backfill."""
+        import json as _json
+
+        payload = _json.dumps(
+            {
+                "phase": phase,
+                "completed": completed,
+                "total": total,
+                "current_code": current_code,
+            },
+            ensure_ascii=False,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE backfill_runs_v2 SET progress_json = ? WHERE run_id = ?",
+                (payload, run_id),
+            )
+
+    def get_backfill_batch_progress(
+        self, run_id: str
+    ) -> dict[str, object] | None:
+        import json as _json
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT progress_json FROM backfill_runs_v2 WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None or row["progress_json"] is None:
+            return None
+        try:
+            return _json.loads(row["progress_json"])
+        except ValueError:
+            return None
 
     def list_backfill_runs_v2(
         self, dataset_id: str, adjustment: AdjustmentMethod

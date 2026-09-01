@@ -704,6 +704,7 @@ class WebApp:
         batch_size = 100
         total_chunks = max(1, -(-stocks_count // batch_size))
         progress = min(1.0, done_groups / total_chunks)
+        batch = repo.get_backfill_batch_progress(run.run_id)
         return {
             "status": run.status.value,
             "run_id": run.run_id,
@@ -713,6 +714,7 @@ class WebApp:
             "done_chunks": done_groups,
             "total_chunks": total_chunks,
             "started_at": run.started_at.isoformat(),
+            "batch": batch or {},
         }
 
     def _list_instances(self) -> list[dict[str, object]]:

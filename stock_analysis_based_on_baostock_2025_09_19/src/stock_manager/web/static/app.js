@@ -762,6 +762,7 @@ function startSyncPolling() {
 
 
 let backfillV2Active = false;
+
 async function pollBackfillV2() {
   try {
     const p = await api('GET', '/api/sync/backfill/progress');
@@ -775,7 +776,26 @@ async function pollBackfillV2() {
     const fill = $('#sync-progress-fill');
     const current = $('#sync-current');
     const meta = $('#sync-progress');
+    const batchTrack = $('#sync-batch-track');
+    const batchFill = $('#sync-batch-fill');
+    const batchLabel = $('#sync-batch-label');
     const pct = Math.round((p.progress || 0) * 100);
+    // 第一个进度条:批次内进度(当前批的日线/基本面逐代码进度)
+    const b = p.batch || {};
+    const bTotal = Number(b.total || 0);
+    const bCompleted = Number(b.completed || 0);
+    const bPct = bTotal ? Math.min(100, Math.round((bCompleted / bTotal) * 100)) : 0;
+    const batchPhaseLabel = { daily_bars: '日线', fundamentals: '基本面', dividends: '分红' }[b.phase] || b.phase || '';
+    if (bTotal) {
+      batchTrack.hidden = false;
+      batchFill.style.width = bPct + '%';
+      batchLabel.hidden = false;
+      batchLabel.textContent = '批次：' + batchPhaseLabel + ' ' + bCompleted + '/' + bTotal + ' · ' + (b.current_code || '-');
+    } else {
+      batchTrack.hidden = true;
+      batchLabel.hidden = true;
+    }
+    // 第二个进度条:总进度(已完成批次数)
     track.hidden = false;
     fill.style.width = pct + '%';
     current.hidden = false;

@@ -164,6 +164,24 @@ class DataSyncService:
             }
         )
 
+    def _emit_v2_progress(
+        self,
+        run_id: str,
+        phase: str,
+        completed: int,
+        total: int,
+        current_code: str,
+    ) -> None:
+        """Emit v2 backfill progress and persist the in-batch state."""
+        self._emit_progress(phase, completed, total, current_code)
+        self._repository.update_backfill_batch_progress(
+            run_id,
+            phase=phase,
+            completed=completed,
+            total=total,
+            current_code=current_code,
+        )
+
     def smoke_test_provider(
         self,
         code: str,
@@ -1081,8 +1099,8 @@ class DataSyncService:
                             )
                             self._repository.save_daily_bars(bars, metadata)
                             done_units += len(chunk)
-                            self._emit_progress(
-                                "daily_bars", done_units, total_units, chunk[-1]
+                            self._emit_v2_progress(
+                                run_id, "daily_bars", done_units, total_units, chunk[-1]
                             )
                             fundamentals = self._provider_call(
                                 lambda chunk=chunk: self._provider.fetch_fundamentals(
@@ -1093,8 +1111,8 @@ class DataSyncService:
                                 fundamentals, metadata
                             )
                             done_units += len(chunk)
-                            self._emit_progress(
-                                "fundamentals", done_units, total_units, chunk[-1]
+                            self._emit_v2_progress(
+                                run_id, "fundamentals", done_units, total_units, chunk[-1]
                             )
                             self._repository.save_backfill_chunk_v2(
                                 BackfillChunkV2(
