@@ -99,7 +99,44 @@ stock-manager db-verify-transfer --db ... --manifest <file>
 - **发布模型**：计划 §6.1 的「不可变批次」在本实现中落地为「staging 隔离 + 发布时事务内 publish-copy 到正式表」——正式表保存当前 active generation 的行，manifest 与 active 指针不可变；REPAIR 发布会原子替换被修复分区并 supersede 旧 generation（见 ADR「结果」）。这是真实库 5.16M 行、避免影子表 2 倍磁盘峰值的实现选择，已写入 ADR。
 - **第 17 章第 8 条**：Mac→Windows 物理迁移人工验收需 Windows 实机，2026-09-01 用户确认不纳入完成定义；离线测试与迁移工具已交付，Windows 端实机验收由用户执行。
 
-## 9. 文档同步
+## 9. 集成收尾（SyncPipeline 与门面、CLI、Web）
+
+### 9.1 SyncPipeline 编排器
+
+`stock_manager.sync.pipeline`（`SyncPipeline`、`PipelineRun`、`PipelineError`、`RetryCooldownError`）：
+
+- `plan(...)`：调用 `SyncPlanner` 生成并持久化 plan/tasks/candidate。
+- `execute(plan_id)`：串行执行 PENDING/INTERRUPTED 任务 → worker 取数 → staging 写批次 → 验证 → 全部 COMPLETE 时发布；已 SUCCEEDED 计划重复执行零 Provider 调用（幂等跳过）。
+- `retry(plan_id)`：显式重试 FAILED/INTERRUPTED 任务，受 `not_before` 冷却与 `max_attempts` 上限约束，冷却未到抛 `RetryCooldownError`。
+- `mark_interrupted()`：进程重启后把 RUNNING 任务标 INTERRUPTED。
+- 验证失败闭环：`MISSING/INVALID`（REFETCH）→ candidate `NEEDS_REPAIR`，可由 REPAIR 计划修复后重跑；验证器自身异常 → `VERIFICATION_FAILED`。
+
+### 9.2 DataSyncService 门面
+
+`DataSyncService.build_pipeline()` / `run_pipeline_plan(...)` / `run_pipeline_execute(plan_id)`：
+
+- 复用同一 provider 实例（串行限速/socket 超时/重登录保护继承），构造 planner/worker/staging/verifier/committer/gate/legacy。
+- `run_pipeline_execute` 在 `_provider_process_lock + persistent_file_lock(_provider_file_lock)` 内执行，保持「Baostock 只能由 DataSyncService 边界调用」与并发保护红线。
+- 旧同步路径（`sync` / `backfill_history_v2` 等）保留兼容，未切换默认入口（灰度切换见计划 §11.2）。
+
+### 9.3 CLI 与 Web
+
+CLI 新增（`tests/test_p5_cli_pipeline.py`）：
+
+```text
+stock-manager sync-start --db ... --config ... --lock-dir ... \
+    --mode BOOTSTRAP|INCREMENTAL|LEGACY_IMPORT --start ... --end ... --adjustment ...
+stock-manager sync-retry --db ... --config ... --lock-dir ... --plan-id ...
+stock-manager sync-status --db ... [--plan-id ...]
+```
+
+Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）与 `active_generation` 字段（`tests/test_web_api.py::test_sync_status_exposes_p5_plan_state`）。
+
+### 9.4 本轮测试
+
+新增 13 项：`tests/test_p5_pipeline.py`（7）、`tests/test_p5_facade.py`（3）、`tests/test_p5_cli_pipeline.py`（2）、`tests/test_web_api.py`（1）。全量 **557 passed**（版本保持 1.12.0）。
+
+## 10. 文档同步
 
 - 计划：`development/plan/P5_RECONSTRUCT_DATASYNC.md`（draft，实现完成后由验收更新状态）。
 - 架构：`development/architecture/ADR_P5_DATASYNC_DATABASE.md`（accepted）。

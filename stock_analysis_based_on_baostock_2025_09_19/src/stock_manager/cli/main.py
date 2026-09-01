@@ -140,6 +140,38 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_verify.add_argument("--start", type=_iso_date, required=True)
     sync_verify.add_argument("--end", type=_iso_date, required=True)
 
+    # P5 流水线一键控制
+    sync_start = commands.add_parser(
+        "sync-start", help="plan and execute a P5 plan through the facade"
+    )
+    sync_start.add_argument("--db", type=Path, required=True)
+    sync_start.add_argument("--config", type=Path, required=True)
+    sync_start.add_argument("--lock-dir", type=Path, required=True)
+    sync_start.add_argument("--dataset", default="market")
+    sync_start.add_argument("--adjustment", type=_adjustment, required=True)
+    sync_start.add_argument("--mode", choices=("BOOTSTRAP", "INCREMENTAL", "LEGACY_IMPORT"), default="BOOTSTRAP")
+    sync_start.add_argument("--start", type=_iso_date, required=True)
+    sync_start.add_argument("--end", type=_iso_date, required=True)
+    sync_start.add_argument(
+        "--data-types",
+        default="stocks,daily_bars,fundamentals",
+        help="comma-separated data types",
+    )
+
+    sync_retry = commands.add_parser(
+        "sync-retry", help="explicitly retry a failed/interrupted P5 plan"
+    )
+    sync_retry.add_argument("--db", type=Path, required=True)
+    sync_retry.add_argument("--config", type=Path, required=True)
+    sync_retry.add_argument("--lock-dir", type=Path, required=True)
+    sync_retry.add_argument("--plan-id", required=True)
+
+    sync_status = commands.add_parser(
+        "sync-status", help="show P5 plan/task/candidate/active generation state"
+    )
+    sync_status.add_argument("--db", type=Path, required=True)
+    sync_status.add_argument("--plan-id", default=None, help="show one plan (default: newest)")
+
     sync_import_legacy = commands.add_parser(
         "sync-import-legacy", help="import legacy shared tables as LEGACY_IMPORT candidate"
     )
@@ -487,6 +519,158 @@ def _db_verify_transfer_command(args: argparse.Namespace, stdout: TextIO) -> int
     return 0
 
 
+def _sync_start_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.domain import SyncPlanMode
+    from stock_manager.sync.pipeline import PipelineError, RetryCooldownError
+
+    repository = SQLiteRepository(args.db)
+    config = load_sync_config(args.config)
+    provider = BaostockProvider(
+        request_interval_seconds=config.minimum_request_interval_seconds
+    )
+    service = DataSyncService(provider, repository, args.lock_dir, config)
+    if args.mode == "LEGACY_IMPORT":
+        # 旧库导入:直接走 LegacyImporter 一次性导入再验证
+        from stock_manager.sync.legacy import LegacyImporter
+
+        def now() -> datetime:
+            return datetime.now().astimezone()
+
+        import sqlite3 as _sqlite3
+
+        def factory() -> _sqlite3.Connection:
+            connection = _sqlite3.connect(repository.database_path, timeout=30.0)
+            connection.row_factory = _sqlite3.Row
+            return connection
+
+        importer = LegacyImporter(factory, now=now)
+        candidate_id = f"cand-legacy-{args.end.isoformat()}"
+        candidate = importer.build_candidate(
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            plan_id="plan-legacy",
+            candidate_id=candidate_id,
+        )
+        for data_type, adjustment in (
+            ("stocks", None),
+            ("daily_bars", args.adjustment),
+            ("fundamentals", None),
+            ("dividends", None),
+        ):
+            importer.import_partition(
+                candidate,
+                data_type=data_type,
+                partition_key=args.end.isoformat(),
+                batch_id=f"batch-{data_type}-{args.end.isoformat()}",
+                source="legacy",
+                adjustment=adjustment,
+            )
+        finished = importer.finish_candidate(candidate)
+        _print_json(
+            {
+                "mode": "LEGACY_IMPORT",
+                "candidate": finished,
+                "note": (
+                    "导入完成;请用 sync-verify 验证后用 committer 发布,"
+                    "或等待 Web 工作台引导"
+                ),
+            },
+            stdout,
+        )
+        return 0
+    try:
+        output = service.run_pipeline_plan(
+            mode=args.mode,
+            dataset_id=args.dataset,
+            adjustment=args.adjustment,
+            target_start=args.start,
+            target_end=args.end,
+            data_types=tuple(args.data_types.split(",")),
+        )
+        run = service.run_pipeline_execute(output.plan.plan_id)
+    except (PipelineError, RetryCooldownError, ValueError) as error:
+        raise ValueError(str(error)) from error
+    _print_json(
+        {
+            "plan_id": run.plan_id,
+            "plan_status": run.plan_status.value,
+            "published": run.published,
+            "report_issues": run.report_issues,
+            "warning": run.warning,
+            "candidate_status": (
+                None if run.candidate is None else run.candidate.status.value
+            ),
+        },
+        stdout,
+    )
+    return 0
+
+
+def _sync_retry_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.sync.pipeline import PipelineError, RetryCooldownError
+
+    repository = SQLiteRepository(args.db)
+    config = load_sync_config(args.config)
+    provider = BaostockProvider(
+        request_interval_seconds=config.minimum_request_interval_seconds
+    )
+    service = DataSyncService(provider, repository, args.lock_dir, config)
+    pipeline = service.build_pipeline()
+    try:
+        run = pipeline.retry(args.plan_id)
+    except (PipelineError, RetryCooldownError, ValueError) as error:
+        raise ValueError(str(error)) from error
+    _print_json(
+        {
+            "plan_id": run.plan_id,
+            "plan_status": run.plan_status.value,
+            "published": run.published,
+            "warning": run.warning,
+        },
+        stdout,
+    )
+    return 0
+
+
+def _sync_status_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    repository = _open_existing_repository(args.db)
+    if args.plan_id is not None:
+        plans = [repository.get_sync_plan(args.plan_id)]
+    else:
+        plans = repository.list_sync_plans("market", AdjustmentMethod.QFQ)
+    payload: list[dict[str, object]] = []
+    for plan in plans:
+        if plan is None:
+            continue
+        tasks = repository.list_sync_tasks(plan.plan_id)
+        candidate = repository.get_candidate_generation(
+            plan.candidate_generation_id
+        )
+        payload.append(
+            {
+                "plan_id": plan.plan_id,
+                "mode": plan.mode.value,
+                "status": plan.status.value,
+                "target": [plan.target_start.isoformat(), plan.target_end.isoformat()],
+                "task_counts": _task_counts(tasks),
+                "candidate_status": (
+                    None if candidate is None else candidate.status.value
+                ),
+            }
+        )
+    _print_json(payload, stdout)
+    return 0
+
+
+def _task_counts(tasks: Sequence[object]) -> dict[str, int]:
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for task in tasks:
+        counts[task.status.value] += 1
+    return dict(counts)
+
+
 def _web_command(args: argparse.Namespace, stdout: TextIO) -> int:
     config = WebConfig(
         database_path=args.db,
@@ -529,6 +713,12 @@ def main(
             return _sync_verify_command(args, stdout)
         if args.command == "sync-import-legacy":
             return _sync_import_legacy_command(args, stdout)
+        if args.command == "sync-start":
+            return _sync_start_command(args, stdout)
+        if args.command == "sync-retry":
+            return _sync_retry_command(args, stdout)
+        if args.command == "sync-status":
+            return _sync_status_command(args, stdout)
         if args.command == "db-prepare-transfer":
             return _db_prepare_transfer_command(args, stdout)
         if args.command == "db-verify-transfer":

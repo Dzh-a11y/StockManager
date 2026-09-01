@@ -37,6 +37,7 @@ from stock_manager.sync.history_plan import (
     trading_day_lookback,
 )
 from stock_manager.sync.locks import dataset_lock_path, persistent_file_lock, process_lock
+from stock_manager.sync.pipeline import PipelineRun, SyncPipeline
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -1265,3 +1266,122 @@ class DataSyncService:
                 self._active_v2_run_id = None
                 self._active_v2_batch_total = 0
 
+
+    # ------------------------------------------------------------------
+    # P5 DataSync reconstruction pipeline facade (gateway to SyncPipeline)
+    # ------------------------------------------------------------------
+
+    def build_pipeline(self) -> SyncPipeline:
+        """Construct the P5 pipeline bound to this service's provider/repo.
+
+        The pipeline uses the same provider instance, so the provider's own
+        serial pacing, socket timeout and relogin protections apply; provider
+        access is still single-entry through this service boundary.
+        """
+        import sqlite3 as _sqlite3
+
+        from stock_manager.sync.committer import (
+            GenerationCommitter,
+            ReadinessGate,
+        )
+        from stock_manager.sync.legacy import LegacyImporter
+        from stock_manager.sync.planner import SyncPlanner
+        from stock_manager.sync.staging import StagingWriter
+        from stock_manager.sync.verifier import CoverageVerifier
+        from stock_manager.sync.worker import SerialFetchWorker
+
+        repository = self._repository
+        if not hasattr(repository, "database_path"):
+            raise RuntimeError(
+                "P5 pipeline requires a repository exposing database_path"
+            )
+        database_path = repository.database_path
+
+        def connection_factory() -> _sqlite3.Connection:
+            connection = _sqlite3.connect(database_path, timeout=30.0)
+            connection.row_factory = _sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            return connection
+
+        def calendar(start: date, end: date) -> tuple[date, ...]:
+            return repository.get_trading_days(start, end)
+
+        def coverage(
+            adjustment: AdjustmentMethod, data_type: str
+        ) -> tuple[date | None, date | None]:
+            return repository.actual_coverage(adjustment, data_type)
+
+        def universe(as_of: date) -> tuple[str, ...]:
+            return tuple(stock.code for stock in repository.get_stocks(as_of))
+
+        planner = SyncPlanner(
+            calendar=calendar,
+            coverage=coverage,
+            universe_codes=universe,
+            now=self._now,
+        )
+        provider = self._provider
+
+        def worker_factory() -> SerialFetchWorker:
+            return SerialFetchWorker(
+                provider,
+                adjustment=AdjustmentMethod.QFQ,
+                now=self._now,
+            )
+
+        staging = StagingWriter(connection_factory, now=self._now)
+        verifier = CoverageVerifier(
+            connection_factory,
+            trading_days=calendar,
+            expected_universe_size=lambda day: max(
+                1, len(repository.get_stocks(day))
+            ),
+        )
+        committer = GenerationCommitter(connection_factory, now=self._now)
+        gate = ReadinessGate(connection_factory)
+        legacy = LegacyImporter(connection_factory, now=self._now)
+        return SyncPipeline(
+            repository=repository,
+            planner=planner,
+            worker_factory=worker_factory,
+            staging=staging,
+            verifier=verifier,
+            committer=committer,
+            gate=gate,
+            legacy=legacy,
+            now=self._now,
+            retry_cooldown=self._config.retry_cooldown,
+            max_attempts=3,
+        )
+
+    def run_pipeline_plan(
+        self,
+        *,
+        mode: str,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        target_start: date,
+        target_end: date,
+        data_types: Sequence[str] = ("stocks", "daily_bars", "fundamentals"),
+    ) -> object:
+        """Plan (and persist) a P5 plan through the single-entry facade."""
+        from stock_manager.domain import SyncPlanMode
+
+        pipeline = self.build_pipeline()
+        return pipeline.plan(
+            mode=SyncPlanMode(mode),
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            target_start=target_start,
+            target_end=target_end,
+            required_data_types=tuple(data_types),
+        )
+
+    def run_pipeline_execute(self, plan_id: str) -> PipelineRun:
+        """Execute a P5 plan under the provider lock (single channel)."""
+        pipeline = self.build_pipeline()
+        with self._provider_process_lock, persistent_file_lock(
+            self._provider_file_lock
+        ):
+            return pipeline.execute(plan_id)

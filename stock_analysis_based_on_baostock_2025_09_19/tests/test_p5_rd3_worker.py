@@ -128,10 +128,19 @@ class TestSerialFetchWorker:
         with pytest.raises(ProviderFetchError):
             worker.execute(_task("not_a_type"))
 
-    def test_non_pending_task_rejected(self) -> None:
+    def test_terminal_task_rejected(self) -> None:
         worker, _ = _worker()
         with pytest.raises(ValueError):
-            worker.execute(_task("daily_bars", status=SyncTaskStatus.RUNNING))
+            worker.execute(_task("daily_bars", status=SyncTaskStatus.SUCCESS, finished_at=NOW))
+
+    def test_running_task_allowed(self) -> None:
+        # 流水线会把任务先标 RUNNING 再交给 worker 执行。
+        worker, provider = _worker()
+        result = worker.execute(
+            _task("daily_bars", status=SyncTaskStatus.RUNNING, started_at=NOW)
+        )
+        assert result.row_count == 1
+        assert provider.calls[0][0] == "daily_bars"
 
     def test_provider_error_propagates(self) -> None:
         class BrokenProvider(FakeProvider):

@@ -33,18 +33,19 @@ class ConcurrentProviderAccessError(RuntimeError):
 
 
 class TaskExecutionResult:
-    """Outcome of one executed fetch task."""
+    """Outcome of one executed fetch task (includes the fetched rows)."""
 
-    __slots__ = ("task", "row_count", "finished_at")
+    __slots__ = ("task", "rows", "row_count", "finished_at")
 
     def __init__(
         self,
         task: SyncTask,
-        row_count: int,
+        rows: Sequence[object],
         finished_at: datetime,
     ) -> None:
         self.task = task
-        self.row_count = row_count
+        self.rows = rows
+        self.row_count = len(rows)
         self.finished_at = finished_at
 
 
@@ -115,8 +116,15 @@ class SerialFetchWorker:
         the caller marks the task FAILED. Task row counts are recorded so the
         caller can persist the checkpoint.
         """
-        if task.status is not SyncTaskStatus.PENDING:
-            raise ValueError(f"task {task.task_id} must be PENDING to execute")
+        if task.status in (
+            SyncTaskStatus.SUCCESS,
+            SyncTaskStatus.FAILED,
+            SyncTaskStatus.INTERRUPTED,
+        ):
+            raise ValueError(
+                f"task {task.task_id} is {task.status.value}; "
+                "only PENDING/RUNNING tasks may be executed"
+            )
         self._guard_channel()
         try:
             if task.data_type == "daily_bars":
@@ -143,8 +151,8 @@ class SerialFetchWorker:
                     f"unsupported data type for fetch: {task.data_type}"
                 )
             # 通道锁已由 _guard_channel 持有,此处直接追加调用日志。
-            self._call_log.append((task.data_type, count))
-            return TaskExecutionResult(task, count, self._now())
+            self._call_log.append((task.data_type, len(rows)))
+            return TaskExecutionResult(task, rows, self._now())
         except ProviderFetchError:
             raise
         except Exception as error:

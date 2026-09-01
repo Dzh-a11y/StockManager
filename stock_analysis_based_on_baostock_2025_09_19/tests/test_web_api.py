@@ -154,6 +154,95 @@ def _screen_body(template: dict) -> dict:
     }
 
 
+def test_sync_status_exposes_p5_plan_state(tmp_path: Path) -> None:
+    """P5-RD-8: /api/sync/status 暴露 plan/task/candidate/active generation。"""
+    app = _app(tmp_path)
+    # 先写入一个 P5 plan(直接经 repository,模拟流水线产物)。
+    from stock_manager.domain import (
+        AdjustmentMethod,
+        CandidateGeneration,
+        CandidateGenerationStatus,
+        SyncPlan,
+        SyncPlanMode,
+        SyncPlanStatus,
+        SyncSource,
+        SyncTask,
+        SyncTaskStatus,
+    )
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    repo = app._services.repository
+    plan = SyncPlan(
+        plan_id="plan-test",
+        plan_version=1,
+        mode=SyncPlanMode.BOOTSTRAP,
+        source=SyncSource.BAOSTOCK,
+        dataset_id="market",
+        adjustment=AdjustmentMethod.QFQ,
+        universe_policy="a-share",
+        target_start=date(2026, 9, 1),
+        target_end=date(2026, 9, 1),
+        latest_completed_trading_day=date(2026, 9, 1),
+        parent_generation=None,
+        candidate_generation_id="cand-test",
+        required_data_types=("daily_bars",),
+        task_count=1,
+        plan_fingerprint="fp",
+        status=SyncPlanStatus.SUCCEEDED,
+        created_at=now,
+        updated_at=now,
+    )
+    repo.save_sync_plan(plan)
+    repo.save_candidate_generation(
+        CandidateGeneration(
+            candidate_generation_id="cand-test",
+            plan_id="plan-test",
+            parent_generation=None,
+            write_revision=1,
+            status=CandidateGenerationStatus.PUBLISHED,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    repo.save_sync_task(
+        SyncTask(
+            task_id="t1",
+            plan_id="plan-test",
+            sequence_no=0,
+            data_type="daily_bars",
+            partition_key="2026-09-01",
+            codes=("sh.600001",),
+            range_start=date(2026, 9, 1),
+            range_end=date(2026, 9, 1),
+            dependencies=(),
+            status=SyncTaskStatus.SUCCESS,
+            attempt_count=1,
+            not_before=None,
+            row_count=1,
+            error_code=None,
+            error_message=None,
+            started_at=now,
+            finished_at=now,
+        )
+    )
+    repo.save_active_generation(
+        __import__(
+            "stock_manager.domain", fromlist=["ActiveGeneration"]
+        ).ActiveGeneration("market", AdjustmentMethod.QFQ, "cand-test", now)
+    )
+
+    status, body = _get(app, "/api/sync/status")
+    assert status == 200
+    assert body["p5_plans"] and body["p5_plans"][0]["plan_id"] == "plan-test"
+    assert body["p5_plans"][0]["status"] == "SUCCEEDED"
+    assert body["p5_plans"][0]["task_counts"]["SUCCESS"] == 1
+    assert body["p5_plans"][0]["candidate_status"] == "PUBLISHED"
+    assert body["active_generation"] is not None
+    assert body["active_generation"]["generation"] == "cand-test"
+
+
 # ---------- P3-1: rule catalog ----------
 def test_rules_catalog_is_metadata_driven_and_stable(tmp_path: Path) -> None:
     app = _app(tmp_path)

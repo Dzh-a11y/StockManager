@@ -661,6 +661,55 @@ class WebApp:
             "recent_days": recent,
             "older_bands": bands,
             "year_bands": year_bands,
+            "p5_plans": self._p5_plan_state(),
+            "active_generation": self._active_generation_state(),
+        }
+
+    def _p5_plan_state(self) -> list[dict[str, object]]:
+        """P5 plan/task/candidate state for the sync page (P5-RD-8)."""
+        repo = self._services.repository
+        try:
+            plans = repo.list_sync_plans("market", AdjustmentMethod.QFQ)
+        except Exception:
+            return []
+        state: list[dict[str, object]] = []
+        for plan in plans[:10]:
+            tasks = repo.list_sync_tasks(plan.plan_id)
+            counts: dict[str, int] = {}
+            for task in tasks:
+                counts[task.status.value] = counts.get(task.status.value, 0) + 1
+            candidate = repo.get_candidate_generation(
+                plan.candidate_generation_id
+            )
+            state.append(
+                {
+                    "plan_id": plan.plan_id,
+                    "mode": plan.mode.value,
+                    "status": plan.status.value,
+                    "target_start": plan.target_start.isoformat(),
+                    "target_end": plan.target_end.isoformat(),
+                    "task_counts": counts,
+                    "candidate_status": (
+                        None if candidate is None else candidate.status.value
+                    ),
+                }
+            )
+        return state
+
+    def _active_generation_state(self) -> dict[str, object] | None:
+        """Current active generation pointer, if any (P5-RD-8)."""
+        repo = self._services.repository
+        try:
+            active = repo.get_active_generation(
+                "market", AdjustmentMethod.QFQ
+            )
+        except Exception:
+            return None
+        if active is None:
+            return None
+        return {
+            "generation": active.generation,
+            "activated_at": active.activated_at.isoformat(),
         }
 
     def _backfill_v2_progress(self) -> dict[str, object]:
