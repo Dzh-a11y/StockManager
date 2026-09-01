@@ -184,19 +184,20 @@ class TestBootstrap:
             target_end=date(2026, 9, 3),
             required_data_types=("daily_bars", "stocks"),
         )
-        # 批量粒度:stocks 每交易日 1 任务(4 天),daily_bars 按代码批次(4 只一批 → 1 任务)覆盖整个区间。
-        assert len(out.tasks) == 5
+        # 批量粒度:stocks 只拉 target_end 1 次快照;daily_bars 按代码批次(4 只一批 → 1 任务)覆盖整个区间。
+        assert len(out.tasks) == 2
         types = [t.data_type for t in out.tasks]
-        assert types == ["stocks"] * 4 + ["daily_bars"]
+        assert types == ["stocks", "daily_bars"]
         assert all(t.status is SyncTaskStatus.PENDING for t in out.tasks)
         assert all(t.codes == tuple(sorted(CODES)) for t in out.tasks)
         assert out.plan.mode is SyncPlanMode.BOOTSTRAP
         assert out.plan.source is SyncSource.BAOSTOCK
         assert out.plan.parent_generation is None
-        assert out.plan.task_count == 5
+        assert out.plan.task_count == 2
         assert out.candidate.status is CandidateGenerationStatus.PLANNED
-        # daily_bars 任务覆盖整个区间(不是单日)
-        bars_task = out.tasks[-1]
+        # stocks 快照在 target_end;daily_bars 覆盖整个区间
+        stocks_task, bars_task = out.tasks
+        assert stocks_task.partition_key == date(2026, 9, 3).isoformat()
         assert bars_task.range_start == date(2026, 8, 31)
         assert bars_task.range_end == date(2026, 9, 3)
 
@@ -223,9 +224,9 @@ class TestBootstrap:
             target_end=date(2026, 9, 3),
             required_data_types=("stocks",),
         )
-        # stocks 快照按交易日排序
-        keys = [t.partition_key for t in out.tasks]
-        assert keys == sorted(keys)
+        # stocks 快照只拉 target_end 一次
+        assert len(out.tasks) == 1
+        assert out.tasks[0].partition_key == date(2026, 9, 3).isoformat()
 
     def test_empty_calendar_rejected(self) -> None:
         planner = SyncPlanner(

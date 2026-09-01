@@ -1,10 +1,11 @@
-"""P5A-1 v2 eight-year backfill runner (network script, not product code).
+"""Eight-year backfill runner on the P5 pipeline (network script, not product code).
 
-Loads the v2 sync config and runs backfill_on_startup_v2: resolves the
-eight-year window (latest completed trading day, 2080 trading days back),
-plans prefix/tail gaps and fetches them serially with the configured request
-pacing. Safe to interrupt: run checkpoints are range-bound and the next
-launch resumes only the missing parts.
+Loads the sync config and runs startup_sync(force_pipeline=True): the P5
+SyncPipeline with batch granularity (20 codes x range) resolves the
+eight-year window, stages fetches, verifies and atomically publishes a
+generation. Safe to interrupt: plan tasks are check-pointed and the next
+launch resumes only PENDING/INTERRUPTED tasks; SUCCESS tasks are never
+re-fetched.
 
 Usage:
     python3 scripts/run_backfill_v2.py [--config config/sync.json] [--db data/market.sqlite3]
@@ -82,35 +83,31 @@ def main() -> int:
             flush=True,
         )
         try:
-            outcome = service.backfill_on_startup_v2("market", AdjustmentMethod.QFQ)
+            # 新架构:startup_sync(force_pipeline=True) 走 SyncPipeline 批量粒度
+            # (20 只 × 区间),staging → 验证 → 原子发布 generation。
+            # pipeline.execute 幂等:SUCCESS 任务跳过,中断后从 PENDING/INTERRUPTED 续传。
+            run = service.startup_sync(
+                "market", AdjustmentMethod.QFQ, force_pipeline=True,
+                batch_size=args.batch_size,
+            )
             elapsed_minutes = (time.monotonic() - started) / 60
-            if outcome is None:
-                print("回补完成:目标窗口已覆盖或已由本运行补齐", flush=True)
+            plan_status = getattr(run, "plan_status", None)
+            published = getattr(run, "published", False)
+            warning = getattr(run, "warning", None)
+            print(
+                f"回补结果: plan_status={plan_status} published={published}"
+                f"{' warning=' + warning if warning else ''}",
+                flush=True,
+            )
+            print(f"耗时 {elapsed_minutes:.1f} 分钟", flush=True)
+            if published:
+                print("generation 已原子发布,ReadinessGate 将返回 READY", flush=True)
             else:
                 print(
-                    f"回补结果: status={outcome.status.value} skipped={outcome.skipped}",
+                    "数据已入库但 generation 未发布(验证未全通过);"
+                    "可用 sync-status / sync-verify 查看原因",
                     flush=True,
                 )
-            print(f"耗时 {elapsed_minutes:.1f} 分钟", flush=True)
-            # P5 桥接:v2 批量回补完成后,把已入库数据发布为新 generation,
-            # 使 ReadinessGate 返回 READY(否则 Web 门禁页永远 NO_GENERATION)。
-            print("发布 P5 generation(v2 → generation 桥接)…", flush=True)
-            try:
-                from datetime import date as _date
-
-                bridge = service.publish_legacy_generation(
-                    "market",
-                    AdjustmentMethod.QFQ,
-                    target_end=_date.today(),
-                )
-                print(f"桥接结果: {bridge}", flush=True)
-            except Exception as bridge_error:
-                print(
-                    f"桥接失败(数据已入库,generation 未发布):"
-                    f"{type(bridge_error).__name__}: {bridge_error}",
-                    flush=True,
-                )
-                return 2
             return 0
         except Exception as error:
             elapsed_minutes = (time.monotonic() - started) / 60

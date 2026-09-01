@@ -103,6 +103,7 @@ class SyncPipeline:
         target_start: date,
         target_end: date,
         required_data_types: Sequence[str] = ("stocks", "daily_bars", "fundamentals"),
+        batch_size: int = 20,
     ) -> PlannedOutput:
         """Create and persist a plan (plus tasks and candidate)."""
         if mode is SyncPlanMode.BOOTSTRAP:
@@ -112,6 +113,7 @@ class SyncPipeline:
                 target_start=target_start,
                 target_end=target_end,
                 required_data_types=tuple(required_data_types),
+                batch_size=batch_size,
             )
         elif mode is SyncPlanMode.LEGACY_IMPORT:
             output = self._planner.plan_legacy_import(
@@ -120,6 +122,7 @@ class SyncPipeline:
                 target_start=target_start,
                 target_end=target_end,
                 required_data_types=tuple(required_data_types),
+                batch_size=batch_size,
             )
         elif mode is SyncPlanMode.INCREMENTAL:
             active = self._repository.get_active_generation(dataset_id, adjustment)
@@ -132,6 +135,7 @@ class SyncPipeline:
                 coverage_end=target_start,
                 target_end=target_end,
                 required_data_types=tuple(required_data_types),
+                batch_size=batch_size,
             )
         else:
             raise PipelineError(f"cannot plan mode {mode.value} directly")

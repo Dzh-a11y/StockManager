@@ -358,31 +358,36 @@ class SyncPlanner:
         tasks: list[SyncTask] = []
         seq = 0
         universe_cache: dict[date, tuple[str, ...]] = {}
+        # 全窗口统一使用 target_end 的股票池(与 v2 一致:历史日无独立快照,
+        # 只有终点快照)。daily_bars/fundamentals/stocks 共用这一代码集。
+        universe_day = input_.target_end
+        universe = universe_cache.get(universe_day)
+        if universe is None:
+            universe = tuple(sorted(self._universe_codes(universe_day)))
+            universe_cache[universe_day] = universe
+        if not universe:
+            raise PlanRejectedError(
+                f"stock universe is empty for {universe_day.isoformat()}; "
+                "cannot plan tasks"
+            )
         for data_type in DATA_TYPE_ORDER:
             if data_type not in input_.required_data_types:
                 continue
             if data_type == "stocks":
-                # 快照语义:每个交易日一个任务(整市场一次请求)。
-                for day in days:
-                    codes = universe_cache.get(day)
-                    if codes is None:
-                        codes = tuple(sorted(self._universe_codes(day)))
-                        universe_cache[day] = codes
-                    tasks.append(
-                        self._make_task(
-                            input_, seq, data_type, day.isoformat(),
-                            codes, day, day,
-                        )
+                # 快照语义:只拉 target_end 一次(历史日无独立快照,复用终点
+                # 股票池)。一个任务覆盖整个窗口的股票快照,避免每交易日
+                # 一次全市场请求。
+                tasks.append(
+                    self._make_task(
+                        input_, seq, data_type, input_.target_end.isoformat(),
+                        universe, input_.target_end, input_.target_end,
                     )
-                    seq += 1
+                )
+                seq += 1
                 continue
             # daily_bars / fundamentals:按代码分批,区间为整个目标窗口
             # (daily_bars)或 as_of=target_end(fundamentals)。
-            universe_day = input_.target_end
-            codes = universe_cache.get(universe_day)
-            if codes is None:
-                codes = tuple(sorted(self._universe_codes(universe_day)))
-                universe_cache[universe_day] = codes
+            codes = universe
             for offset in range(0, len(codes), batch_size):
                 chunk = codes[offset : offset + batch_size]
                 if not chunk:

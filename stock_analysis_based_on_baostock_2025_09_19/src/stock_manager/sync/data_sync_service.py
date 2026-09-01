@@ -1393,6 +1393,7 @@ class DataSyncService:
         adjustment: AdjustmentMethod,
         *,
         force_pipeline: bool = False,
+        batch_size: int = 20,
     ) -> object:
         """Startup sync through the P5 pipeline (default entry when enabled).
 
@@ -1401,14 +1402,9 @@ class DataSyncService:
         to the latest completed trading day and executes it through
         SyncPipeline; the result is a PipelineRun. Otherwise it falls back to
         the legacy ``backfill_on_startup_v2`` path so current behavior is
-        unchanged.
-
-        Note: the P5 pipeline plans per (stock, trading day) tasks, which is
-        appropriate for incremental windows but far too fine-grained for a
-        first-time eight-year backfill (millions of tasks). A full eight-year
-        bootstrap should use the legacy v2 bulk path (``backfill_on_startup_v2``)
-        and then publish the result as a generation; the pipeline is for tail
-        increments and repairs.
+        unchanged. ``batch_size`` sets the code-batch granularity (default 20,
+        matching the legacy v2 bulk path); the pipeline planner chunks codes
+        by this size and covers the whole target range per request.
         """
         if not (self._config.pipeline_default or force_pipeline):
             if self._config.history is not None:
@@ -1420,10 +1416,20 @@ class DataSyncService:
         from stock_manager.domain import SyncPlanMode
 
         if active is None:
-            # 首次启动:无 active generation → BOOTSTRAP 到最新已完成交易日。
-            plan_start = target - timedelta(
-                days=self._config.retention_days
+            # 首次启动:无 active generation → BOOTSTRAP。
+            # 八年 = 终点向前 2080 个交易日(P5A 决策),禁止用自然日推算。
+            from stock_manager.sync.history_plan import trading_day_lookback
+
+            calendar_guess_start = target - timedelta(days=365 * 9)
+            calendar = self._repository.get_trading_days(
+                calendar_guess_start, target
             )
+            if not calendar:
+                raise ValueError(
+                    "trading calendar is empty; cannot resolve the "
+                    "eight-year BOOTSTRAP window"
+                )
+            plan_start = trading_day_lookback(calendar, target, 2080)
             output = pipeline.plan(
                 mode=SyncPlanMode.BOOTSTRAP,
                 dataset_id=dataset_id,
@@ -1435,6 +1441,7 @@ class DataSyncService:
                     "daily_bars",
                     "fundamentals",
                 ),
+                batch_size=batch_size,
             )
         else:
             output = pipeline.plan(
@@ -1448,6 +1455,7 @@ class DataSyncService:
                     "daily_bars",
                     "fundamentals",
                 ),
+                batch_size=batch_size,
             )
         with self._provider_process_lock, persistent_file_lock(
             self._provider_file_lock
