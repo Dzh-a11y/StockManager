@@ -142,6 +142,25 @@ stock-manager sync-status --db ... [--plan-id ...]
 
 Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）与 `active_generation` 字段（`tests/test_web_api.py::test_sync_status_exposes_p5_plan_state`）。
 
+### 9.6 首次启动门禁页（P5 §5.1，前端）
+
+`index.html` 重构为两个视图：
+
+- **`#gate-view`（前置初始化门禁页）**：默认显示。提供「在线 Bootstrap / 导入种子 / 增量同步」来源选择、复权方式、种子路径、启动按钮与同步/回补进度条；数据未就绪时工作台不可见。
+- **`#workbench-view`（筛选工作台）**：仅当 `readiness.status == READY` 时显示。
+
+后端 `POST /api/sync/bootstrap` 支持 `source`：`online`（在线 Bootstrap，经 `startup_sync` 走 SyncPipeline）、`seed`（外部 manifest 校验 → `LegacyImporter` 导入）、`incremental`（已有 active generation 时补齐尾部）。门禁判定依据 ReadinessGate：无 active generation → `NO_GENERATION` → 门禁页；部分数据未发布 → 同样门禁页并显示回补进度。
+
+### 9.7 八年回补进度改为按完整入库股票数
+
+原 `_v2_window_coverage` 按「每年最大覆盖数做基准」的逐日判定会在只拉一批时立即 100%。现改为**按完整入库股票数**：
+
+- `SQLiteRepository.daily_bar_code_counts()`：`{code: 窗口内 distinct 交易日数}`。
+- 一只股票在窗口内 bar 天数 ≥ 窗口交易日数的 95% 才算「完整入库」；`progress = 完整入库数 / 当前股票池规模`。
+- 前端文案改为「总进度 X%（已完整入库 A/B 只股票）」。
+- 真实部分库验证：20/5,214 只完整 → 0.38%，不再假 100%。
+- 测试：`tests/test_backfill_v2_progress.py` 更新为股票语义；`tests/test_web_api.py::TestStockBasedProgress` 覆盖长窗口部分入库场景。
+
 ### 9.4 本轮测试
 
 新增 13 项：`tests/test_p5_pipeline.py`（7）、`tests/test_p5_facade.py`（3）、`tests/test_p5_cli_pipeline.py`（2）、`tests/test_web_api.py`（1）。全量 **557 passed**（版本保持 1.12.0）。

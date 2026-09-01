@@ -590,6 +590,27 @@ class SQLiteRepository:
             ).fetchall()
         return {date.fromisoformat(row["trading_day"]): int(row["n"]) for row in rows}
 
+    def daily_bar_code_counts(
+        self,
+        start: date,
+        end: date,
+        adjustment: AdjustmentMethod,
+    ) -> dict[str, int]:
+        """Return ``{code: distinct bar trading-day count}`` in the window.
+
+        Used to compute stock-based backfill progress: a code counts as fully
+        ingested only when it has bars on (almost) every trading day of the
+        target window, instead of judging by chunk bookkeeping.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT code, COUNT(DISTINCT trading_day) AS n FROM daily_bars
+                   WHERE adjustment = ? AND trading_day BETWEEN ? AND ?
+                   GROUP BY code""",
+                (adjustment.value, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return {str(row["code"]): int(row["n"]) for row in rows}
+
     def earliest_failed_day(
         self,
         dataset_id: str,

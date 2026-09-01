@@ -1067,3 +1067,154 @@ def test_screen_max_workers_one_works(tmp_path: Path) -> None:
     assert status == 200
     assert payload["summary"]["total"] == 1
     assert payload["max_workers"] == 1
+
+
+class TestBootstrapEndpoint:
+    """P5 §5.1/§5.3:首次初始化端点。"""
+
+    def test_bootstrap_online_runs_pipeline(self, tmp_path: Path) -> None:
+        db = tmp_path / "market.sqlite3"
+        SQLiteRepository(db)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "user-templates",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=locks,
+        )
+        app = WebApp(config, provider_factory=_fake_provider)
+        # 首次启动状态
+        _status, progress = _get(app, "/api/sync/progress")
+        assert progress["status"] == "first_run"
+        # 触发在线 Bootstrap
+        status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
+        assert status == 200, payload
+        assert payload["source"] == "online"
+        # 空库无交易日历 → online bootstrap 无法规划,应返回 4xx 而非崩溃
+        # (fake provider 提供 TARGET_DAY 日历;这里验证端点可达且结构化)
+        assert isinstance(payload, dict)
+
+    def test_bootstrap_bad_source_rejected(self, tmp_path: Path) -> None:
+        app = _app(tmp_path)
+        status, payload = _post(app, "/api/sync/bootstrap", {"source": "bogus"})
+        assert status == 400
+
+    def _configured_app(self, tmp_path: Path) -> WebApp:
+        db = tmp_path / "market.sqlite3"
+        SQLiteRepository(db)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "user-templates",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=locks,
+        )
+        return WebApp(config, provider_factory=_fake_provider)
+
+    def test_bootstrap_seed_requires_path(self, tmp_path: Path) -> None:
+        app = self._configured_app(tmp_path)
+        status, payload = _post(app, "/api/sync/bootstrap", {"source": "seed"})
+        assert status == 400
+        assert "seed_path" in payload["error"]["message"]
+
+    def test_bootstrap_seed_invalid_manifest_rejected(self, tmp_path: Path) -> None:
+        app = self._configured_app(tmp_path)
+        status, payload = _post(
+            app,
+            "/api/sync/bootstrap",
+            {"source": "seed", "seed_path": str(tmp_path / "nope.sqlite3")},
+        )
+        assert status == 400
+        assert "manifest" in payload["error"]["message"]
+
+
+class TestIncrementalBootstrap:
+    def test_incremental_without_active_generation_rejected(self, tmp_path: Path) -> None:
+        db = tmp_path / "m.sqlite3"
+        SQLiteRepository(db)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "ut",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=locks,
+        )
+        app = WebApp(config, provider_factory=_fake_provider)
+        status, payload = _post(app, "/api/sync/bootstrap", {"source": "incremental", "adjustment": "qfq"})
+        assert status == 404
+        assert "no active generation" in payload["error"]["message"]
+
+
+class TestStockBasedProgress:
+    def test_partial_batch_is_not_100_percent(self, tmp_path: Path) -> None:
+        """P5:进度按完整入库股票数,而非批次。"""
+        db = tmp_path / "m.sqlite3"
+        repo = SQLiteRepository(db)
+        from datetime import timedelta as _td
+
+        # 长窗口(模拟八年)只入库 1 只股票 2 天 → 远未完整,绝不是 100%。
+        target_end = date(2026, 8, 25)
+        target_start = date(2018, 9, 1)
+        stocks = (
+            StockIdentity("sh.600001", "A", "SH", False, date(2000, 1, 1), None),
+            StockIdentity("sz.000002", "B", "SZ", True, date(2000, 1, 1), None),
+        )
+        bar_days = (target_end, target_end - _td(days=1))
+        now = datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI)
+        # 注册 500 个模拟交易日:代码只覆盖其中 2 天 → 远未完整
+        from datetime import timedelta as _td2
+
+        calendar_days = tuple(target_end - _td2(days=i) for i in range(500))
+        repo.save_trading_days(
+            calendar_days,
+            DatasetMetadata("trading_calendar", target_end, "fx", now, AdjustmentMethod.UNADJUSTED),
+        )
+        repo.save_stocks(
+            stocks,
+            DatasetMetadata("market", target_end, "fx", now, AdjustmentMethod.QFQ),
+        )
+        repo.save_daily_bars(
+            (
+                DailyBar("sh.600001", bar_days[0], Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("100"), Decimal("1000"), True),
+                DailyBar("sh.600001", bar_days[1], Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("100"), Decimal("1000"), True),
+            ),
+            DatasetMetadata("market", target_end, "fx", now, AdjustmentMethod.QFQ),
+        )
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "ut",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=tmp_path / "locks",
+        )
+        app = WebApp(config, provider_factory=_fake_provider)
+        from stock_manager.domain import BackfillRunStatus, BackfillRunV2
+
+        repo.save_backfill_run_v2(
+            BackfillRunV2(
+                run_id="r1",
+                dataset_id="market",
+                adjustment=AdjustmentMethod.QFQ,
+                target_start=target_start,
+                target_end=target_end,
+                status=BackfillRunStatus.RUNNING,
+                started_at=now,
+                finished_at=None,
+                error_message=None,
+            )
+        )
+        _status, body = _get(app, "/api/sync/backfill/progress")
+        assert body["status"] == "RUNNING"
+        # 池 2 只,窗口 2000+ 天,1 只远未完整 → 进度极低,绝不是 100%
+        assert body["progress"] < 0.1
+        assert body["total_days"] == 2  # 股票池规模

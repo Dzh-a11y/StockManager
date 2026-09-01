@@ -23,6 +23,64 @@
   </header>
 
   <main class="workspace">
+    <!-- 前置初始化门禁页(P5 §5.1):数据未就绪时只显示同步/回补,就绪后进入工作台 -->
+    <div id="gate-view" class="gate" hidden>
+      <section class="panel panel--conditions" aria-label="数据初始化">
+        <div class="panel__head">
+          <h2 class="panel__title">数据初始化与同步</h2>
+        </div>
+        <div class="panel__body">
+          <p class="panel__hint" id="gate-title"></p>
+          <p class="panel__hint" id="gate-readiness"></p>
+          <div class="section-divider"></div>
+          <label class="field">
+            <span class="field__label">初始化方式</span>
+            <select id="bootstrap-source" class="select">
+              <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
+              <option value="seed">导入种子数据库（需外部 manifest）</option>
+              <option value="incremental">增量同步（已有数据，仅补齐尾部）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field__label">复权方式</span>
+            <select id="bootstrap-adjustment" class="select">
+              <option value="qfq">前复权 (qfq)</option>
+              <option value="unadjusted">不复权 (unadjusted)</option>
+              <option value="hfq">后复权 (hfq)</option>
+            </select>
+          </label>
+          <label class="field" id="bootstrap-seed-field" hidden>
+            <span class="field__label">种子文件路径</span>
+            <input id="bootstrap-seed-path" class="input" type="text" placeholder="如 /path/to/market.sqlite3" autocomplete="off">
+            <span class="field__hint">manifest 需位于同目录:<code>&lt;文件&gt;.manifest.json</code></span>
+          </label>
+          <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
+            <span class="btn__label">开始初始化 / 同步</span>
+          </button>
+          <p id="bootstrap-status" class="panel__hint" hidden></p>
+          <div class="section-divider"></div>
+          <p id="sync-progress" class="panel__hint" hidden></p>
+          <div class="progress-track" id="sync-batch-track" hidden>
+            <div class="progress-fill" id="sync-batch-fill"></div>
+          </div>
+          <p id="sync-batch-label" class="panel__hint" hidden></p>
+          <div class="progress-track" id="sync-progress-track" hidden>
+            <div class="progress-fill" id="sync-progress-fill"></div>
+          </div>
+          <p id="sync-current" class="panel__hint" hidden></p>
+          <div class="section-divider"></div>
+          <p id="gate-status-title" class="panel__hint" hidden></p>
+          <div id="gate-status-daily" class="panel__hint"></div>
+          <div id="gate-status-bands" class="panel__hint"></div>
+          <button id="gate-enter" class="btn btn--primary btn--block" type="button" hidden>
+            <span class="btn__label">数据就绪，进入筛选工作台</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 工作台(数据就绪后显示) -->
+    <div id="workbench-view" hidden>
     <!-- ① 运行条件 -->
     <section class="panel panel--conditions" aria-label="运行条件">
       <div class="panel__head">
@@ -81,6 +139,27 @@
         <p id="sync-status-bands-legend" class="panel__hint" hidden>更早的 11 段（每段约 30 天,色深=覆盖率高;橙=含未完全同步天）</p>
         <div id="sync-status-years" class="panel__hint"></div>
         <p id="sync-status-years-legend" class="panel__hint" hidden>年度覆盖（每块 1 年,色深=覆盖率高;橙=含未完全同步天;灰=该年无数据）</p>
+        <div class="section-divider"></div>
+        <div id="bootstrap-panel" class="panel__hint" hidden>
+          <p class="panel__hint" id="bootstrap-readiness"></p>
+          <label class="panel__label" for="bootstrap-source">初始化方式</label>
+          <select id="bootstrap-source" class="input">
+            <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
+            <option value="seed">导入种子数据库（需外部 manifest）</option>
+          </select>
+          <label class="panel__label" for="bootstrap-adjustment">复权方式</label>
+          <select id="bootstrap-adjustment" class="input">
+            <option value="qfq">前复权 qfq</option>
+            <option value="unadjusted">不复权 unadjusted</option>
+            <option value="hfq">后复权 hfq</option>
+          </select>
+          <label class="panel__label" for="bootstrap-seed-path">种子文件路径（选择“导入种子”时）</label>
+          <input id="bootstrap-seed-path" class="input" type="text" placeholder="如 /path/to/market.sqlite3" autocomplete="off">
+          <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
+            <span class="btn__label">开始初始化</span>
+          </button>
+          <p id="bootstrap-status" class="panel__hint" hidden></p>
+        </div>
         <div class="section-divider"></div>
         <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
           <span class="btn__label">停止服务（结束本进程）</span>
@@ -180,6 +259,7 @@
         </div>
       </div>
     </section>
+    </div><!-- /#workbench-view -->
   </main>
 
   <footer class="footer">

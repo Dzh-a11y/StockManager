@@ -102,10 +102,11 @@ def test_progress_reports_running_run(tmp_path: Path) -> None:
     assert payload["status"] == "RUNNING"
     assert payload["target_start"] == "2018-07-12"
     assert payload["target_end"] == "2026-08-31"
-    # 覆盖率按实际完整交易日计算:首日 100 支 >= 95% 记为覆盖,其余未覆盖。
-    assert payload["covered_days"] == 1
-    assert payload["total_days"] == 3
-    assert 0 < payload["progress"] < 1
+    # 进度按完整入库股票数:窗口 3 个交易日,池 100 只;
+    # 全部股票只有 1 天 bar(1/3 < 95%)→ 完整入库 0 只,进度 0。
+    assert payload["covered_days"] == 0
+    assert payload["total_days"] == 100
+    assert payload["progress"] == 0
 
 
 def test_progress_complete_when_success_and_done(tmp_path: Path) -> None:

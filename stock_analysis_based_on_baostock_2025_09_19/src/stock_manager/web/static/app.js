@@ -804,11 +804,11 @@ async function pollBackfillV2() {
       batchTrack.hidden = true;
       batchLabel.hidden = true;
     }
-    // 第二个进度条:总进度(已完成批次数),最后一行动态显示阶段与进度
+    // 第二个进度条:总进度(按完整入库股票数),最后一行动态显示阶段与进度
     track.hidden = false;
     fill.style.width = pct + '%';
     current.hidden = false;
-    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.covered_days + '/' + p.total_days + ' 天）'
+    current.textContent = '八年回补 总进度 ' + pct + '%（已完整入库 ' + p.covered_days + '/' + p.total_days + ' 只股票）'
       + (batchPhaseLabel ? ' · ' + batchPhaseLabel : '');
     meta.hidden = true; // 去掉第一行静态描述,动态信息并入最后一行
   } catch (e) {
@@ -961,7 +961,65 @@ async function loadSyncStatus() {
       $('#sync-status-years-legend').hidden = false;
     }
 
+    // 门禁页/工作台切换(P5 §5.1):数据就绪(READY)才进入工作台
+    const gate = $('#gate-view');
+    const workbench = $('#workbench-view');
+    const readiness = s.readiness || {};
+    const ready = readiness.status === 'READY';
+    if (gate && workbench) {
+      gate.hidden = ready;
+      workbench.hidden = !ready;
+    }
+    if (!ready && gate) {
+      const reason = readiness.reason || '数据未就绪';
+      $('#gate-title').textContent = s.latest_synced_trading_day
+        ? '数据部分就绪：最近同步 ' + s.latest_synced_trading_day
+        : '首次启动：本地尚无数据';
+      $('#gate-readiness').textContent = '当前状态：' + (readiness.status || 'UNKNOWN') + ' — ' + reason;
+      const daily = $('#gate-status-daily');
+      daily.innerHTML = (s.recent_days || []).map((d) => {
+        const color = STATUS_COLORS[d.status] || '#95a5a6';
+        return '<span title="' + esc(d.day + ' ' + d.status) + '" style="display:inline-block;width:12px;height:18px;margin:1px;background:' + color + '"></span>';
+      }).join('');
+      $('#gate-status-title').hidden = false;
+      $('#gate-status-title').textContent = '本地覆盖近况（绿=完整 橙=未完全同步 灰=缺失）';
+      $('#gate-enter').hidden = true;
+    }
+
   } catch (e) { /* ignore */ }
+}
+
+function toggleSeedField() {
+  const source = $('#bootstrap-source').value;
+  const field = $('#bootstrap-seed-field');
+  if (field) field.hidden = source !== 'seed';
+}
+
+async function startBootstrap() {
+  const source = $('#bootstrap-source').value;
+  const adjustment = $('#bootstrap-adjustment').value;
+  const seedPath = $('#bootstrap-seed-path').value.trim();
+  const status = $('#bootstrap-status');
+  const btn = $('#bootstrap-start');
+  status.hidden = false;
+  status.textContent = source === 'incremental'
+    ? '正在增量同步…（仅补齐尾部交易日）'
+    : '正在初始化…（联网模式可能耗时较长,请勿关闭页面）';
+  btn.disabled = true;
+  try {
+    const body = { source: source, adjustment: adjustment };
+    if (source === 'seed') {
+      if (!seedPath) { throw new Error('请填写种子文件路径'); }
+      body.seed_path = seedPath;
+    }
+    const r = await api('POST', '/api/sync/bootstrap', body);
+    status.textContent = '完成：' + JSON.stringify(r);
+    await loadSyncStatus();
+  } catch (err) {
+    status.textContent = '失败：' + (err.message || err);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadVersion() {
@@ -1440,6 +1498,12 @@ window.addEventListener('resize', () => {
 function bindEvents() {
   $('#run-screen').addEventListener('click', runScreen);
   $('#shutdown-server').addEventListener('click', shutdownServer);
+  const bootBtn = $('#bootstrap-start');
+  if (bootBtn) bootBtn.addEventListener('click', startBootstrap);
+  const sourceSel = $('#bootstrap-source');
+  if (sourceSel) sourceSel.addEventListener('change', toggleSeedField);
+  const enterBtn = $('#gate-enter');
+  if (enterBtn) enterBtn.addEventListener('click', () => loadSyncStatus());
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
   });

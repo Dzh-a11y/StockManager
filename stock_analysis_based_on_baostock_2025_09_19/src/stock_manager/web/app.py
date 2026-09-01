@@ -312,6 +312,9 @@ class WebApp:
         if method == "POST" and path == "/api/screen":
             return self._handle_screen(body)
 
+        if method == "POST" and path == "/api/sync/bootstrap":
+            return self._handle_bootstrap(body)
+
         if method == "POST" and path == "/api/research/backtests":
             return self._handle_research_submit(body)
 
@@ -521,6 +524,222 @@ class WebApp:
         payload["elapsed_seconds"] = elapsed
         payload["max_workers"] = max_workers
         return self._json(200, payload)
+
+    def _handle_bootstrap(self, body: object) -> Response:
+        """P5 §5.1/§5.3:用户显式触发的首次初始化(Bootstrap 或种子导入)。
+
+        ``source``: ``online``(Baostock 在线 Bootstrap)或 ``seed``(导入种子库,
+        需 manifest 同目录 ``<file>.manifest.json``);``adjustment`` 显式指定,
+        不默认假定复权方式。请求线程内同步执行;进度写入共享 sync-progress。
+        """
+        data = self._object(body, "body")
+        unknown = set(data) - {"source", "adjustment", "seed_path"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        source = self._text(data.get("source", "online"), "source")
+        if source not in ("online", "seed", "incremental"):
+            raise BadRequestError("source must be 'online', 'seed' or 'incremental'")
+        adjustment = self._adjustment(data.get("adjustment", "qfq"))
+        if self._sync_config is None:
+            raise BadRequestError("sync config is required for bootstrap")
+        if source == "seed":
+            return self._bootstrap_from_seed(data, adjustment)
+        if source == "incremental":
+            return self._bootstrap_incremental(adjustment)
+        return self._bootstrap_online(adjustment)
+
+    def _bootstrap_incremental(self, adjustment: AdjustmentMethod) -> Response:
+        """增量同步:已有 active generation 时只补齐尾部,走 pipeline。"""
+        if self._config.lock_directory is None:
+            raise BadRequestError("lock directory is required for incremental sync")
+        active = self._services.repository.get_active_generation(
+            "market", adjustment
+        )
+        if active is None:
+            raise NotFoundError("no active generation; use online or seed bootstrap first")
+        provider = self._make_provider(
+            request_interval_seconds=(
+                self._sync_config.minimum_request_interval_seconds
+            ),
+            progress_callback=self._on_backfill_batch_progress,
+        )
+        service = DataSyncService(
+            provider,
+            self._services.repository,
+            self._config.lock_directory,
+            self._sync_config,
+            progress=self._on_backfill_progress,
+        )
+        self._sync_progress.update(
+            {
+                "status": "running",
+                "phase": "incremental",
+                "dataset_id": "market",
+                "adjustment": adjustment.value,
+                "message": "增量同步已开始…",
+            }
+        )
+        run = service.startup_sync("market", adjustment)
+        plan_status = getattr(run, "plan_status", None)
+        self._sync_progress.update(
+            {
+                "status": "done",
+                "message": (
+                    plan_status.value if plan_status is not None else "完成"
+                ),
+            }
+        )
+        return self._json(
+            200,
+            {
+                "source": "incremental",
+                "plan_id": getattr(run, "plan_id", None),
+                "plan_status": (
+                    plan_status.value if plan_status is not None else None
+                ),
+                "published": getattr(run, "published", False),
+            },
+        )
+
+    def _bootstrap_online(self, adjustment: AdjustmentMethod) -> Response:
+        """在线 Bootstrap:规划 BOOTSTRAP 到最新已完成交易日并执行流水线。"""
+        if self._config.lock_directory is None:
+            raise BadRequestError("lock directory is required for bootstrap")
+        provider = self._make_provider(
+            request_interval_seconds=(
+                self._sync_config.minimum_request_interval_seconds
+            ),
+            progress_callback=self._on_backfill_batch_progress,
+        )
+        service = DataSyncService(
+            provider,
+            self._services.repository,
+            self._config.lock_directory,
+            self._sync_config,
+            progress=self._on_backfill_progress,
+        )
+        self._sync_progress.update(
+            {
+                "status": "running",
+                "phase": "starting",
+                "dataset_id": "market",
+                "adjustment": adjustment.value,
+                "message": "在线 Bootstrap 已开始…",
+            }
+        )
+        run = service.startup_sync("market", adjustment)
+        plan_status = getattr(run, "plan_status", None)
+        self._sync_progress.update(
+            {
+                "status": "done",
+                "message": (
+                    plan_status.value if plan_status is not None else "完成"
+                ),
+            }
+        )
+        return self._json(
+            200,
+            {
+                "source": "online",
+                "plan_id": getattr(run, "plan_id", None),
+                "plan_status": (
+                    plan_status.value if plan_status is not None else None
+                ),
+                "published": getattr(run, "published", False),
+            },
+        )
+
+    def _bootstrap_from_seed(
+        self, data: dict[str, object], adjustment: AdjustmentMethod
+    ) -> Response:
+        """导入种子库:外部 manifest 校验 → legacy 导入 → 验证 → 发布。"""
+        from pathlib import Path as _Path
+
+        from stock_manager.sync.legacy import LegacyImporter
+        from stock_manager.sync.seed import (
+            SeedManifest,
+            SeedPackageVerifier,
+        )
+
+        seed_value = data.get("seed_path")
+        if not isinstance(seed_value, str) or not seed_value.strip():
+            raise BadRequestError("seed_path is required for seed bootstrap")
+        seed_path = _Path(seed_value).expanduser()
+        manifest_path = _Path(f"{seed_path}.manifest.json")
+        try:
+            manifest = SeedManifest.load(manifest_path)
+        except Exception as error:
+            raise BadRequestError(f"invalid seed manifest: {error}") from error
+        verifier = SeedPackageVerifier()
+        try:
+            verifier.verify(
+                seed_path, manifest, expected_schema_version=1
+            )
+            verifier.check_no_absolute_paths(seed_path)
+        except Exception as error:
+            raise BadRequestError(f"seed verification failed: {error}") from error
+        # 校验通过后:把种子库作为 LEGACY_IMPORT candidate 导入并发布。
+        self._sync_progress.update(
+            {
+                "status": "running",
+                "phase": "import",
+                "dataset_id": "market",
+                "adjustment": adjustment.value,
+                "message": "种子校验通过,正在导入…",
+            }
+        )
+        import sqlite3 as _sqlite3
+
+        repo = self._services.repository
+
+        def factory() -> _sqlite3.Connection:
+            connection = _sqlite3.connect(repo.database_path, timeout=30.0)
+            connection.row_factory = _sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            return connection
+
+        importer = LegacyImporter(factory, now=self._clock)
+        candidate_id = "cand-seed-bootstrap"
+        candidate = importer.build_candidate(
+            dataset_id="market",
+            adjustment=adjustment,
+            plan_id="plan-seed-bootstrap",
+            candidate_id=candidate_id,
+        )
+        from datetime import date as _date
+
+        target = _date.today()
+        for data_type, adj in (
+            ("stocks", None),
+            ("daily_bars", adjustment),
+            ("fundamentals", None),
+        ):
+            importer.import_partition(
+                candidate,
+                data_type=data_type,
+                partition_key=target.isoformat(),
+                batch_id=f"batch-seed-{data_type}",
+                source="seed",
+                adjustment=adj,
+            )
+        finished = importer.finish_candidate(candidate)
+        self._sync_progress.update(
+            {
+                "status": "done",
+                "phase": "import",
+                "message": "种子导入完成,请按需执行 sync-verify 与发布。",
+            }
+        )
+        return self._json(
+            200,
+            {
+                "source": "seed",
+                "candidate_id": finished.candidate_generation_id,
+                "status": finished.status.value,
+                "note": "种子已导入为 candidate;验证与发布请使用 CLI sync-verify / 后续流程。",
+            },
+        )
 
     def _handle_bars(self, query: Mapping[str, list[str]]) -> Response:
         """Return recent local daily bars for one stock (K-line + volume source).
@@ -867,32 +1086,30 @@ class WebApp:
         repo: SQLiteRepository,
         run: object,
     ) -> tuple[int, int, float]:
-        """Return ``(covered_days, total_days, progress)`` for a v2 run window.
+        """Return ``(covered_stocks, total_stocks, progress)`` for a v2 run.
 
-        The stock universe grows year over year, so comparing each historical
-        day's bar count to the *current* pool would mislabel older years as
-        incomplete. A day instead counts as covered when its bar universe
-        reaches at least 95% of the maximum reached that calendar year, which
-        reflects how well the window was actually fetched per period and rises
-        monotonically as the backfill fills more code history.
+        Progress is stock-based, not chunk-based: a code counts as fully
+        ingested only when it has bars on at least 95% of the window's trading
+        days; progress = fully-ingested codes / current stock pool size. This
+        prevents a single completed batch from reporting 100% (the old per-day
+        threshold was relative to the year's own max, which a partial batch
+        satisfied immediately).
         """
         trading_days = repo.get_trading_days(run.target_start, run.target_end)
-        counts = repo.daily_bar_stock_counts(
+        total_days = len(trading_days)
+        if total_days == 0:
+            return 0, 0, 0.0
+        pool = repo.get_stocks(run.target_end)
+        total_stocks = len(pool)
+        if total_stocks == 0:
+            return 0, 0, 0.0
+        threshold = max(1, int(total_days * 0.95))
+        counts = repo.daily_bar_code_counts(
             run.target_start, run.target_end, AdjustmentMethod.QFQ
         )
-        year_max: dict[str, int] = {}
-        for day, n in counts.items():
-            year = day.isoformat()[:4]
-            if n > year_max.get(year, 0):
-                year_max[year] = n
-        covered = 0
-        for day in trading_days:
-            threshold = max(1, int(year_max.get(day.isoformat()[:4], 0) * 0.95))
-            if counts.get(day, 0) >= threshold:
-                covered += 1
-        total = len(trading_days)
-        progress = (covered / total) if total else 0.0
-        return covered, total, progress
+        covered = sum(1 for n in counts.values() if n >= threshold)
+        progress = covered / total_stocks if total_stocks else 0.0
+        return covered, total_stocks, progress
 
     def _list_instances(self) -> list[dict[str, object]]:
         """Enumerate this host's stock-manager processes (duplicate diagnosis)."""
