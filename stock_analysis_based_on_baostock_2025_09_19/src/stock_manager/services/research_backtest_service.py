@@ -30,8 +30,14 @@ from stock_manager.research import (
     builtin_strategy_specs,
     plan_fingerprint,
 )
-from stock_manager.research.models import ResearchStrategySpec
+from stock_manager.research.models import (
+    EvaluationSchedule,
+    PolicyKind,
+    PolicySpec,
+    ResearchStrategySpec,
+)
 from stock_manager.rules.historical_capability import HistoricalCapabilityValidator
+import hashlib
 from stock_manager.services.historical_screening_cache import historical_cache_key
 from stock_manager.services.historical_screening_executor import (
     HistoricalScreeningExecutor,
@@ -83,18 +89,28 @@ class ResearchBacktestService:
         *,
         template_id: str,
         template_revision: int,
-        strategy_spec_id: str,
-        backtest_start: date,
-        backtest_end: date,
+        strategy_spec_id: str | None = None,
+        backtest_start: date | None = None,
+        backtest_end: date | None = None,
+        window_years: int | None = None,
+        policies: dict[str, dict[str, object]] | None = None,
         initial_cash: Decimal,
         max_positions: int = 20,
         dataset_id: str = "market",
         adjustment: AdjustmentMethod = AdjustmentMethod.QFQ,
     ) -> str:
-        if backtest_start > backtest_end:
-            raise ResearchBacktestError("backtest_start must not be after backtest_end")
         if initial_cash <= 0:
             raise ResearchBacktestError("initial_cash must be positive")
+        if strategy_spec_id is None and policies is None:
+            raise ResearchBacktestError("strategy_spec_id or policies is required")
+        if window_years is not None:
+            if not 1 <= window_years <= 8:
+                raise ResearchBacktestError("window_years must be between 1 and 8")
+            backtest_start, backtest_end = self._window_bounds(window_years)
+        elif backtest_start is None or backtest_end is None:
+            raise ResearchBacktestError("backtest_start/backtest_end or window_years is required")
+        if backtest_start > backtest_end:
+            raise ResearchBacktestError("backtest_start must not be after backtest_end")
         template = self._template_loader.get(template_id)
         loaded_revision = template.metadata.revision
         if loaded_revision != template_revision:
@@ -104,21 +120,34 @@ class ResearchBacktestService:
             )
         plan = self._compiler.compile(template)
         plan_fp = plan_fingerprint(plan, self._registry)
-        known_specs = builtin_strategy_specs(
-            template_id=template_id,
-            template_revision=template_revision,
-            plan_fingerprint=plan_fp,
-            backtest_start=backtest_start,
-            backtest_end=backtest_end,
-            initial_cash=initial_cash,
-            max_positions=max_positions,
-        )
-        try:
-            spec = known_specs[strategy_spec_id]
-        except KeyError as error:
-            raise ResearchBacktestError(
-                f"unknown strategy spec: {strategy_spec_id}"
-            ) from error
+        if policies is not None:
+            spec = self._build_custom_spec(
+                policies,
+                template_id=template_id,
+                template_revision=template_revision,
+                plan_fingerprint=plan_fp,
+                backtest_start=backtest_start,
+                backtest_end=backtest_end,
+                initial_cash=initial_cash,
+                max_positions=max_positions,
+            )
+        else:
+            known_specs = builtin_strategy_specs(
+                template_id=template_id,
+                template_revision=template_revision,
+                plan_fingerprint=plan_fp,
+                backtest_start=backtest_start,
+                backtest_end=backtest_end,
+                initial_cash=initial_cash,
+                max_positions=max_positions,
+            )
+            assert strategy_spec_id is not None
+            try:
+                spec = known_specs[strategy_spec_id]
+            except KeyError as error:
+                raise ResearchBacktestError(
+                    f"unknown strategy spec: {strategy_spec_id}"
+                ) from error
         build_default_policy_registry().validate_strategy(
             entry=spec.entry_policy,
             exit=spec.exit_policy,
@@ -178,6 +207,87 @@ class ResearchBacktestService:
     # ------------------------------------------------------------------
     # execution
     # ------------------------------------------------------------------
+
+
+    # ------------------------------------------------------------------
+    # custom strategy assembly / window bounds
+    # ------------------------------------------------------------------
+
+    def _build_custom_spec(
+        self,
+        policies: dict[str, dict[str, object]],
+        *,
+        template_id: str,
+        template_revision: int,
+        plan_fingerprint: str,
+        backtest_start: date,
+        backtest_end: date,
+        initial_cash: Decimal,
+        max_positions: int,
+    ) -> ResearchStrategySpec:
+        """Assemble a custom strategy spec from six editor-selected policies."""
+        kind_map = {
+            "entry": PolicyKind.ENTRY,
+            "exit": PolicyKind.EXIT,
+            "rebalance": PolicyKind.REBALANCE,
+            "allocation": PolicyKind.ALLOCATION,
+            "ranking": PolicyKind.RANKING,
+            "execution": PolicyKind.EXECUTION,
+        }
+        registry = build_default_policy_registry()
+        selected: dict[str, PolicySpec] = {}
+        for key, kind in kind_map.items():
+            item = policies.get(key)
+            if item is None or not isinstance(item, dict):
+                raise ResearchBacktestError(f"missing policy: {key}")
+            try:
+                policy = PolicySpec(
+                    str(item["policy_id"]),
+                    int(item["version"]),
+                    dict(item.get("parameters", {})),
+                )
+            except (KeyError, ValueError, TypeError) as error:
+                raise ResearchBacktestError(f"invalid policy {key}: {error}") from error
+            registry.validate_spec(policy, kind)
+            selected[key] = policy
+        digest = hashlib.sha256(
+            json.dumps(policies, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:10]
+        return ResearchStrategySpec(
+            strategy_spec_id=f"custom-{digest}",
+            screening_template_id=template_id,
+            screening_template_revision=template_revision,
+            screening_plan_fingerprint=plan_fingerprint,
+            adjustment=AdjustmentMethod.QFQ,
+            evaluation_schedule=EvaluationSchedule.DAILY,
+            entry_policy=selected["entry"],
+            exit_policy=selected["exit"],
+            rebalance_policy=selected["rebalance"],
+            allocation_policy=selected["allocation"],
+            ranking_policy=selected["ranking"],
+            execution_policy=selected["execution"],
+            initial_cash=initial_cash,
+            backtest_start=backtest_start,
+            backtest_end=backtest_end,
+        )
+
+    def _window_bounds(self, years: int) -> tuple[date, date]:
+        """Resolve [end - N years, end] from the local trading calendar.
+
+        End = latest completed trading day of the dataset; start = N x 260
+        trading days back (same convention as the eight-year target).
+        """
+        latest = self._repository.get_latest_dataset_metadata(
+            "market", AdjustmentMethod.QFQ
+        )
+        if latest is None:
+            raise ResearchBacktestError("本地数据集不可用,无法计算回测窗口")
+        end = latest.trading_day
+        days = tuple(self._repository.get_trading_days(date.min, end))
+        from stock_manager.sync.history_plan import trading_day_lookback
+
+        start = trading_day_lookback(days, end, years * 260)
+        return start, end
 
     def _execute(
         self,

@@ -82,38 +82,6 @@
         <div id="sync-status-years" class="panel__hint"></div>
         <p id="sync-status-years-legend" class="panel__hint" hidden>年度覆盖（每块 1 年,色深=覆盖率高;橙=含未完全同步天;灰=该年无数据）</p>
         <div class="section-divider"></div>
-        <p class="panel__hint">研究回测（用当前模板与本地历史数据,仅供研究参考）</p>
-        <label class="field">
-          <span class="field__label">策略</span>
-          <select id="bt-strategy" class="select">
-            <option value="selection_rebalance_v1">资格调仓（selection_rebalance_v1）</option>
-            <option value="selection_sma_timing_v1">均线择时（selection_sma_timing_v1）</option>
-            <option value="selection_fixed_holding_v1">固定持有（selection_fixed_holding_v1）</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field__label">回测开始日期</span>
-          <input id="bt-start" class="input" type="date">
-        </label>
-        <label class="field">
-          <span class="field__label">回测结束日期</span>
-          <input id="bt-end" class="input" type="date">
-        </label>
-        <label class="field">
-          <span class="field__label">初始资金（元）</span>
-          <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
-          <span class="field__hint">金额为十进制字符串,如 1000000</span>
-        </label>
-        <label class="field">
-          <span class="field__label">最大持仓数</span>
-          <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
-        </label>
-        <button id="run-backtest" class="btn btn--primary btn--block" type="button">
-          <span class="btn__label">用此模板回测</span>
-        </button>
-        <p id="bt-progress" class="panel__hint" hidden></p>
-        <div id="bt-result" class="panel__hint" hidden></div>
-        <div class="section-divider"></div>
         <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
           <span class="btn__label">停止服务（结束本进程）</span>
         </button>
@@ -161,6 +129,41 @@
         <div id="groups" class="groups"></div>
         <button id="add-group" class="btn btn--ghost" type="button">+ 组合分组</button>
         <p id="composition-error" class="panel__hint panel__hint--error" hidden></p>
+      </div>
+
+      <!-- ③ 回测策略编辑器 -->
+      <div class="composer">
+        <div class="composer__head">
+          <h3 class="composer__title">回测策略</h3>
+          <span class="composer__hint">六类政策各选其一并填写参数（参数白名单校验,禁止任意代码）</span>
+        </div>
+        <div id="strategy-policies" class="editor-rules"></div>
+      </div>
+
+      <!-- ④ 回测系统 -->
+      <div class="composer">
+        <div class="composer__head">
+          <h3 class="composer__title">回测</h3>
+        </div>
+        <label class="field">
+          <span class="field__label">回测窗口（年,1-8）<span class="term__help" data-tip="回测区间长度,终点为本地数据最新已完成交易日,起点按 N×260 个交易日向前。">?</span></span>
+          <input id="bt-window" class="input" type="number" min="1" max="8" step="1" value="5" inputmode="numeric">
+          <span class="field__hint">终点 = 最新已完成交易日；起点 = 终点向前 N×260 个交易日</span>
+        </label>
+        <label class="field">
+          <span class="field__label">初始资金（元）</span>
+          <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
+          <span class="field__hint">金额为十进制字符串,如 1000000</span>
+        </label>
+        <label class="field">
+          <span class="field__label">最大持仓数</span>
+          <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
+        </label>
+        <button id="run-backtest" class="btn btn--primary btn--block" type="button">
+          <span class="btn__label">用此模板回测</span>
+        </button>
+        <p id="bt-progress" class="panel__hint" hidden></p>
+        <div id="bt-result" class="panel__hint" hidden></div>
       </div>
     </section>
 

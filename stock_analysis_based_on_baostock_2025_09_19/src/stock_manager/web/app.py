@@ -240,6 +240,8 @@ class WebApp:
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
                 return self._json(200, {"instances": self._list_instances()})
+            if path == "/api/research/policies":
+                return self._json(200, self._research_policies())
             if path == "/api/research/backtests":
                 if self._research is None:
                     return self._error(NotFoundError("research service unavailable"))
@@ -313,6 +315,48 @@ class WebApp:
             return None
         return match.group(1), match.group(2)
 
+    @staticmethod
+    def _research_policies() -> dict[str, object]:
+        """Policy catalog for the strategy editor (id/version/description/params)."""
+        from stock_manager.research import build_default_policy_registry
+
+        registry = build_default_policy_registry()
+        by_kind: dict[str, list[dict[str, object]]] = {}
+        for definition in registry.definitions():
+            by_kind.setdefault(definition.kind.value, []).append(
+                {
+                    "policy_id": definition.policy_id,
+                    "version": definition.version,
+                    "description": definition.description,
+                    "parameters": [
+                        {
+                            "parameter_id": parameter.parameter_id,
+                            "value_type": parameter.value_type.value,
+                            "required": parameter.required,
+                            "default_value": (
+                                None
+                                if parameter.default_value is None
+                                else str(parameter.default_value)
+                            ),
+                            "minimum": (
+                                None
+                                if parameter.minimum is None
+                                else str(parameter.minimum)
+                            ),
+                            "maximum": (
+                                None
+                                if parameter.maximum is None
+                                else str(parameter.maximum)
+                            ),
+                            "label": parameter.label,
+                            "description": parameter.description,
+                        }
+                        for parameter in definition.parameters
+                    ],
+                }
+            )
+        return {"policies": by_kind}
+
     def _handle_research_submit(self, body: object) -> Response:
         if self._research is None:
             return self._error(NotFoundError("research service unavailable"))
@@ -320,9 +364,15 @@ class WebApp:
         try:
             template_id = str(data["template_id"]).strip()
             template_revision = int(data["template_revision"])
-            strategy_spec_id = str(data["strategy_spec_id"]).strip()
-            start = date.fromisoformat(str(data["backtest_start"]))
-            end = date.fromisoformat(str(data["backtest_end"]))
+            strategy_spec_id = data.get("strategy_spec_id")
+            strategy_spec_id = str(strategy_spec_id).strip() if strategy_spec_id else None
+            window_years = data.get("window_years")
+            window_years = int(window_years) if window_years is not None else None
+            start = data.get("backtest_start")
+            end = data.get("backtest_end")
+            start = date.fromisoformat(str(start)) if start else None
+            end = date.fromisoformat(str(end)) if end else None
+            policies = data.get("policies")
             initial_cash = Decimal(str(data["initial_cash"]))
             max_positions = int(data.get("max_positions", 20))
         except (KeyError, ValueError, TypeError) as error:
@@ -334,6 +384,8 @@ class WebApp:
                 strategy_spec_id=strategy_spec_id,
                 backtest_start=start,
                 backtest_end=end,
+                window_years=window_years,
+                policies=policies,
                 initial_cash=initial_cash,
                 max_positions=max_positions,
             )

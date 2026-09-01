@@ -442,20 +442,152 @@ async function deleteTemplate() {
 let btPollTimer = null;
 let btRunId = null;
 
+
+/* ---------- research strategy editor (P5A-8c) ---------- */
+let btPolicyCatalog = null;
+
+async function loadResearchPolicies() {
+  try {
+    const data = await api('GET', '/api/research/policies');
+    btPolicyCatalog = data.policies;
+    renderStrategyPolicies();
+  } catch (e) { /* ignore */ }
+}
+
+const BT_KIND_LABELS = {
+  entry: '入场（Entry）', exit: '退出（Exit）', rebalance: '调仓（Rebalance）',
+  allocation: '仓位（Allocation）', ranking: '排名（Ranking）', execution: '执行（Execution）',
+};
+const BT_KIND_DEFAULTS = {
+  entry: 'eligibility_enter_v1', exit: 'eligibility_exit_v1',
+  rebalance: 'daily_v1', allocation: 'equal_weight_v1',
+  ranking: 'turnover_20d_desc_v1', execution: 'ashare_execution_v1',
+};
+const BT_KINDS = ['entry', 'exit', 'rebalance', 'allocation', 'ranking', 'execution'];
+
+function btFindPolicy(kind, policyId) {
+  const items = (btPolicyCatalog && btPolicyCatalog[kind]) || [];
+  return items.find(function (p) { return p.policy_id === policyId; }) || null;
+}
+
+function renderStrategyPolicies() {
+  const container = $('#strategy-policies');
+  if (!container || !btPolicyCatalog) return;
+  container.innerHTML = '';
+  BT_KINDS.forEach(function (kind) {
+    const items = btPolicyCatalog[kind] || [];
+    if (!items.length) return;
+    const block = document.createElement('div');
+    block.className = 'policy-block';
+    const label = document.createElement('label');
+    label.className = 'field';
+    const span = document.createElement('span');
+    span.className = 'field__label';
+    span.textContent = BT_KIND_LABELS[kind] || kind;
+    const select = document.createElement('select');
+    select.className = 'select';
+    select.id = 'bt-policy-' + kind;
+    items.forEach(function (p) {
+      const opt = document.createElement('option');
+      opt.value = p.policy_id;
+      opt.textContent = p.policy_id + ' (v' + p.version + ')';
+      select.appendChild(opt);
+    });
+    if (BT_KIND_DEFAULTS[kind]) { select.value = BT_KIND_DEFAULTS[kind]; }
+    label.appendChild(span);
+    label.appendChild(select);
+    block.appendChild(label);
+    const params = document.createElement('div');
+    params.className = 'policy-params';
+    params.id = 'bt-policy-params-' + kind;
+    block.appendChild(params);
+    select.addEventListener('change', function () { renderPolicyParams(kind); });
+    container.appendChild(block);
+    renderPolicyParams(kind);
+  });
+}
+
+function renderPolicyParams(kind) {
+  const select = document.getElementById('bt-policy-' + kind);
+  const container = document.getElementById('bt-policy-params-' + kind);
+  if (!select || !container) return;
+  const policy = btFindPolicy(kind, select.value);
+  container.innerHTML = '';
+  if (!policy || !policy.parameters || !policy.parameters.length) return;
+  policy.parameters.forEach(function (param) {
+    const label = document.createElement('label');
+    label.className = 'field';
+    const span = document.createElement('span');
+    span.className = 'field__label';
+    span.textContent = param.label + (param.required ? ' *' : '');
+    if (param.description) { span.title = param.description; }
+    let input;
+    if (param.value_type === 'boolean') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = param.default_value === 'True' || param.default_value === 'true';
+      input.className = 'input';
+    } else {
+      input = document.createElement('input');
+      input.type = param.value_type === 'integer' ? 'number' : 'text';
+      input.className = 'input';
+      input.value = param.default_value == null ? '' : param.default_value;
+      if (param.minimum != null && param.value_type === 'integer') { input.min = param.minimum; }
+      if (param.maximum != null && param.value_type === 'integer') { input.max = param.maximum; }
+      input.step = param.value_type === 'integer' ? '1' : 'any';
+    }
+    input.dataset.paramKind = kind;
+    input.dataset.paramId = param.parameter_id;
+    input.dataset.paramType = param.value_type;
+    label.appendChild(span);
+    label.appendChild(input);
+    container.appendChild(label);
+  });
+}
+
+function collectPolicies() {
+  const policies = {};
+  BT_KINDS.forEach(function (kind) {
+    const select = document.getElementById('bt-policy-' + kind);
+    if (!select) return;
+    const policy = btFindPolicy(kind, select.value);
+    if (!policy) return;
+    const parameters = {};
+    const container = document.getElementById('bt-policy-params-' + kind);
+    if (container) {
+      container.querySelectorAll('[data-param-id]').forEach(function (input) {
+        const id = input.dataset.paramId;
+        const type = input.dataset.paramType;
+        if (type === 'boolean') { parameters[id] = input.checked; }
+        else if (type === 'integer') {
+          const raw = input.value === '' ? null : Number(input.value);
+          parameters[id] = raw == null ? null : raw;
+        } else { parameters[id] = input.value; }
+      });
+    }
+    policies[kind] = { policy_id: select.value, version: policy.version, parameters: parameters };
+  });
+  return policies;
+}
+
+
 async function submitBacktest() {
   const progress = $('#bt-progress');
   const result = $('#bt-result');
   const btn = $('#run-backtest');
-  const start = $('#bt-start').value;
-  const end = $('#bt-end').value;
   if (!state.currentId) { progress.hidden = false; progress.textContent = '请先选择一个模板。'; return; }
-  if (!start || !end || start > end) { progress.hidden = false; progress.textContent = '请提供有效的回测起止日期。'; return; }
+  const windowYears = Math.min(8, Math.max(1, Math.floor(Number($('#bt-window').value) || 5)));
+  const policies = collectPolicies();
+  if (!policies.entry || !policies.exit || !policies.rebalance || !policies.allocation || !policies.ranking || !policies.execution) {
+    progress.hidden = false;
+    progress.textContent = '请完整选择六类回测政策。';
+    return;
+  }
   const body = {
     template_id: state.currentId,
     template_revision: state.template.template.metadata.revision,
-    strategy_spec_id: $('#bt-strategy').value,
-    backtest_start: start,
-    backtest_end: end,
+    policies: policies,
+    window_years: windowYears,
     initial_cash: $('#bt-cash').value.trim() || '1000000',
     max_positions: Math.min(500, Math.max(1, Math.floor(Number($('#bt-positions').value) || 20))),
   };
@@ -536,6 +668,7 @@ function renderBacktestResult(data, container) {
 document.addEventListener('DOMContentLoaded', () => {
   const btn = $('#run-backtest');
   if (btn) btn.addEventListener('click', submitBacktest);
+  loadResearchPolicies();
 });
 
 
