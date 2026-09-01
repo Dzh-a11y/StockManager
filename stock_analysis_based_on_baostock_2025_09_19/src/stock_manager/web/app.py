@@ -1089,25 +1089,43 @@ class WebApp:
         """Return ``(covered_stocks, total_stocks, progress)`` for a v2 run.
 
         Progress is stock-based, not chunk-based: a code counts as fully
-        ingested only when it has bars on at least 95% of the window's trading
-        days; progress = fully-ingested codes / current stock pool size. This
-        prevents a single completed batch from reporting 100% (the old per-day
-        threshold was relative to the year's own max, which a partial batch
-        satisfied immediately).
+        ingested when its bars cover at least 95% of the trading days *inside
+        its own listing window* intersected with the backfill window (P5
+        §7.3). A stock listed mid-window is only expected to cover days since
+        its ``listed_on``; a delisted stock only up to ``delisted_on``. When
+        listing dates are unknown, the whole window is used (conservative).
         """
-        trading_days = repo.get_trading_days(run.target_start, run.target_end)
-        total_days = len(trading_days)
-        if total_days == 0:
+        trading_days = sorted(repo.get_trading_days(run.target_start, run.target_end))
+        if not trading_days:
             return 0, 0, 0.0
         pool = repo.get_stocks(run.target_end)
         total_stocks = len(pool)
         if total_stocks == 0:
             return 0, 0, 0.0
-        threshold = max(1, int(total_days * 0.95))
         counts = repo.daily_bar_code_counts(
             run.target_start, run.target_end, AdjustmentMethod.QFQ
         )
-        covered = sum(1 for n in counts.values() if n >= threshold)
+        covered = 0
+        for stock in pool:
+            listed = stock.listed_on
+            delisted = stock.delisted_on
+            # 该股票应有数据的交易日 = 窗口 ∩ [listed_on, delisted_on]。
+            effective_start = (
+                max(run.target_start, listed) if listed else run.target_start
+            )
+            effective_end = (
+                min(run.target_end, delisted) if delisted else run.target_end
+            )
+            if effective_start > effective_end:
+                continue  # 窗口外上市/退市,不纳入分母
+            expected = sum(
+                1 for day in trading_days if effective_start <= day <= effective_end
+            )
+            if expected <= 0:
+                continue
+            got = counts.get(stock.code, 0)
+            if got >= max(1, int(expected * 0.95)):
+                covered += 1
         progress = covered / total_stocks if total_stocks else 0.0
         return covered, total_stocks, progress
 

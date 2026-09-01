@@ -38,6 +38,16 @@ def _is_ashare_stock(code: str) -> bool:
     return number.startswith(_ASHARE_STOCK_PREFIXES.get(exchange.lower(), ()))
 
 
+def _parse_optional_date(value: str) -> date | None:
+    """Parse an ISO date string; empty/blank means unknown (None)."""
+    if not value or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 class BaostockProviderError(RuntimeError):
     """Raised when Baostock rejects a request or returns malformed data."""
 
@@ -207,6 +217,43 @@ class BaostockProvider:
             rows.append(dict(zip(fields, values, strict=True)))
         return tuple(rows)
 
+    def _rows_paginated(
+        self,
+        query: Callable[[int], Any],
+        operation: str,
+        *,
+        relogin: Callable[[], None] | None = None,
+    ) -> tuple[dict[str, str], ...]:
+        """Collect every page of a paginated baostock query.
+
+        ``query(page)`` must call the SDK with the requested page number and
+        return its ResultData; the loop follows ``cur_page_num`` until the
+        server reports no further pages.
+        """
+        all_rows: list[dict[str, str]] = []
+        page = 1
+        while True:
+            result = self._query(
+                lambda page=page: query(page), relogin=relogin
+            )
+            if result.error_code != "0":
+                raise BaostockProviderError(f"{operation} failed: {result.error_msg}")
+            fields = tuple(result.fields)
+            page_rows: list[dict[str, str]] = []
+            while result.next():
+                values = result.get_row_data()
+                page_rows.append(dict(zip(fields, values, strict=True)))
+            all_rows.extend(page_rows)
+            try:
+                current = int(result.cur_page_num)
+                total = int(result.page_count)
+            except (AttributeError, ValueError, TypeError):
+                break
+            if current >= total or not page_rows:
+                break
+            page += 1
+        return tuple(all_rows)
+
     @staticmethod
     def _decimal(value: str, field: str, *, optional: bool = False) -> Decimal | None:
         if optional and value == "":
@@ -238,11 +285,58 @@ class BaostockProvider:
             )
         return tuple(date.fromisoformat(row["calendar_date"]) for row in rows if row["is_trading_day"] == "1")
 
+    def fetch_stock_basics(
+        self,
+        *,
+        relogin: Callable[[], None] | None = None,
+        session: bool = True,
+    ) -> dict[str, tuple[date | None, date | None]]:
+        """Return ``{code: (listed_on, delisted_on)}`` for every A-share stock.
+
+        Uses ``query_stock_basic`` (paginated) whose rows carry ``ipoDate`` /
+        ``outDate``. Listing dates let the verifier judge a stock's expected
+        trading days by its own listing window instead of the whole backfill
+        window, so recently listed stocks are not falsely marked incomplete.
+
+        When ``session=False`` the caller already holds a ``_session`` and only
+        the retry ``relogin`` callback is needed; otherwise a fresh session is
+        opened (login/logout).
+        """
+        if session:
+            with self._session() as active_relogin:
+                rows = self._rows_paginated(
+                    lambda page: self._client.query_stock_basic(
+                        code="", code_name=""
+                    ),
+                    "query_stock_basic",
+                    relogin=relogin or active_relogin,
+                )
+        else:
+            rows = self._rows_paginated(
+                lambda page: self._client.query_stock_basic(
+                    code="", code_name=""
+                ),
+                "query_stock_basic",
+                relogin=relogin,
+            )
+        basics: dict[str, tuple[date | None, date | None]] = {}
+        for row in rows:
+            code = row.get("code", "")
+            if not _is_ashare_stock(code):
+                continue
+            basics[code] = (
+                _parse_optional_date(row.get("ipoDate", "")),
+                _parse_optional_date(row.get("outDate", "")),
+            )
+        return basics
+
     def fetch_stocks(self, as_of: date) -> Sequence[StockIdentity]:
         """Return the A-share stock universe for ``as_of``.
 
         Baostock's ``query_all_stock`` lists every listed security; only real
-        A-share stocks (by code prefix) are exposed here.
+        A-share stocks (by code prefix) are exposed here. Listing dates are
+        merged from ``query_stock_basic`` so ``listed_on``/``delisted_on``
+        describe each stock's real lifecycle (P5 §7.3).
         """
         with self._session() as relogin:
             rows = self._rows(
@@ -252,6 +346,10 @@ class BaostockProvider:
                 ),
                 "query_all_stock",
             )
+            try:
+                basics = self.fetch_stock_basics(relogin=relogin, session=False)
+            except (BaostockProviderError, OSError, ValueError, AttributeError):
+                basics = {}
         return tuple(
             StockIdentity(
                 row["code"],
@@ -260,8 +358,7 @@ class BaostockProvider:
                     row["code"].split(".", maxsplit=1)[0].lower(), "UNKNOWN"
                 ),
                 row["code_name"].upper().startswith(("ST", "*ST")),
-                None,
-                None,
+                *basics.get(row["code"], (None, None)),
             )
             for row in rows
             if row.get("tradeStatus", "1") in {"0", "1"}

@@ -1218,3 +1218,75 @@ class TestStockBasedProgress:
         # 池 2 只,窗口 2000+ 天,1 只远未完整 → 进度极低,绝不是 100%
         assert body["progress"] < 0.1
         assert body["total_days"] == 2  # 股票池规模
+
+
+class TestListingWindowProgress:
+    def test_newly_listed_stock_not_falsely_incomplete(self, tmp_path: Path) -> None:
+        """P5 §7.3:窗口中途上市的股票只按上市以来交易日判完整。"""
+        db = tmp_path / "m.sqlite3"
+        repo = SQLiteRepository(db)
+        from datetime import timedelta as _td
+
+        window_start = date(2018, 9, 1)
+        window_end = date(2026, 8, 25)
+        now = datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI)
+        # 股票 A:窗口初上市(覆盖全窗口);股票 B:2026-08-01 才上市(只应算 8 月)。
+        stocks = (
+            StockIdentity("sh.600001", "A", "SH", False, date(2000, 1, 1), None),
+            StockIdentity("sz.000002", "B", "SZ", False, date(2026, 8, 1), None),
+        )
+        repo.save_stocks(
+            stocks,
+            DatasetMetadata("market", window_end, "fx", now, AdjustmentMethod.QFQ),
+        )
+        # 交易日:窗口内 100 个自然日(模拟 100 个交易日)
+        calendar = tuple(window_end - _td(days=i) for i in range(100))
+        repo.save_trading_days(
+            calendar,
+            DatasetMetadata("trading_calendar", window_end, "fx", now, AdjustmentMethod.UNADJUSTED),
+        )
+        # 股票 A:覆盖窗口全部 100 天;股票 B:8-01 上市,覆盖 8-01 之后全部 25 天。
+        b_start = date(2026, 8, 1)
+        b_days = tuple(d for d in calendar if d >= b_start)  # 08-01..08-25 共 25 天
+        bars_a = tuple(
+            DailyBar("sh.600001", d, Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("100"), Decimal("1000"), True)
+            for d in calendar
+        )
+        bars_b = tuple(
+            DailyBar("sz.000002", d, Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("10"), Decimal("100"), Decimal("1000"), True)
+            for d in b_days
+        )
+        repo.save_daily_bars(
+            bars_a + bars_b,
+            DatasetMetadata("market", window_end, "fx", now, AdjustmentMethod.QFQ),
+        )
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "ut",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=tmp_path / "locks",
+        )
+        app = WebApp(config, provider_factory=_fake_provider)
+        from stock_manager.domain import BackfillRunStatus, BackfillRunV2
+
+        repo.save_backfill_run_v2(
+            BackfillRunV2(
+                run_id="r2",
+                dataset_id="market",
+                adjustment=AdjustmentMethod.QFQ,
+                target_start=window_start,
+                target_end=window_end,
+                status=BackfillRunStatus.RUNNING,
+                started_at=now,
+                finished_at=None,
+                error_message=None,
+            )
+        )
+        _status, body = _get(app, "/api/sync/backfill/progress")
+        assert body["status"] == "RUNNING"
+        # 两只都完整:股票 B 只看上市以来(08-01 后 25 天全有)
+        assert body["covered_days"] == 2
+        assert body["total_days"] == 2
+        assert body["progress"] == 1.0

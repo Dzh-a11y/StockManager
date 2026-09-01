@@ -161,6 +161,15 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 真实部分库验证：20/5,214 只完整 → 0.38%，不再假 100%。
 - 测试：`tests/test_backfill_v2_progress.py` 更新为股票语义；`tests/test_web_api.py::TestStockBasedProgress` 覆盖长窗口部分入库场景。
 
+### 9.8 上市/退市窗口（P5 §7.3）
+
+新上市股票在八年窗口内的交易日数远小于窗口总天数，按全窗口 95% 判定会被永久误标不完整。修正：
+
+- **Provider**：`BaostockProvider.fetch_stock_basics()` 分页调用 `query_stock_basic`（每页 2000，全市场约 3 页），解析 `ipoDate`/`outDate` 填充 `StockIdentity.listed_on`/`delisted_on`；`fetch_stocks()` 在同一 session 内合并（`session=False` 复用外层会话，不额外 login）。旧客户端无 `query_stock_basic` 时静默降级为未知上市日期。
+- **进度判定**：`_v2_window_coverage` 中每只股票的期望交易日 = 窗口 ∩ [listed_on, delisted_on]；上市日期未知时退化为全窗口（保守）。窗口外上市/退市的股票不纳入分母。
+- 测试：`tests/test_baostock_provider.py`（basics 解析、合并、缺失降级）；`tests/test_web_api.py::TestListingWindowProgress`（中途上市股票只看上市以来）。
+- 真实库现状：当前 `stocks.listed_on` 为 NULL（旧同步未填）；下次重拉 stocks 后自动带上市日期，进度口径自动收紧。
+
 ### 9.4 本轮测试
 
 新增 13 项：`tests/test_p5_pipeline.py`（7）、`tests/test_p5_facade.py`（3）、`tests/test_p5_cli_pipeline.py`（2）、`tests/test_web_api.py`（1）。全量 **557 passed**（版本保持 1.12.0）。

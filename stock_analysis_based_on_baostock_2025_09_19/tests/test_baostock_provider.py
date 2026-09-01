@@ -335,3 +335,75 @@ def test_is_session_expired_detection() -> None:
     ok = _FakeQueryResult([])
     assert not BaostockProvider._is_session_expired(ok)
 
+
+
+class _FakeBasicResult(_FakeQueryResult):
+    """query_stock_basic result with ipoDate/outDate + pagination fields."""
+
+    def __init__(self, rows: list[list[str]], page_count: int = 1) -> None:
+        self.error_code = "0"
+        self.error_msg = "ok"
+        self.fields = ["code", "code_name", "ipoDate", "outDate", "type", "status"]
+        self._rows = list(rows)
+        self._index = 0
+        self._current: list[str] | None = None
+        self.cur_page_num = "1"
+        self.page_count = str(page_count)
+
+
+class _FakeClientWithBasics(_FakeClient):
+    def __init__(self, rows: list[list[str]], basics: list[list[str]]) -> None:
+        super().__init__(rows)
+        self._basics = basics
+        self.basic_calls = 0
+
+    def query_stock_basic(self, code: str = "", code_name: str = "") -> _FakeBasicResult:
+        self.basic_calls += 1
+        return _FakeBasicResult(self._basics)
+
+
+def test_fetch_stock_basics_parses_listing_dates() -> None:
+    client = _FakeClientWithBasics(
+        rows=[],
+        basics=[
+            ["sh.600000", "浦发银行", "1999-11-10", "", "1", "1"],
+            ["sz.000001", "平安银行", "1991-04-03", "2020-01-01", "1", "0"],
+            ["sh.510300", "沪深300ETF", "2012-05-28", "", "2", "1"],
+        ],
+    )
+    provider = BaostockProvider(client=client, request_interval_seconds=0)
+    basics = provider.fetch_stock_basics(session=False)
+    assert basics["sh.600000"] == (date(1999, 11, 10), None)
+    assert basics["sz.000001"] == (date(1991, 4, 3), date(2020, 1, 1))
+    # 非 A 股(ETF 前缀)被过滤
+    assert "sh.510300" not in basics
+
+
+def test_fetch_stocks_merges_listing_dates() -> None:
+    client = _FakeClientWithBasics(
+        rows=[
+            ["sh.600000", "1", "浦发银行"],
+            ["sz.000001", "1", "平安银行"],
+        ],
+        basics=[
+            ["sh.600000", "浦发银行", "1999-11-10", "", "1", "1"],
+            ["sz.000001", "平安银行", "1991-04-03", "", "1", "1"],
+        ],
+    )
+    provider = BaostockProvider(client=client, request_interval_seconds=0)
+    stocks = provider.fetch_stocks(date(2026, 8, 25))
+    by_code = {s.code: s for s in stocks}
+    assert by_code["sh.600000"].listed_on == date(1999, 11, 10)
+    assert by_code["sh.600000"].delisted_on is None
+    assert by_code["sz.000001"].listed_on == date(1991, 4, 3)
+
+
+def test_fetch_stocks_tolerates_missing_basics() -> None:
+    # 无 query_stock_basic 的旧 fake:listing 日期保持未知,不崩溃。
+    client = _FakeClient(
+        rows=[["sh.600000", "1", "浦发银行"]],
+    )
+    provider = BaostockProvider(client=client, request_interval_seconds=0)
+    stocks = provider.fetch_stocks(date(2026, 8, 25))
+    assert stocks[0].listed_on is None
+    assert stocks[0].delisted_on is None
