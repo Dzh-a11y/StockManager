@@ -532,7 +532,9 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 13. 实施任务包
 
-### P5-RD-0：架构 ADR 与真实库基准门禁
+> **状态注记（2026-09-01）**：P5-RD-0..P5-RD-10 已由 DeepSeek V4 Flash 实现并通过离线测试（版本 1.12.0，新增 151 项，全量 544 passed），详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md`。第 17 章第 8 条（Windows 实机人工验收）按用户确认不纳入完成定义。本计划仍保持 `draft`：DataSyncService 兼容门面尚未切换为默认入口、八年种子在线 Bootstrap 的实网验收未执行。
+
+### P5-RD-0：架构 ADR 与真实库基准门禁 —— 已完成（2026-09-01 验收）
 
 **负责人**：Codex 定义架构；DeepSeek 执行基准与技术核对。
 
@@ -541,9 +543,9 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 明确 daily bars、股票池、fundamentals、dividends 的分区键。
 - 产出数据库 ADR、迁移风险、磁盘峰值和回滚策略。
 
-**验收**：没有 ADR 和真实库基准，不得执行破坏性 schema 迁移。
+**验收**：没有 ADR 和真实库基准，不得执行破坏性 schema 迁移。已产出 `ADR_P5_DATASYNC_DATABASE.md`（accepted）并在真实 850 MB 库副本完成三种迁移方案基准。
 
-### P5-RD-1：领域契约与数据库迁移骨架
+### P5-RD-1：领域契约与数据库迁移骨架 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -552,7 +554,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - Repository Protocol 隔离 SQLite 实现。
 - 所有迁移测试离线运行，覆盖空库、旧库、重复迁移和失败回滚。
 
-### P5-RD-2：确定性 SyncPlanner
+### P5-RD-2：确定性 SyncPlanner —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -563,7 +565,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 计划指纹覆盖全部关键输入。
 - 禁止在 Planner 内调用 Provider。
 
-### P5-RD-3：SerialFetchWorker 与 Provider 安全边界
+### P5-RD-3：SerialFetchWorker 与 Provider 安全边界 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -572,7 +574,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 并发触发时只允许一个外部请求通道。
 - Provider 失败必须抛明确业务异常并写 FAILED，不得吞异常。
 
-### P5-RD-4：StagingWriter、批次与 checkpoint
+### P5-RD-4：StagingWriter、批次与 checkpoint —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -581,7 +583,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 每次写入更新 revision，checkpoint 绑定计划、任务、数据范围和代码集合。
 - 注入进程中断、数据库锁和重复任务，验证可恢复且不重复抓取。
 
-### P5-RD-5：CoverageVerifier
+### P5-RD-5：CoverageVerifier —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -593,7 +595,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 区分 `NEEDS_REPAIR`、`VERIFICATION_FAILED` 和 `REJECTED`，不得把所有不通过压成同一个 FAILED。
 - 验证失败不得修改 active generation。
 
-### P5-RD-6：GenerationCommitter 与 ReadinessGate
+### P5-RD-6：GenerationCommitter 与 ReadinessGate —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -602,7 +604,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 筛选运行中 generation 被切换时，仍读取绑定 generation 或明确失败，禁止混合快照。
 - staging 和 FAILED candidate 对读取路径不可见。
 
-### P5-RD-7：种子、SHA-256 与跨平台迁移
+### P5-RD-7：种子、SHA-256 与跨平台迁移 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -613,7 +615,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 离线测试覆盖 SHA 不匹配、manifest 缺字段、schema 不兼容、损坏 SQLite 和合法跨平台副本。
 - Windows 实机人工验收不纳入本任务验收（见第 17 章第 8 条），由用户在 Windows 端执行。
 
-### P5-RD-8：Web / CLI 同步控制与可见状态
+### P5-RD-8：Web / CLI 同步控制与可见状态 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -622,7 +624,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 用户显式 retry、取消/暂停边界和警告。
 - 筛选/回测不可用时显示 ReadinessGate 的具体原因。
 
-### P5-RD-9：旧库迁移与灰度切换
+### P5-RD-9：旧库迁移与灰度切换 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -631,7 +633,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 回滚不删除用户数据。
 - 新旧路径不得同时写同一逻辑分区。
 
-### P5-RD-10：端到端验收、版本与文档同步
+### P5-RD-10：端到端验收、版本与文档同步 —— 已完成（2026-09-01 验收）
 
 **负责人**：DeepSeek V4 Flash 最终技术验收；Qwen3.8:27b 文档草稿；DeepSeek 事实核对。
 
