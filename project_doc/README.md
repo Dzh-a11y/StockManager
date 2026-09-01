@@ -37,6 +37,7 @@ project_doc/
 - `ADR_OVERVIEW.md`：汇总 P1 至 P3 全部已接受架构决策的总 ADR。
 - `ADR_P2_RULE_EXECUTION.md`、`ADR_P3_LOCAL_WEB_UI.md`、`ADR_P4_READ_LAYER.md`：分阶段架构决策记录。
 - `ADR_P5A_BACKTEST_ENGINE.md`（Backtrader 选型与 GPLv3）、`ADR_P5A_SEED_DISTRIBUTION.md`（八年数据种子,accepted）：P5A 架构决策。
+- `ADR_P5_DATASYNC_DATABASE.md`（accepted）：P5 DataSync 重构的数据库 schema、批次/分区 manifest、active generation 指针与真实库迁移基准。
 - `PARAMETERIZED_SCREENING_REARCHITECTURE.md`：参数化筛选分片并发流水线架构方案。
 - `ARCHITECTURE_CLEANUP.md`：旧架构移出仓库后的精简范围与验收记录。
 - `stockmanager-v1.4.3-*.{html,json}`：总体架构、数据同步工作流、锁校验与筛选规则时序图。
@@ -51,6 +52,7 @@ project_doc/
 - `P3_WEB_ACCEPTANCE.md`、`P3_WEB_API.md`：Web 验收与 Web API 接口文档。
 - `P4_READ_LAYER.md`：P4 可替换数据库只读访问、并发读取与分片筛选基础设施实现手册。
 - `P5A_1_HISTORY_V2.md` ~ `P5A_9_ACCEPTANCE.md`：P5A 各阶段实现手册（八年覆盖、PIT 契约、策略规格、历史筛选、运行存储、回测适配器、执行模型、研究 API、最终验收）。
+- `P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md`：P5 DataSync 重构实现手册（Planner/Worker/Staging/Verifier/Committer/Gate、种子与迁移工具、CLI、验收记录）。
 - `AMBIGUITY_LOG.md`：P1-3 旧规则行为歧义清单。
 
 ## usage（使用手册）
