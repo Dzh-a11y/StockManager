@@ -1,5 +1,5 @@
 ---
-date: 2026-08-31
+date: 2026-09-01
 purpose: StockManager 项目文档中心索引：说明 project_doc 的目录组织与各文档归属。
 project: StockManager
 status: active
@@ -54,7 +54,7 @@ project_doc/
 
 ## usage（使用手册）
 
-- `README.md`：用户使用手册，说明功能、内置 12 条筛选规则以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
+- `README.md`：用户使用手册，说明功能、内置筛选规则、回测策略（P5A）以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
 
 ## 元数据要求
 
