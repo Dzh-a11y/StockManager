@@ -501,8 +501,9 @@ function renderStrategyPolicies() {
       tip.dataset.tip = policy ? policy.description : '';
     };
     updateTip();
+    // 问号放入标题 span 内,与标题同一行紧挨(避免换行显示不全)
+    span.appendChild(tip);
     label.appendChild(span);
-    label.appendChild(tip);
     label.appendChild(select);
     block.appendChild(label);
     const params = document.createElement('div');

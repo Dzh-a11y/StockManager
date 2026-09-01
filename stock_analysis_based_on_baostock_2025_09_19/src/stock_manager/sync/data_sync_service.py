@@ -1090,6 +1090,13 @@ class DataSyncService:
                             ):
                                 done_units += 2 * len(chunk)
                                 continue
+                            # 进入下一批:先重置批内进度(拉取期间前端显示 0/批内总量),
+                            # 使第一个进度条从上一批的 200/200 切到新一批的 0/200。
+                            batch_done = 0
+                            batch_total = 2 * len(chunk)
+                            self._emit_v2_progress(
+                                run_id, "daily_bars", 0, batch_total, chunk[0]
+                            )
                             bars = self._provider_call(
                                 lambda chunk=chunk, gap_start=gap_start, gap_end=gap_end: (
                                     self._provider.fetch_daily_bars(
@@ -1099,7 +1106,6 @@ class DataSyncService:
                             )
                             # 拉取保持整批一次(chunk 区间请求),保存与进度按代码逐只推进,
                             # 使第一个进度条能"一只一只"平滑显示批内进度。
-                            batch_done = 0
                             bars_by_code: dict[str, list[DailyBar]] = {}
                             for bar in bars:
                                 bars_by_code.setdefault(bar.code, []).append(bar)
