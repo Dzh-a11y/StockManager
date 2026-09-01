@@ -768,6 +768,11 @@ function startSyncPolling() {
   pollBackfillV2();
   pollPipelineProgress();
   syncPollTimer = setInterval(function () {
+    // 新架构 pipeline 显示期间,旧进度渲染全部让位,避免每秒闪烁。
+    if (pipelineProgressActive) {
+      pollPipelineProgress();
+      return;
+    }
     pollSyncProgress();
     pollBackfillV2();
     pollPipelineProgress();

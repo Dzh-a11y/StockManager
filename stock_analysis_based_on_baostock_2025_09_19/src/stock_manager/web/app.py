@@ -123,39 +123,34 @@ class WebApp:
         self._start_backfill_if_needed()
 
     def _start_backfill_if_needed(self) -> None:
-        """Kick off a one-time history backfill when sync is configured.
+        """Only surface the bootstrap state; never auto-start a backfill.
 
-        A first-run backfill can issue tens of thousands of provider requests, so it
-        runs on a daemon thread and reports overall progress through the shared
-        sync-progress state instead of blocking the request path. Auto-backfill only
-        runs on the real provider path; an injected ``provider_factory`` is a test
-        seam and skips it.
-
-        First-run rule (P5 section 5.1): when no active generation exists yet,
-        auto-backfill is NOT started. The UI must show the initialization /
-        bootstrap choice (target range, adjustment, data types, source) instead
-        of silently starting a multi-hour network sync.
+        Per product rule: the backfill starts ONLY when the user presses the
+        "开始初始化" button (which launches an independent runner process);
+        killing that process stops it. On startup we only set the shared
+        sync-progress state (first_run / running) so the gate page shows the
+        correct guidance without triggering any network sync.
         """
         if self._config.sync_config_path is None or self._config.lock_directory is None:
             return
-        # watchdog/已有回补在跑时,Web 不重复启动(避免双写同一计划)。
         try:
             plans = self._services.repository.list_sync_plans(
                 "market", AdjustmentMethod.QFQ
             )
-            if any(p.status.value == "RUNNING" for p in plans):
-                self._sync_progress.update(
-                    {
-                        "status": "running",
-                        "phase": "external",
-                        "dataset_id": "market",
-                        "adjustment": "qfq",
-                        "message": "检测到回补已在运行(watchdog 或另一进程),Web 不再重复启动。",
-                    }
-                )
-                return
+            running = any(p.status.value == "RUNNING" for p in plans)
         except Exception:
-            pass
+            running = False
+        if running:
+            self._sync_progress.update(
+                {
+                    "status": "running",
+                    "phase": "external",
+                    "dataset_id": "market",
+                    "adjustment": "qfq",
+                    "message": "回补正在运行(独立进程);杀掉该进程即停止。",
+                }
+            )
+            return
         try:
             active = self._services.repository.get_active_generation(
                 "market", AdjustmentMethod.QFQ
@@ -170,76 +165,20 @@ class WebApp:
                     "dataset_id": "market",
                     "adjustment": "qfq",
                     "message": (
-                        "首次启动:尚无本地 generation。请在界面选择种子导入 "
-                        "或在线 Bootstrap,不会自动开始全量网络同步。"
+                        "首次启动:尚无本地 generation。请点击「开始初始化」"
+                        "启动回补(独立进程),不会自动开始全量网络同步。"
                     ),
                 }
             )
-            return
-        if self._provider_factory is not None:
-            return
-
-        def run_backfill() -> None:
-            try:
-                sync_config = load_sync_config(self._config.sync_config_path)
-                provider = self._make_provider(
-                    request_interval_seconds=(
-                        sync_config.backfill_request_interval_seconds
-                        if sync_config.history is not None
-                        else sync_config.minimum_request_interval_seconds
-                    ),
-                    progress_callback=self._on_backfill_batch_progress,
-                )
-                service = DataSyncService(
-                    provider,
-                    self._services.repository,
-                    self._config.lock_directory,
-                    sync_config,
-                    progress=self._on_backfill_progress,
-                )
-                if sync_config.history is not None:
-                    message = "自动回补（八年历史覆盖）…"
-                    backfill = lambda: service.startup_sync(
-                        "market", AdjustmentMethod.QFQ,
-                        force_pipeline=True,
-                    )
-                else:
-                    message = "自动回补（补一年数据）…"
-                    backfill = lambda: service.backfill_on_startup(
-                        "market", AdjustmentMethod.QFQ
-                    )
-                self._sync_progress.update(
-                    {
-                        "status": "running",
-                        "phase": "starting",
-                        "dataset_id": "market",
-                        "adjustment": "qfq",
-                        "message": message,
-                    }
-                )
-                outcome = backfill()
-                if outcome is not None:
-                    status = getattr(outcome, "plan_status", None)
-                    message = (
-                        status.value if status is not None else outcome.status.value
-                    )
-                    self._sync_progress.update(
-                        {"status": "done", "message": message}
-                    )
-                else:
-                    self._sync_progress.update(
-                        {"status": "idle", "message": "历史数据已是最新"}
-                    )
-            except Exception as error:  # noqa: BLE001 - bounded at startup
-                self._sync_progress.update(
-                    {"status": "error", "message": str(error)}
-                )
-
-        threading.Thread(
-            target=run_backfill,
-            name="stockmanager-startup-backfill",
-            daemon=True,
-        ).start()
+        else:
+            self._sync_progress.update(
+                {
+                    "status": "idle",
+                    "dataset_id": "market",
+                    "adjustment": "qfq",
+                    "message": "数据已就绪",
+                }
+            )
 
     def route(
         self,
@@ -570,7 +509,12 @@ class WebApp:
         return self._bootstrap_online(adjustment)
 
     def _bootstrap_incremental(self, adjustment: AdjustmentMethod) -> Response:
-        """增量同步:已有 active generation 时只补齐尾部,走 pipeline。"""
+        """增量同步:启动独立 runner 进程补齐尾部,不阻塞请求。
+
+        按钮触发后启动 ``scripts/run_backfill_v2.py`` 子进程(独立进程,
+        不与 Web 线程共享 Baostock socket 状态);杀掉该进程即停止。
+        前端轮询 ``/api/sync/pipeline/progress`` 显示进度。
+        """
         if self._config.lock_directory is None:
             raise BadRequestError("lock directory is required for incremental sync")
         active = self._services.repository.get_active_generation(
@@ -578,95 +522,91 @@ class WebApp:
         )
         if active is None:
             raise NotFoundError("no active generation; use online or seed bootstrap first")
-        provider = self._make_provider(
-            request_interval_seconds=(
-                self._sync_config.minimum_request_interval_seconds
-            ),
-            progress_callback=self._on_backfill_batch_progress,
-        )
-        service = DataSyncService(
-            provider,
-            self._services.repository,
-            self._config.lock_directory,
-            self._sync_config,
-            progress=self._on_backfill_progress,
-        )
-        self._sync_progress.update(
-            {
-                "status": "running",
-                "phase": "incremental",
-                "dataset_id": "market",
-                "adjustment": adjustment.value,
-                "message": "增量同步已开始…",
-            }
-        )
-        run = service.startup_sync("market", adjustment)
-        plan_status = getattr(run, "plan_status", None)
-        self._sync_progress.update(
-            {
-                "status": "done",
-                "message": (
-                    plan_status.value if plan_status is not None else "完成"
-                ),
-            }
-        )
-        return self._json(
-            200,
-            {
-                "source": "incremental",
-                "plan_id": getattr(run, "plan_id", None),
-                "plan_status": (
-                    plan_status.value if plan_status is not None else None
-                ),
-                "published": getattr(run, "published", False),
-            },
-        )
+        return self._launch_runner_process(adjustment, "incremental")
 
     def _bootstrap_online(self, adjustment: AdjustmentMethod) -> Response:
-        """在线 Bootstrap:规划 BOOTSTRAP 到最新已完成交易日并执行流水线。"""
+        """在线 Bootstrap:启动独立 runner 进程,不阻塞请求。
+
+        按钮触发后启动 ``scripts/run_backfill_v2.py`` 子进程(新架构批量
+        粒度);杀掉该进程即停止。前端轮询 pipeline 进度。
+        若已有回补在跑(RUNNING 计划),返回 409 避免重复启动。
+        """
         if self._config.lock_directory is None:
             raise BadRequestError("lock directory is required for bootstrap")
-        provider = self._make_provider(
-            request_interval_seconds=(
-                self._sync_config.minimum_request_interval_seconds
-            ),
-            progress_callback=self._on_backfill_batch_progress,
+        return self._launch_runner_process(adjustment, "online")
+
+    def _launch_runner_process(
+        self, adjustment: AdjustmentMethod, mode: str
+    ) -> Response:
+        """启动独立回补 runner 子进程(与 Web 线程隔离)。"""
+        import subprocess as _subprocess
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        try:
+            plans = self._services.repository.list_sync_plans(
+                "market", adjustment
+            )
+            if any(p.status.value == "RUNNING" for p in plans):
+                return self._json(
+                    409,
+                    {
+                        "error": {
+                            "code": "ALREADY_RUNNING",
+                            "message": "回补已在运行中,请勿重复启动",
+                        }
+                    },
+                )
+        except Exception:
+            pass
+        if self._config.sync_config_path is None:
+            return self._error(BadRequestError("sync config is required"))
+        if self._provider_factory is not None:
+            # 测试注入的 provider_factory:不启动真实子进程,直接返回占位。
+            return self._json(
+                200,
+                {
+                    "source": mode,
+                    "runner_pid": None,
+                    "note": "测试模式:未启动真实回补进程。",
+                },
+            )
+        repo_root = _Path(self._config.sync_config_path).resolve().parent.parent
+        runner = repo_root / "scripts" / "run_backfill_v2.py"
+        python = _sys.executable
+        log_dir = repo_root / "data" / "backfill_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_handle = open(  # noqa: SIM115 - held for child lifetime
+            log_dir / "runner_web.log", "a", encoding="utf-8"
         )
-        service = DataSyncService(
-            provider,
-            self._services.repository,
-            self._config.lock_directory,
-            self._sync_config,
-            progress=self._on_backfill_progress,
+        proc = _subprocess.Popen(
+            [
+                python, "-u", str(runner),
+                "--config", str(self._config.sync_config_path),
+            ],
+            cwd=str(repo_root),
+            stdout=log_handle,
+            stderr=_subprocess.STDOUT,
+            start_new_session=True,
         )
         self._sync_progress.update(
             {
                 "status": "running",
-                "phase": "starting",
+                "phase": mode,
                 "dataset_id": "market",
                 "adjustment": adjustment.value,
-                "message": "在线 Bootstrap 已开始…",
-            }
-        )
-        run = service.startup_sync("market", adjustment)
-        plan_status = getattr(run, "plan_status", None)
-        self._sync_progress.update(
-            {
-                "status": "done",
-                "message": (
-                    plan_status.value if plan_status is not None else "完成"
-                ),
+                "message": f"{mode} 回补已在独立进程启动(pid {proc.pid});杀掉该进程即停止。",
             }
         )
         return self._json(
             200,
             {
-                "source": "online",
-                "plan_id": getattr(run, "plan_id", None),
-                "plan_status": (
-                    plan_status.value if plan_status is not None else None
+                "source": mode,
+                "runner_pid": proc.pid,
+                "note": (
+                    f"回补已在独立进程启动(pid {proc.pid});"
+                    "请查看进度条;杀掉该进程即停止。"
                 ),
-                "published": getattr(run, "published", False),
             },
         )
 

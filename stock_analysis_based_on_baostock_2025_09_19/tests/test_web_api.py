@@ -1093,9 +1093,36 @@ class TestBootstrapEndpoint:
         status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
         assert status == 200, payload
         assert payload["source"] == "online"
-        # 空库无交易日历 → online bootstrap 无法规划,应返回 4xx 而非崩溃
-        # (fake provider 提供 TARGET_DAY 日历;这里验证端点可达且结构化)
-        assert isinstance(payload, dict)
+        # 测试模式(provider_factory 注入):不启动真实子进程,返回占位。
+        assert payload["runner_pid"] is None
+
+    def test_bootstrap_online_launches_runner_process(self, tmp_path: Path) -> None:
+        """真实路径(无 provider_factory):按钮启动独立 runner 子进程。"""
+        db = tmp_path / "market.sqlite3"
+        SQLiteRepository(db)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "user-templates",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=locks,
+        )
+        app = WebApp(config)  # 无 provider_factory → 真实启动
+        status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
+        assert status == 200, payload
+        assert isinstance(payload["runner_pid"], int)
+        assert payload["runner_pid"] > 0
+        # 清理:杀掉刚启动的子进程(避免测试残留)
+        import os
+        import signal as _signal
+
+        try:
+            os.kill(int(payload["runner_pid"]), _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
     def test_bootstrap_bad_source_rejected(self, tmp_path: Path) -> None:
         app = _app(tmp_path)
