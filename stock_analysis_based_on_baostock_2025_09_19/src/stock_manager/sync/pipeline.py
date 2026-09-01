@@ -24,6 +24,7 @@ from stock_manager.domain import (
     SyncPlan,
     SyncPlanMode,
     SyncPlanStatus,
+    SyncSource,
     SyncTask,
     SyncTaskStatus,
 )
@@ -105,7 +106,29 @@ class SyncPipeline:
         required_data_types: Sequence[str] = ("stocks", "daily_bars", "fundamentals"),
         batch_size: int = 20,
     ) -> PlannedOutput:
-        """Create and persist a plan (plus tasks and candidate)."""
+        """Create and persist a plan (plus tasks and candidate).
+
+        Idempotent: when a plan with the same deterministic ``plan_id``
+        already exists, it is returned unchanged (its tasks/candidate are
+        kept) so a watchdog restart never resets progress to zero. Only a
+        brand-new plan is persisted.
+        """
+        existing = self._repository.get_sync_plan(
+            self._planner_fingerprint_plan_id(
+                mode, dataset_id, adjustment, target_start, target_end,
+                tuple(required_data_types), batch_size,
+            )
+        )
+        if existing is not None:
+            tasks = self._repository.list_sync_tasks(existing.plan_id)
+            candidate = self._repository.get_candidate_generation(
+                existing.candidate_generation_id
+            )
+            if candidate is None:
+                raise PipelineError(
+                    f"candidate missing for existing plan {existing.plan_id}"
+                )
+            return PlannedOutput(existing, tuple(tasks), candidate)
         if mode is SyncPlanMode.BOOTSTRAP:
             output = self._planner.plan_bootstrap(
                 dataset_id=dataset_id,
@@ -255,6 +278,58 @@ class SyncPipeline:
 
     # -- internals ------------------------------------------------------------
 
+    def _persist_task_progress(
+        self,
+        task: SyncTask,
+        *,
+        completed: int,
+        total: int,
+        current_code: str,
+    ) -> None:
+        """Persist live per-task progress so the Web page can show it."""
+        import json as _json
+
+        payload = _json.dumps(
+            {
+                "data_type": task.data_type,
+                "partition_key": task.partition_key,
+                "completed": completed,
+                "total": total,
+                "current_code": current_code,
+                "status": task.status.value,
+            },
+            ensure_ascii=False,
+        )
+        try:
+            self._repository.update_task_progress(task.task_id, payload)
+        except Exception:
+            pass  # 进度持久化失败不影响同步主流程
+
+    def _planner_fingerprint_plan_id(
+        self,
+        mode: SyncPlanMode,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        target_start: date,
+        target_end: date,
+        required_data_types: tuple[str, ...],
+        batch_size: int,
+    ) -> str:
+        """Deterministic plan_id for the given inputs (independent of now())."""
+        from stock_manager.sync.planner import PlanInput
+
+        source = (
+            SyncSource.LEGACY_DATABASE
+            if mode is SyncPlanMode.LEGACY_IMPORT
+            else SyncSource.BAOSTOCK
+        )
+        input_ = PlanInput(
+            mode, source, dataset_id, adjustment, "a-share",
+            target_start, target_end, required_data_types,
+            batch_size=batch_size,
+        )
+        return input_.plan_id
+
     def _persist_plan(self, output: PlannedOutput) -> None:
         self._repository.save_sync_plan(output.plan)
         self._repository.save_candidate_generation(output.candidate)
@@ -295,6 +370,10 @@ class SyncPipeline:
                 started_at=self._now(),
             )
             self._repository.update_sync_task_status(running)
+            self._persist_task_progress(
+                running, completed=0, total=len(task.codes),
+                current_code=task.codes[0] if task.codes else "",
+            )
             try:
                 result: TaskExecutionResult = worker.execute(running)
                 rows = result.rows
@@ -318,6 +397,10 @@ class SyncPipeline:
                     error_message=None,
                 )
                 self._repository.update_sync_task_status(done)
+                self._persist_task_progress(
+                    done, completed=len(task.codes), total=len(task.codes),
+                    current_code=task.codes[-1] if task.codes else "",
+                )
                 statuses.append((task.task_id, SyncTaskStatus.SUCCESS))
             except (ProviderFetchError, Exception) as error:
                 failed_at = self._now()

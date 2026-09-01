@@ -1290,3 +1290,102 @@ class TestListingWindowProgress:
         assert body["covered_days"] == 2
         assert body["total_days"] == 2
         assert body["progress"] == 1.0
+
+
+class TestPipelineProgressEndpoint:
+    """P5:新架构回补的实时进度端点。"""
+
+    def test_pipeline_progress_none_without_plan(self, tmp_path: Path) -> None:
+        app = _app(tmp_path)
+        status, body = _get(app, "/api/sync/pipeline/progress")
+        assert status == 200
+        assert body["status"] == "none"
+
+    def test_pipeline_progress_reports_plan(self, tmp_path: Path) -> None:
+        app = _app(tmp_path)
+        repo = app._services.repository
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from stock_manager.domain import (
+            AdjustmentMethod,
+            CandidateGeneration,
+            CandidateGenerationStatus,
+            SyncPlan,
+            SyncPlanMode,
+            SyncPlanStatus,
+            SyncSource,
+            SyncTask,
+            SyncTaskStatus,
+        )
+
+        now = datetime(2026, 9, 1, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        plan = SyncPlan(
+            plan_id="plan-prog",
+            plan_version=1,
+            mode=SyncPlanMode.BOOTSTRAP,
+            source=SyncSource.BAOSTOCK,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            universe_policy="a-share",
+            target_start=date(2018, 7, 12),
+            target_end=date(2026, 9, 1),
+            latest_completed_trading_day=date(2026, 9, 1),
+            parent_generation=None,
+            candidate_generation_id="cand-prog",
+            required_data_types=("daily_bars",),
+            task_count=2,
+            plan_fingerprint="fp",
+            status=SyncPlanStatus.RUNNING,
+            created_at=now,
+            updated_at=now,
+        )
+        repo.save_sync_plan(plan)
+        repo.save_candidate_generation(
+            CandidateGeneration(
+                candidate_generation_id="cand-prog",
+                plan_id="plan-prog",
+                parent_generation=None,
+                write_revision=0,
+                status=CandidateGenerationStatus.PLANNED,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        repo.save_sync_task(
+            SyncTask(
+                task_id="t1", plan_id="plan-prog", sequence_no=0,
+                data_type="daily_bars", partition_key="2018-07-12..2026-09-01",
+                codes=("sh.600000", "sz.000001"), range_start=date(2018, 7, 12),
+                range_end=date(2026, 9, 1), dependencies=(),
+                status=SyncTaskStatus.SUCCESS, attempt_count=1, not_before=None,
+                row_count=2, error_code=None, error_message=None,
+                started_at=now, finished_at=now,
+            )
+        )
+        repo.save_sync_task(
+            SyncTask(
+                task_id="t2", plan_id="plan-prog", sequence_no=1,
+                data_type="daily_bars", partition_key="2018-07-12..2026-09-01",
+                codes=("sh.600519", "sz.300750"), range_start=date(2018, 7, 12),
+                range_end=date(2026, 9, 1), dependencies=(),
+                status=SyncTaskStatus.RUNNING, attempt_count=1, not_before=None,
+                row_count=None, error_code=None, error_message=None,
+                started_at=now, finished_at=None,
+            )
+        )
+        repo.update_task_progress(
+            "t2",
+            '{"data_type":"daily_bars","partition_key":"2018-07-12..2026-09-01",'
+            '"completed":1,"total":2,"current_code":"sh.600519","status":"RUNNING"}',
+        )
+        status, body = _get(app, "/api/sync/pipeline/progress")
+        assert status == 200
+        assert body["plan_id"] == "plan-prog"
+        assert body["status"] == "RUNNING"
+        assert body["completed_tasks"] == 1
+        assert body["total_tasks"] == 2
+        assert body["progress"] == 0.5
+        assert body["batch"]["completed"] == 1
+        assert body["batch"]["total"] == 2
+        assert body["batch"]["current_code"] == "sh.600519"

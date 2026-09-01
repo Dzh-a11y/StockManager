@@ -138,6 +138,24 @@ class WebApp:
         """
         if self._config.sync_config_path is None or self._config.lock_directory is None:
             return
+        # watchdog/已有回补在跑时,Web 不重复启动(避免双写同一计划)。
+        try:
+            plans = self._services.repository.list_sync_plans(
+                "market", AdjustmentMethod.QFQ
+            )
+            if any(p.status.value == "RUNNING" for p in plans):
+                self._sync_progress.update(
+                    {
+                        "status": "running",
+                        "phase": "external",
+                        "dataset_id": "market",
+                        "adjustment": "qfq",
+                        "message": "检测到回补已在运行(watchdog 或另一进程),Web 不再重复启动。",
+                    }
+                )
+                return
+        except Exception:
+            pass
         try:
             active = self._services.repository.get_active_generation(
                 "market", AdjustmentMethod.QFQ
@@ -182,7 +200,8 @@ class WebApp:
                 if sync_config.history is not None:
                     message = "自动回补（八年历史覆盖）…"
                     backfill = lambda: service.startup_sync(
-                        "market", AdjustmentMethod.QFQ
+                        "market", AdjustmentMethod.QFQ,
+                        force_pipeline=True,
                     )
                 else:
                     message = "自动回补（补一年数据）…"
@@ -268,6 +287,8 @@ class WebApp:
                 return self._json(200, self._sync_status())
             if path == "/api/sync/backfill/progress":
                 return self._json(200, self._backfill_v2_progress())
+            if path == "/api/sync/pipeline/progress":
+                return self._json(200, self._pipeline_progress())
             if path == "/api/screen/progress":
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
@@ -1031,6 +1052,67 @@ class WebApp:
             "status": result.status.value,
             "generation": result.generation,
             "reason": result.reason,
+        }
+
+    def _pipeline_progress(self) -> dict[str, object]:
+        """Live progress of the P5 SyncPipeline (new-architecture backfill).
+
+        Reads the newest sync plan's task status counts plus the currently
+        RUNNING task's per-batch progress from ``sync_tasks.progress_json``.
+        Returns ``{"status": "none"}`` when no pipeline plan exists.
+        """
+        repo = self._services.repository
+        try:
+            plans = repo.list_sync_plans("market", AdjustmentMethod.QFQ)
+        except Exception:
+            return {"status": "none"}
+        if not plans:
+            return {"status": "none"}
+        plan = plans[0]
+        try:
+            tasks = repo.list_sync_tasks(plan.plan_id)
+        except Exception:
+            return {"status": "none"}
+        if not tasks:
+            return {
+                "status": "none",
+                "plan_id": plan.plan_id,
+                "plan_status": plan.status.value,
+            }
+        counts: dict[str, int] = {}
+        for task in tasks:
+            counts[task.status.value] = counts.get(task.status.value, 0) + 1
+        total = len(tasks)
+        done = counts.get("SUCCESS", 0)
+        running = next(
+            (t for t in tasks if t.status.value == "RUNNING"), None
+        )
+        batch: dict[str, object] | None = None
+        if running is not None:
+            progress = repo.get_task_progress(running.task_id)
+            if progress is None:
+                progress = {
+                    "data_type": running.data_type,
+                    "partition_key": running.partition_key,
+                    "completed": 0,
+                    "total": len(running.codes),
+                    "current_code": running.codes[0] if running.codes else "",
+                }
+            progress["task_id"] = running.task_id
+            progress["range_start"] = running.range_start.isoformat()
+            progress["range_end"] = running.range_end.isoformat()
+            batch = progress
+        return {
+            "status": plan.status.value,
+            "plan_id": plan.plan_id,
+            "mode": plan.mode.value,
+            "target_start": plan.target_start.isoformat(),
+            "target_end": plan.target_end.isoformat(),
+            "progress": (done / total) if total else 0.0,
+            "completed_tasks": done,
+            "total_tasks": total,
+            "task_counts": counts,
+            "batch": batch,
         }
 
     def _backfill_v2_progress(self) -> dict[str, object]:

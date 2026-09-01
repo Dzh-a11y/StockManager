@@ -1734,6 +1734,33 @@ class SQLiteRepository:
                 ),
             )
 
+    def update_task_progress(
+        self, task_id: str, progress_json: str
+    ) -> None:
+        """Persist live per-task batch progress (P5 pipeline UI)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE sync_tasks SET progress_json = ? WHERE task_id = ?",
+                (progress_json, task_id),
+            )
+
+    def get_task_progress(self, task_id: str) -> dict[str, object] | None:
+        """Read a task's persisted live progress, if any."""
+        import json as _json
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT progress_json FROM sync_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        if row is None or row["progress_json"] is None:
+            return None
+        try:
+            value = _json.loads(row["progress_json"])
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
     def tasks_by_status(
         self, plan_id: str, statuses: Sequence[object]
     ) -> Sequence[SyncTask]:

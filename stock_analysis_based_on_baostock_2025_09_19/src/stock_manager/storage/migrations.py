@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS sync_tasks (
     error_code TEXT,
     error_message TEXT,
     started_at TEXT,
-    finished_at TEXT
+    finished_at TEXT,
+    progress_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sync_tasks_plan ON sync_tasks (plan_id, sequence_no);
 CREATE TABLE IF NOT EXISTS candidate_generations (
@@ -215,6 +216,12 @@ def _migrate_to_v1(connection: sqlite3.Connection) -> None:
         )
     connection.executescript(_BOOKKEEPING_TABLES)
     connection.executescript(_STAGING_TABLES)
+    # 幂等补列:sync_tasks 增加逐任务批次进度(老库已迁移过时补上)。
+    task_columns = _column_names(connection, "sync_tasks")
+    if "progress_json" not in task_columns:
+        connection.execute(
+            "ALTER TABLE sync_tasks ADD COLUMN progress_json TEXT"
+        )
 
 
 _MIGRATIONS: dict[int, Any] = {

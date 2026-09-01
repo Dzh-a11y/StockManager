@@ -295,3 +295,45 @@ class TestPipeline:
 def _with_now(pipeline: SyncPipeline, now):
     object.__setattr__(pipeline, "_now", now)
     return pipeline
+
+
+class TestPlanReuse:
+    def test_replan_same_plan_id_reuses_progress(self, repo: SQLiteRepository) -> None:
+        """watchdog 重启后重新 plan 不重置进度:同 plan_id 复用既有任务。"""
+        provider = DeterministicProvider()
+        pipeline = _pipeline(repo, provider)
+        first = pipeline.plan(
+            mode=SyncPlanMode.BOOTSTRAP,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=DAYS[0],
+            target_end=DAYS[-1],
+            required_data_types=("daily_bars",),
+        )
+        # 模拟已执行一部分:1 个任务 SUCCESS
+        task = first.tasks[0]
+        from stock_manager.domain import SyncTask as ST
+
+        done = ST(
+            task_id=task.task_id, plan_id=task.plan_id, sequence_no=task.sequence_no,
+            data_type=task.data_type, partition_key=task.partition_key,
+            codes=task.codes, range_start=task.range_start, range_end=task.range_end,
+            dependencies=task.dependencies, status=SyncTaskStatus.SUCCESS,
+            attempt_count=1, not_before=None, row_count=2, error_code=None,
+            error_message=None, started_at=NOW, finished_at=NOW,
+        )
+        repo.update_sync_task_status(done)
+        # 重新 plan(相同输入 → 相同 plan_id)
+        second = pipeline.plan(
+            mode=SyncPlanMode.BOOTSTRAP,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=DAYS[0],
+            target_end=DAYS[-1],
+            required_data_types=("daily_bars",),
+        )
+        assert second.plan.plan_id == first.plan.plan_id
+        # 复用了既有任务(SUCCESS 保留),而非重置为全 PENDING
+        loaded = repo.list_sync_tasks(second.plan.plan_id)
+        statuses = {t.status for t in loaded}
+        assert SyncTaskStatus.SUCCESS in statuses

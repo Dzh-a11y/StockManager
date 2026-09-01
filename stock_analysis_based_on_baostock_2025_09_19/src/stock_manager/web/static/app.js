@@ -766,11 +766,18 @@ function startSyncPolling() {
   if (syncPollTimer) return;
   pollSyncProgress();
   pollBackfillV2();
-  syncPollTimer = setInterval(function () { pollSyncProgress(); pollBackfillV2(); }, 1000);
+  pollPipelineProgress();
+  syncPollTimer = setInterval(function () {
+    pollSyncProgress();
+    pollBackfillV2();
+    pollPipelineProgress();
+  }, 1000);
 }
 
 
 let backfillV2Active = false;
+// 新架构 pipeline 进度正在显示时,renderSyncProgress 不得隐藏进度条。
+let pipelineProgressActive = false;
 
 async function pollBackfillV2() {
   try {
@@ -818,6 +825,7 @@ async function pollBackfillV2() {
 
 function renderSyncProgress(p) {
   if (backfillV2Active) return; // 八年回补驱动中,由 pollBackfillV2 渲染
+  if (pipelineProgressActive) return; // 新架构进度正在显示,不隐藏
   const track = $('#sync-progress-track');
   const fill = $('#sync-progress-fill');
   const current = $('#sync-current');
@@ -869,6 +877,46 @@ async function pollSyncProgress() {
     const p = await api('GET', '/api/sync/progress');
     renderSyncProgress(p);
   } catch (e) { /* ignore transient poll errors */ }
+}
+
+async function pollPipelineProgress() {
+  try {
+    const p = await api('GET', '/api/sync/pipeline/progress');
+    if (!p || p.status === 'none') {
+      pipelineProgressActive = false;
+      return;
+    }
+    pipelineProgressActive = true;
+    const track = $('#sync-progress-track');
+    const fill = $('#sync-progress-fill');
+    const current = $('#sync-current');
+    const meta = $('#sync-progress');
+    const batchTrack = $('#sync-batch-track');
+    const batchFill = $('#sync-batch-fill');
+    const batchLabel = $('#sync-batch-label');
+    const pct = Math.round((p.progress || 0) * 100);
+    // 批次内进度(当前 RUNNING 任务)
+    const b = p.batch || {};
+    const bTotal = Number(b.total || 0);
+    const bCompleted = Number(b.completed || 0);
+    const bPct = bTotal ? Math.min(100, Math.round((bCompleted / bTotal) * 100)) : 0;
+    if (bTotal) {
+      batchTrack.hidden = false;
+      batchFill.style.width = bPct + '%';
+      batchLabel.hidden = false;
+      const phaseLabel = { daily_bars: '日线', fundamentals: '基本面', stocks: '股票池' }[b.data_type] || b.data_type || '';
+      batchLabel.textContent = '当前批次：' + phaseLabel + ' ' + bCompleted + '/' + bTotal + ' · ' + (b.current_code || '-');
+    } else {
+      batchTrack.hidden = true;
+      batchLabel.hidden = true;
+    }
+    track.hidden = false;
+    fill.style.width = pct + '%';
+    current.hidden = false;
+    current.textContent = '八年回补 总进度 ' + pct + '%（已完成 ' + p.completed_tasks + '/' + p.total_tasks + ' 个任务）';
+    meta.hidden = false;
+    meta.textContent = '模式 ' + (p.mode || '') + ' · ' + p.target_start + ' ~ ' + p.target_end;
+  } catch (e) { /* ignore transient */ }
 }
 
 async function shutdownServer() {
