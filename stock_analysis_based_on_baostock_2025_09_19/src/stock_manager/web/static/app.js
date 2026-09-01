@@ -515,7 +515,7 @@ function renderBacktestResult(data, container) {
   let warnings = '';
   const ws = data.warnings || [];
   if (ws.length) {
-    warnings = '<br><span class="status-pill status-pill--warn">' + ws.length + ' 条执行限制警告</span><br>' + ws.slice(0, 8).map(esc).join('<br>');
+    warnings = '<br><span class="badge badge--warn">' + ws.length + ' 条执行限制警告</span><br>' + ws.slice(0, 8).map(esc).join('<br>');
   }
   container.innerHTML = '<strong>回测结果</strong><br>' + lines.join('<br>') + warnings
     + '<br><a href="#" data-bt-equity="' + btRunId + '" class="btn btn--ghost">查看净值与订单</a>';
@@ -538,7 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btn) btn.addEventListener('click', submitBacktest);
 });
 
-'''PLACEHOLDER'''
+
 function runtimeConditions() {
   const dataset = $('#dataset').value.trim();
   const tradingDay = $('#trading-day').value;
