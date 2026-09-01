@@ -264,3 +264,74 @@ def test_fetch_stocks_keeps_only_ashare_stocks() -> None:
         "sz.300750",
         "sz.000002",
     ]
+
+
+
+class _ExpiredSessionClient:
+    """Fake client whose first query fails with an expired session."""
+
+    def __init__(self, rows: list[list[str]]) -> None:
+        self._rows = rows
+        self.login_count = 0
+        self.logout_count = 0
+        self._query_calls = 0
+
+    def login(self) -> _FakeLoginResult:
+        self.login_count += 1
+        return _FakeLoginResult()
+
+    def logout(self) -> None:
+        self.logout_count += 1
+
+    def query_all_stock(self, day: str = "") -> _FakeQueryResult:
+        self._query_calls += 1
+        if self._query_calls == 1:
+            result = _FakeQueryResult([])
+            result.error_code = "-1"
+            result.error_msg = "用户未登录"
+            return result
+        return _FakeQueryResult(self._rows)
+
+
+def test_session_expiry_recovers_via_relogin() -> None:
+    """查询报"用户未登录"时自动重新登录并重试,同步不再失败。"""
+    rows = [["sh.600000", "1", "浦发银行"]]
+    client = _ExpiredSessionClient(rows)
+    provider = BaostockProvider(client=client, max_retries=3, request_interval_seconds=0)
+    stocks = provider.fetch_stocks(date(2026, 8, 25))
+    assert len(stocks) == 1
+    assert stocks[0].code == "sh.600000"
+    assert client.login_count == 2  # 首次登录 + 会话恢复重登录
+    assert client.logout_count == 1
+
+
+def test_session_expiry_exhausted_still_fails_explicitly() -> None:
+    """会话持续失效且重登录后仍失败 → 明确业务错误,不吞。"""
+    rows = [["sh.600000", "1", "浦发银行"]]
+    client = _ExpiredSessionClient(rows)
+
+    class _AlwaysExpired(_ExpiredSessionClient):
+        def query_all_stock(self, day: str = "") -> _FakeQueryResult:
+            result = _FakeQueryResult([])
+            result.error_code = "-1"
+            result.error_msg = "用户未登录"
+            return result
+
+    client = _AlwaysExpired(rows)
+    provider = BaostockProvider(client=client, max_retries=3, request_interval_seconds=0)
+    with pytest.raises(BaostockProviderError, match="query_all_stock failed"):
+        provider.fetch_stocks(date(2026, 8, 25))
+
+
+def test_is_session_expired_detection() -> None:
+    expired = _FakeQueryResult([])
+    expired.error_code = "-1"
+    expired.error_msg = "用户未登录"
+    assert BaostockProvider._is_session_expired(expired)
+    other = _FakeQueryResult([])
+    other.error_code = "-1"
+    other.error_msg = "系统繁忙"
+    assert not BaostockProvider._is_session_expired(other)
+    ok = _FakeQueryResult([])
+    assert not BaostockProvider._is_session_expired(ok)
+

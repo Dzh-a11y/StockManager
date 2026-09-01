@@ -97,6 +97,19 @@ scripts/bench_p5a_historical.py --real-db(当前 data/market.sqlite3 一年数�
 - 提交历史:P5A-0…P5A-9 每阶段独立 Conventional Commits,无数据库/日志/Excel/缓存/IDE 文件/构建产物入库。
 - 全量测试:**374 passed**(P5A 累计新增 108 项,基线 266 项零回归)。
 
+## 追加修复:Baostock 会话失效自动恢复(v1.9.1,2026-09-01)
+
+**现象**:全市场同步进行中(如 08-31 交易日)查询报 `query_fundamentals(sh.600517) failed: 用户未登录` → 同步 FAILED。根因:Baostock 长时间会话被服务端失效后,provider 只对失效结果盲目重试,不重新登录,3 次重试后必然失败。
+
+**修复**(src/stock_manager/providers/baostock_provider.py):
+
+- 新增 `_is_session_expired` 检测(error_code != 0 且消息含「未登录」/「not logged」)。
+- `_retry` 增加 `relogin` 回调:检测到会话失效时重新登录后继续重试,不再在死会话上耗尽。
+- `_session` 暴露 relogin 回调,四个 fetch 方法全部透传;重登录失败抛 `BaostockProviderError`(不吞);重试耗尽仍失败时保留最后失败结果,由 `_rows` 抛明确业务错误。
+- 回归测试 3 项(离线 fake client):会话失效一次自动恢复且 login 计数为 2、持续失效明确失败、失效检测边界。
+- 实测验证:修复后 `fetch_fundamentals(('sh.600517',), 2026-08-31)` 正常返回(login success → 1 行 → logout success)。
+- 版本 1.9.0 → 1.9.1;全量 pytest **377 passed**(新增 3 项)。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考,不构成任何投资建议。项目禁止实现自动交易功能。

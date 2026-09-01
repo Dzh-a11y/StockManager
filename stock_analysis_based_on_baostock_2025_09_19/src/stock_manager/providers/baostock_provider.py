@@ -113,7 +113,12 @@ class BaostockProvider:
         finally:
             socket.setdefaulttimeout(previous)
 
-    def _retry(self, operation: Callable[[], Any]) -> Any:
+    def _retry(
+        self,
+        operation: Callable[[], Any],
+        *,
+        relogin: Callable[[], None] | None = None,
+    ) -> Any:
         """Run a baostock SDK call, retrying transient failures with backoff.
 
         Transient means a network-level ``OSError`` (including ``socket.timeout``
@@ -123,6 +128,10 @@ class BaostockProvider:
         exhaustion, the last failure is re-raised (for network errors) or the
         last bad result is returned so the caller's ``_rows`` raises the usual
         operation-specific error.
+
+        When the result reports an expired session and a relogin callback is
+        supplied, the session is re-established before the next attempt instead
+        of failing on a dead session.
         """
         last_result: Any = None
         last_network_error: OSError | None = None
@@ -137,29 +146,53 @@ class BaostockProvider:
                 last_network_error = None
                 if getattr(result, "error_code", "0") == "0":
                     return result
+                if relogin is not None and self._is_session_expired(result):
+                    relogin()
+                    continue
             if attempt + 1 < self._max_retries:
                 self._sleep(self._retry_backoff * (2**attempt))
         if last_network_error is not None:
             raise last_network_error
         return last_result
 
-    def _query(self, operation: Callable[[], Any]) -> Any:
+    @staticmethod
+    def _is_session_expired(result: Any) -> bool:
+        """True when Baostock reports a dead session instead of a query error."""
+        message = (getattr(result, "error_msg", "") or "").strip()
+        return (
+            getattr(result, "error_code", "0") != "0"
+            and ("未登录" in message or "not logged" in message.lower())
+        )
+
+    def _query(
+        self,
+        operation: Callable[[], Any],
+        *,
+        relogin: Callable[[], None] | None = None,
+    ) -> Any:
         now = self._monotonic()
         if self._last_request_at is not None:
             remaining = self._request_interval - (now - self._last_request_at)
             if remaining > 0:
                 self._sleep(remaining)
-        result = self._retry(operation)
+        result = self._retry(operation, relogin=relogin)
         self._last_request_at = self._monotonic()
         return result
 
     @contextmanager
-    def _session(self) -> Iterator[None]:
+    def _session(self) -> Iterator[Callable[[], None]]:
+        def relogin() -> None:
+            login_result = self._retry(lambda: self._client.login())
+            if login_result.error_code != "0":
+                raise BaostockProviderError(
+                    f"Baostock relogin failed: {login_result.error_msg}"
+                )
+
         login_result = self._retry(lambda: self._client.login())
         if login_result.error_code != "0":
             raise BaostockProviderError(f"Baostock login failed: {login_result.error_msg}")
         try:
-            yield
+            yield relogin
         finally:
             self._client.logout()
 
@@ -193,12 +226,13 @@ class BaostockProvider:
         return mapping[adjustment]
 
     def fetch_trading_days(self, start: date, end: date) -> Sequence[date]:
-        with self._session():
+        with self._session() as relogin:
             rows = self._rows(
                 self._query(
                     lambda: self._client.query_trade_dates(
                         start_date=start.isoformat(), end_date=end.isoformat()
-                    )
+                    ),
+                    relogin=relogin,
                 ),
                 "query_trade_dates",
             )
@@ -210,9 +244,12 @@ class BaostockProvider:
         Baostock's ``query_all_stock`` lists every listed security; only real
         A-share stocks (by code prefix) are exposed here.
         """
-        with self._session():
+        with self._session() as relogin:
             rows = self._rows(
-                self._query(lambda: self._client.query_all_stock(day=as_of.isoformat())),
+                self._query(
+                    lambda: self._client.query_all_stock(day=as_of.isoformat()),
+                    relogin=relogin,
+                ),
                 "query_all_stock",
             )
         return tuple(
