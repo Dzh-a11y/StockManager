@@ -135,6 +135,15 @@ class DataSyncService:
         self._config = config
         self._clock = clock or (lambda: datetime.now(SHANGHAI))
         self._progress = progress
+        self._active_v2_run_id: str | None = None
+        self._active_v2_batch_total: int = 0
+        # 接线 provider 逐码进度:拉取阶段也持久化批次进度,使前端批次条实时推进。
+        # 保留调用方传入的原回调(如 Web 共享状态)并链式转发。
+        self._provider_progress_original = getattr(provider, "_progress_callback", None)
+        try:
+            setattr(provider, "_progress_callback", self._on_provider_progress)
+        except (AttributeError, TypeError):
+            pass
         provider_key = f"{lock_directory.resolve()}:{provider.source_name}:provider"
         self._provider_process_lock = process_lock(provider_key)
         self._provider_file_lock = lock_directory / f"{provider.source_name}.provider.lock"
@@ -180,6 +189,39 @@ class DataSyncService:
             completed=completed,
             total=total,
             current_code=current_code,
+        )
+
+    def _on_provider_progress(self, event: dict[str, object]) -> None:
+        """Provider 逐码进度:转发原回调与日志,并持久化 v2 批次进度。
+
+        拉取阶段(整批请求耗时较长)逐码写入批次进度,使前端第一个进度条
+        不再冻结在 0;fundamentals 阶段在日线基础上偏移 half_batch,保证
+        0..2×len(chunk) 单调推进。
+        """
+        original = self._provider_progress_original
+        if original is not None and original is not self._on_provider_progress:
+            original(event)
+        phase = str(event.get("phase", ""))
+        index = int(event.get("index", 0) or 0)
+        total = int(event.get("total", 0) or 0)
+        code = str(event.get("current_code", ""))
+        self._emit_progress(phase, index, total, code)
+        run_id = self._active_v2_run_id
+        if run_id is None or self._active_v2_batch_total <= 0:
+            return
+        batch_total = self._active_v2_batch_total
+        if phase == "daily_bars":
+            completed = index
+        elif phase == "fundamentals":
+            completed = (batch_total // 2) + index
+        else:
+            return
+        self._repository.update_backfill_batch_progress(
+            run_id,
+            phase=phase,
+            completed=completed,
+            total=batch_total,
+            current_code=code,
         )
 
     def smoke_test_provider(
@@ -986,6 +1028,7 @@ class DataSyncService:
                 None,
             )
             self._repository.save_backfill_run_v2(running)
+            self._active_v2_run_id = run_id
             try:
                 plan = plan_coverage(
                     dataset_id=dataset_id,
@@ -1094,6 +1137,7 @@ class DataSyncService:
                             # 使第一个进度条从上一批的 200/200 切到新一批的 0/200。
                             batch_done = 0
                             batch_total = 2 * len(chunk)
+                            self._active_v2_batch_total = batch_total
                             self._emit_v2_progress(
                                 run_id, "daily_bars", 0, batch_total, chunk[0]
                             )
@@ -1114,10 +1158,9 @@ class DataSyncService:
                                     bars_by_code.get(code, ()), metadata
                                 )
                                 batch_done += 1
-                                self._emit_v2_progress(
-                                    run_id, "daily_bars",
-                                    batch_done, len(chunk), code,
-                                )
+                                # 日线进度已在拉取阶段逐码推进(_on_provider_progress),
+                                # 保存阶段不再重复推进,避免批次进度回退。
+
                             fundamentals = self._provider_call(
                                 lambda chunk=chunk: self._provider.fetch_fundamentals(
                                     chunk, as_of
@@ -1212,4 +1255,7 @@ class DataSyncService:
                     f"v2 backfill failed for {dataset_id} over "
                     f"{target_start.isoformat()}..{as_of.isoformat()}"
                 ) from error
+            finally:
+                self._active_v2_run_id = None
+                self._active_v2_batch_total = 0
 

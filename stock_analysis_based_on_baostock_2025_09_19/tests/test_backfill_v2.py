@@ -348,3 +348,106 @@ def test_actual_coverage_reads_stored_bars(tmp_path: Path) -> None:
     assert latest <= AS_OF
     with pytest.raises(ValueError, match="unsupported data type"):
         repository.actual_coverage(QFQ, "nope")
+
+
+
+def test_v2_batch_progress_persists_per_code_during_fetch(tmp_path: Path) -> None:
+    """拉取阶段的逐码进度应被接线并持久化(前端批次条实时推进,而非冻结在 0)。"""
+
+    class RecordingRepository:
+        """捕获每次批次进度写入,确定性验证映射与持久化时序。"""
+
+        def __init__(self, inner: SQLiteRepository) -> None:
+            self._inner = inner
+            self.progress_calls: list[dict[str, object]] = []
+
+        def update_backfill_batch_progress(
+            self,
+            run_id: str,
+            *,
+            phase: str,
+            completed: int,
+            total: int,
+            current_code: str,
+        ) -> None:
+            self.progress_calls.append(
+                {
+                    "phase": phase,
+                    "completed": completed,
+                    "total": total,
+                    "current_code": current_code,
+                }
+            )
+            self._inner.update_backfill_batch_progress(
+                run_id,
+                phase=phase,
+                completed=completed,
+                total=total,
+                current_code=current_code,
+            )
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+    class ProgressEmittingFixture(FixtureProvider):
+        """在拉取阶段模拟 BaostockProvider 逐码 emit 进度。"""
+
+        def __init__(self, inner: FixtureProvider) -> None:
+            super().__init__(
+                trading_days=inner._trading_days,
+                stocks=inner._stocks,
+                bars=inner._bars,
+                fundamentals=inner._fundamentals,
+            )
+            self._progress_callback = None
+
+        def _emit_like_provider(self, phase: str, codes: Sequence[str]) -> None:
+            if self._progress_callback is None:
+                return
+            for index, code in enumerate(codes):
+                self._progress_callback(
+                    {
+                        "phase": phase,
+                        "index": index + 1,
+                        "total": len(codes),
+                        "current_code": code,
+                    }
+                )
+
+        def fetch_daily_bars(self, codes, start, end, adjustment):  # type: ignore[override]
+            bars = super().fetch_daily_bars(codes, start, end, adjustment)
+            self._emit_like_provider("daily_bars", codes)
+            return bars
+
+        def fetch_fundamentals(self, codes, as_of):  # type: ignore[override]
+            fundamentals = super().fetch_fundamentals(codes, as_of)
+            self._emit_like_provider("fundamentals", codes)
+            return fundamentals
+
+    repository = RecordingRepository(SQLiteRepository(tmp_path / "market.sqlite3"))
+    provider = ProgressEmittingFixture(make_provider(60))
+    service = DataSyncService(
+        provider,
+        repository,
+        tmp_path / "locks",
+        make_config(),
+        clock=MutableClock(NOW),
+    )
+    service.backfill_history_v2(
+        "market", QFQ, target_start=TARGET_START, as_of=AS_OF, batch_size=1
+    )
+    # 日线拉取阶段:completed 从 0 推进到 1(不再冻结在 0)。
+    daily_fetch = [
+        c for c in repository.progress_calls
+        if c["phase"] == "daily_bars" and c["completed"] == 1 and c["total"] == 2
+    ]
+    assert daily_fetch, f"应观察到日线拉取阶段的逐码进度,实际 {repository.progress_calls}"
+    # fundamentals 在日线基础上偏移 half_batch(1+1=2/2)。
+    fund_fetch = [
+        c for c in repository.progress_calls
+        if c["phase"] == "fundamentals" and c["completed"] == 2 and c["total"] == 2
+    ]
+    assert fund_fetch, f"应观察到 fundamentals 偏移后的批次进度,实际 {repository.progress_calls}"
+
+
+
