@@ -551,6 +551,39 @@ class WebApp:
             )
             band_end = band_start - timedelta(days=1)
 
+        # 年度覆盖条:每个块一个自然年,从数据库最早 bar 年份到最新年份。
+        # 八年回补后数据库跨度超过一年,30 天段无法表达,这里按年聚合。
+        year_bands: list[dict[str, object]] = []
+        earliest, _latest = repo.actual_coverage(qfq, "daily_bars")
+        if earliest is not None:
+            for year in range(earliest.year, anchor.year + 1):
+                y_start = date(year, 1, 1)
+                y_end = date(year, 12, 31)
+                cal = set(repo.get_trading_days(y_start, y_end))
+                year_bar_days = repo.daily_bar_days(y_start, y_end, qfq)
+                year_counts = repo.daily_bar_stock_counts(y_start, y_end, qfq)
+                complete = {
+                    day for day, n in year_counts.items()
+                    if n >= complete_threshold
+                }
+                seg = [d for d in cal]
+                coverage = (
+                    sum(1 for d in seg if d in complete) / len(seg)
+                    if seg
+                    else 0.0
+                )
+                year_bands.append(
+                    {
+                        "year": year,
+                        "coverage": round(coverage, 2),
+                        "incomplete": any(
+                            d in year_bar_days and d not in complete for d in seg
+                        ),
+                        "trading_days": len(seg),
+                        "has_data": len(year_bar_days) > 0,
+                    }
+                )
+
         return {
             "latest_synced_trading_day": anchor.isoformat(),
             "coverage_start": start.isoformat(),
@@ -558,6 +591,7 @@ class WebApp:
             "stocks_count": stocks_count,
             "recent_days": recent,
             "older_bands": bands,
+            "year_bands": year_bands,
         }
 
     def _list_instances(self) -> list[dict[str, object]]:

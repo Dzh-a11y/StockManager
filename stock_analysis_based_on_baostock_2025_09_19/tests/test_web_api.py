@@ -631,6 +631,11 @@ def test_sync_status_endpoint_summarizes_local_coverage(tmp_path: Path) -> None:
     assert len(payload["older_bands"]) == 11
     assert all(band["coverage"] == 0 for band in payload["older_bands"])
     assert all(band["incomplete"] is False for band in payload["older_bands"])
+    # 年度覆盖条:每块 1 年,从数据最早年份到最新年份
+    assert len(payload["year_bands"]) >= 1
+    assert payload["year_bands"][-1]["year"] == 2026
+    assert all("coverage" in band and "incomplete" in band for band in payload["year_bands"])
+    assert all("has_data" in band and "trading_days" in band for band in payload["year_bands"])
 
 
 def test_version_endpoint_reports_package_version(tmp_path: Path) -> None:
