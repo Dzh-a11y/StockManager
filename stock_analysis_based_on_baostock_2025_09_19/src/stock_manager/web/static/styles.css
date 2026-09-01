@@ -250,7 +250,7 @@ body {
   place-items: center;
   width: 14px;
   height: 14px;
-  margin-left: 4px;
+  margin-left: 8px;
   border-radius: 50%;
   background: var(--muted);
   color: #fff;
@@ -265,10 +265,10 @@ body {
   content: attr(data-tip);
   position: absolute;
   top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  transform: none;
   width: max-content;
-  max-width: 280px;
+  max-width: min(320px, calc(100vw - 80px));
   padding: 7px 10px;
   border-radius: 6px;
   background: #22272e;
@@ -285,6 +285,8 @@ body {
   pointer-events: none;
 }
 .term__help:hover::after { opacity: 1; visibility: visible; }
+/* 靠近右缘的提示向左展开,避免被面板/视口右边界裁切 */
+.term__help--flip::after { left: auto; right: 0; }
 
 /* ---------- Groups ---------- */
 .composer { padding: 8px 16px 16px; border-top: 1px solid var(--border); margin-top: 6px; }
