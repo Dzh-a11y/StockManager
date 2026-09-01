@@ -158,7 +158,7 @@ class TestPipeline:
             target_end=DAYS[-1],
             required_data_types=("daily_bars",),
         )
-        assert output.plan.task_count == 2  # 2 天 × 1 类型
+        assert output.plan.task_count == 1  # 批量粒度:3 只代码一个 batch,区间覆盖 2 天
         assert repo.get_sync_plan(output.plan.plan_id) is not None
 
         run = pipeline.execute(output.plan.plan_id)

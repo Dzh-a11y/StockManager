@@ -123,7 +123,7 @@ class TestEndToEndPipeline:
             target_end=DAYS[-1],
             required_data_types=("daily_bars", "fundamentals"),
         )
-        assert output.plan.task_count == 6  # 3 天 × 2 类型
+        assert output.plan.task_count == 2  # 批量粒度:3 只代码各 1 个 batch × 2 类型
 
         # 持久化计划与任务
         repo.save_sync_plan(output.plan)

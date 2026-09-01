@@ -1391,16 +1391,26 @@ class DataSyncService:
         self,
         dataset_id: str,
         adjustment: AdjustmentMethod,
+        *,
+        force_pipeline: bool = False,
     ) -> object:
         """Startup sync through the P5 pipeline (default entry when enabled).
 
-        When ``config.pipeline_default`` is true, startup auto-sync plans an
-        INCREMENTAL (or first-time BOOTSTRAP) run to the latest completed
-        trading day and executes it through SyncPipeline; the result is a
-        PipelineRun. Otherwise it falls back to the legacy
-        ``backfill_on_startup_v2`` path so current behavior is unchanged.
+        When ``config.pipeline_default`` or ``force_pipeline`` is true,
+        startup auto-sync plans an INCREMENTAL (or first-time BOOTSTRAP) run
+        to the latest completed trading day and executes it through
+        SyncPipeline; the result is a PipelineRun. Otherwise it falls back to
+        the legacy ``backfill_on_startup_v2`` path so current behavior is
+        unchanged.
+
+        Note: the P5 pipeline plans per (stock, trading day) tasks, which is
+        appropriate for incremental windows but far too fine-grained for a
+        first-time eight-year backfill (millions of tasks). A full eight-year
+        bootstrap should use the legacy v2 bulk path (``backfill_on_startup_v2``)
+        and then publish the result as a generation; the pipeline is for tail
+        increments and repairs.
         """
-        if not self._config.pipeline_default:
+        if not (self._config.pipeline_default or force_pipeline):
             if self._config.history is not None:
                 return self.backfill_on_startup_v2(dataset_id, adjustment)
             return self.backfill_on_startup(dataset_id, adjustment)
@@ -1443,3 +1453,169 @@ class DataSyncService:
             self._provider_file_lock
         ):
             return pipeline.execute(output.plan.plan_id)
+
+    def publish_legacy_generation(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        target_end: date,
+    ) -> object:
+        """Publish the locally ingested (legacy v2) data as a P5 generation.
+
+        Bridges the bulk eight-year v2 backfill to the P5 generation model:
+        imports the already-written shared tables via LegacyImporter into a
+        candidate, verifies the staged partitions with CoverageVerifier and
+        atomically publishes them (GenerationCommitter). After this the
+        ReadinessGate returns READY and the Web gate page unlocks.
+
+        The legacy tables hold daily_bars/fundamentals/stocks written by the
+        v2 bulk path. Only partitions whose data is verifiably complete are
+        published; incomplete partitions leave the candidate NEEDS_REPAIR.
+        """
+        import sqlite3 as _sqlite3
+
+        from stock_manager.domain import CandidateGenerationStatus, SyncPlanMode
+        from stock_manager.sync.committer import GenerationCommitter
+        from stock_manager.sync.legacy import LegacyImporter
+        from stock_manager.sync.verifier import CoverageVerifier
+
+        repository = self._repository
+        database_path = repository.database_path
+
+        def factory() -> _sqlite3.Connection:
+            connection = _sqlite3.connect(database_path, timeout=30.0)
+            connection.row_factory = _sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            return connection
+
+        importer = LegacyImporter(factory, now=self._now)
+        candidate_id = f"cand-legacy-{target_end.isoformat()}"
+        candidate = importer.build_candidate(
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            plan_id="plan-legacy-bridge",
+            candidate_id=candidate_id,
+        )
+        # 把最近一个成功快照日作为分区日导入(股票池/bar/基本面)。
+        # 八年回补只有终点股票池;历史 day 的分区在后续增量中补。
+        snapshot = repository.get_latest_dataset_metadata(dataset_id, adjustment)
+        partition_day = (
+            snapshot.trading_day
+            if snapshot is not None
+            else target_end
+        )
+        imported: list[object] = []
+        for data_type, adj in (
+            ("stocks", None),
+            ("daily_bars", adjustment),
+            ("fundamentals", None),
+        ):
+            batch = importer.import_partition(
+                candidate,
+                data_type=data_type,
+                partition_key=partition_day.isoformat(),
+                batch_id=f"batch-bridge-{data_type}",
+                source="legacy",
+                adjustment=adj,
+            )
+            if batch is not None:
+                imported.append(batch)
+        finished = importer.finish_candidate(candidate)
+        if not imported:
+            self._repository.update_candidate_status(
+                candidate_id,
+                CandidateGenerationStatus.VERIFICATION_FAILED,
+                self._now(),
+            )
+            raise ValueError(
+                "no verifiable legacy partitions to publish; run the v2 "
+                "backfill first"
+            )
+
+        from stock_manager.domain import SyncTask, SyncTaskStatus
+
+        tasks = tuple(
+            SyncTask(
+                task_id=f"bridge-{data_type}",
+                plan_id="plan-legacy-bridge",
+                sequence_no=index,
+                data_type=data_type,
+                partition_key=partition_day.isoformat(),
+                codes=batch.codes,
+                range_start=partition_day,
+                range_end=partition_day,
+                dependencies=(),
+                status=SyncTaskStatus.SUCCESS,
+                attempt_count=1,
+                not_before=None,
+                row_count=batch.row_count,
+                error_code=None,
+                error_message=None,
+                started_at=self._now(),
+                finished_at=self._now(),
+            )
+            for index, batch in enumerate(imported)
+            for data_type in (batch.data_type,)
+        )
+        verifier = CoverageVerifier(
+            factory,
+            trading_days=lambda start, end: repository.get_trading_days(
+                start, end
+            ),
+            expected_universe_size=lambda day: max(
+                1, len(repository.get_stocks(day))
+            ),
+        )
+        outcome = verifier.verify(
+            finished,
+            adjustment=adjustment,
+            target_start=partition_day,
+            target_end=partition_day,
+            tasks=tasks,
+        )
+        for record in outcome.records:
+            repository.save_coverage_verification(record)
+        if outcome.report.issues:
+            repository.update_candidate_status(
+                candidate_id,
+                CandidateGenerationStatus.NEEDS_REPAIR,
+                self._now(),
+            )
+            return {
+                "candidate_id": candidate_id,
+                "status": CandidateGenerationStatus.NEEDS_REPAIR.value,
+                "issues": [
+                    {
+                        "data_type": i.data_type,
+                        "partition_key": i.partition_key,
+                        "issue_type": i.issue_type.value,
+                        "details": i.details,
+                    }
+                    for i in outcome.report.issues
+                ],
+            }
+        repository.update_candidate_status(
+            candidate_id, CandidateGenerationStatus.VERIFIED, self._now()
+        )
+        verified = repository.get_candidate_generation(candidate_id)
+        if verified is None:
+            raise ValueError("candidate missing after VERIFIED")
+        partitions = importer.partitions_for(
+            candidate_id, generation=candidate_id
+        )
+        committer = GenerationCommitter(factory, now=self._now)
+        published = committer.publish(
+            verified,
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            verifications=outcome.records,
+            partitions=partitions,
+        )
+        return {
+            "candidate_id": candidate_id,
+            "status": published.status.value,
+            "generation": published.generation,
+            "manifest_sha256": published.manifest_sha256,
+        }

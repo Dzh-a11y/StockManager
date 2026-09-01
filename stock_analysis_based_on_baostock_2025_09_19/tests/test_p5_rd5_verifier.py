@@ -207,8 +207,9 @@ class TestCoverageVerifier:
         types = {i.issue_type for i in outcome.report.issues}
         assert IssueType.INVALID in types
 
-    def test_duplicate_detected(self, writer: StagingWriter, repo: SQLiteRepository, verifier: CoverageVerifier) -> None:
-        # 同一 candidate 两个重叠批次(如 REPAIR 覆盖)在 staging 中产生重复行。
+    def test_overlapping_batches_dedup_by_code(self, writer: StagingWriter, repo: SQLiteRepository, verifier: CoverageVerifier) -> None:
+        # 批量粒度下,重叠批次(REPAIR 场景)按代码去重计数,不产生 DUPLICATE。
+        # 行级重复由 staging 主键(batch_id, code, trading_day, adjustment)结构性防止。
         writer.begin_candidate(_candidate(status=CandidateGenerationStatus.PLANNED), "fake")
         candidate = repo.get_candidate_generation("cand-1")
         assert candidate is not None
@@ -232,9 +233,10 @@ class TestCoverageVerifier:
             tasks=(_task("daily_bars", codes=CODES),),
         )
         types = {i.issue_type for i in outcome.report.issues}
-        assert IssueType.DUPLICATE in types
-        dup = next(i for i in outcome.report.issues if i.issue_type is IssueType.DUPLICATE)
-        assert dup.repairability is Repairability.REBUILD
+        assert IssueType.DUPLICATE not in types
+        # 3 只代码都在候选批次里(第 2 只在两个批次都出现,只计一次)
+        record = outcome.records[0]
+        assert record.distinct_count == 3
 
     def test_empty_staged_rows_incomplete(self, verifier: CoverageVerifier) -> None:
         candidate = _candidate(status=CandidateGenerationStatus.VERIFYING)

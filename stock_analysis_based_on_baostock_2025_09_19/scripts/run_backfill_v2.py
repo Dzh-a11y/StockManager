@@ -92,6 +92,25 @@ def main() -> int:
                     flush=True,
                 )
             print(f"耗时 {elapsed_minutes:.1f} 分钟", flush=True)
+            # P5 桥接:v2 批量回补完成后,把已入库数据发布为新 generation,
+            # 使 ReadinessGate 返回 READY(否则 Web 门禁页永远 NO_GENERATION)。
+            print("发布 P5 generation(v2 → generation 桥接)…", flush=True)
+            try:
+                from datetime import date as _date
+
+                bridge = service.publish_legacy_generation(
+                    "market",
+                    AdjustmentMethod.QFQ,
+                    target_end=_date.today(),
+                )
+                print(f"桥接结果: {bridge}", flush=True)
+            except Exception as bridge_error:
+                print(
+                    f"桥接失败(数据已入库,generation 未发布):"
+                    f"{type(bridge_error).__name__}: {bridge_error}",
+                    flush=True,
+                )
+                return 2
             return 0
         except Exception as error:
             elapsed_minutes = (time.monotonic() - started) / 60

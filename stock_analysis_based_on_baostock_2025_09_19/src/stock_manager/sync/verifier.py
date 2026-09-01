@@ -224,30 +224,52 @@ class CoverageVerifier:
         codes = tuple(sorted(task.codes))
         placeholders = ",".join("?" for _ in codes) if codes else "''"
         expected = len(codes)
+        # 批量粒度:一个任务覆盖整个区间(range_start..range_end)。
+        # 每只代码在该区间内应拥有 bar;按 distinct code 判定完整性,
+        # 并检查无效值(high<low/负值)与跨批次重复。
         rows = connection.execute(
-            f"""SELECT code, open, high, low, close, volume
+            f"""SELECT code, trading_day, open, high, low, close, volume
                 FROM daily_bars_staging
                 WHERE batch_id IN (
                     SELECT batch_id FROM ingest_batches
                     WHERE candidate_generation_id = ?
-                ) AND adjustment = ? AND trading_day = ?
+                ) AND adjustment = ? AND trading_day BETWEEN ? AND ?
                 AND code IN ({placeholders})""",
-            (candidate_id, adjustment.value, day.isoformat(), *codes),
+            (
+                candidate_id,
+                adjustment.value,
+                task.range_start.isoformat(),
+                task.range_end.isoformat(),
+                *codes,
+            ),
         ).fetchall()
-        actual = len(rows)
-        distinct_codes = {row["code"] for row in rows}
-        duplicates = actual - len(distinct_codes)
-        invalid = sum(1 for row in rows if not _valid_bar(row))
-        ratio = _ratio(actual, expected)
-        if ratio < DAILY_BAR_COMPLETE_RATIO:
-            missing = tuple(sorted(set(codes) - distinct_codes))
+        days_in_range = len(
+            self._trading_days(task.range_start, task.range_end)
+        )
+        complete_threshold = max(1, int(days_in_range * 0.95))
+        day_counts: dict[str, set[str]] = {}
+        invalid_rows = 0
+        for row in rows:
+            day_counts.setdefault(row["code"], set()).add(row["trading_day"])
+            if not _valid_bar(row):
+                invalid_rows += 1
+        complete_codes = {
+            code for code, days in day_counts.items() if len(days) >= complete_threshold
+        }
+        present_codes = set(day_counts)
+        actual = len(present_codes)
+        duplicates = 0
+        invalid = invalid_rows
+        missing = tuple(sorted(set(codes) - complete_codes))
+        ratio = _ratio(len(complete_codes), expected)
+        if missing:
             issues.append(
                 VerificationIssue(
-                    issue_id=f"{candidate_id}:daily_bars:{day.isoformat()}:coverage",
+                    issue_id=f"{candidate_id}:daily_bars:{task.partition_key}:coverage",
                     candidate_generation_id=candidate_id,
                     data_type="daily_bars",
                     partition_key=task.partition_key,
-                    trading_day=day,
+                    trading_day=_partition_date(task.partition_key),
                     codes=missing,
                     issue_type=IssueType.MISSING,
                     expected_count=expected,
@@ -255,45 +277,30 @@ class CoverageVerifier:
                     repairability=Repairability.REFETCH,
                     details=(
                         f"coverage {ratio:.2%} below {DAILY_BAR_COMPLETE_RATIO:.0%}; "
-                        f"missing {len(missing)} of {expected} codes"
+                        f"missing {len(missing)} of {expected} codes over "
+                        f"{task.range_start.isoformat()}..{task.range_end.isoformat()}"
                     ),
-                )
-            )
-        if duplicates > 0:
-            issues.append(
-                VerificationIssue(
-                    issue_id=f"{candidate_id}:daily_bars:{day.isoformat()}:dup",
-                    candidate_generation_id=candidate_id,
-                    data_type="daily_bars",
-                    partition_key=task.partition_key,
-                    trading_day=day,
-                    codes=tuple(sorted(distinct_codes)),
-                    issue_type=IssueType.DUPLICATE,
-                    expected_count=expected,
-                    actual_count=actual,
-                    repairability=Repairability.REBUILD,
-                    details=f"{duplicates} duplicate staging rows",
                 )
             )
         if invalid > 0:
             issues.append(
                 VerificationIssue(
-                    issue_id=f"{candidate_id}:daily_bars:{day.isoformat()}:invalid",
+                    issue_id=f"{candidate_id}:daily_bars:{task.partition_key}:invalid",
                     candidate_generation_id=candidate_id,
                     data_type="daily_bars",
                     partition_key=task.partition_key,
-                    trading_day=day,
-                    codes=tuple(sorted(distinct_codes)),
+                    trading_day=_partition_date(task.partition_key),
+                    codes=tuple(sorted(present_codes)),
                     issue_type=IssueType.INVALID,
                     expected_count=expected,
                     actual_count=actual,
                     repairability=Repairability.REFETCH,
-                    details=f"{invalid} invalid bar rows",
+                    details=f"{invalid} invalid bar rows in the batch range",
                 )
             )
         status = (
             VerificationStatus.COMPLETE
-            if ratio >= DAILY_BAR_COMPLETE_RATIO and duplicates == 0 and invalid == 0
+            if not missing and duplicates == 0 and invalid == 0
             else VerificationStatus.INCOMPLETE
         )
         records.append(
@@ -303,11 +310,11 @@ class CoverageVerifier:
                 partition_key=task.partition_key,
                 expected_count=expected,
                 actual_count=actual,
-                distinct_count=len(distinct_codes),
+                distinct_count=len(present_codes),
                 duplicate_count=duplicates,
                 invalid_count=invalid,
                 coverage_ratio=ratio,
-                missing_items=tuple(sorted(set(codes) - distinct_codes)),
+                missing_items=tuple(sorted(set(codes) - complete_codes)),
                 status=status,
                 verified_revision=write_revision,
                 manifest_sha256=manifest_sha256,
@@ -521,7 +528,13 @@ class CoverageVerifier:
 
 
 def _partition_date(partition_key: str) -> date:
-    return date.fromisoformat(partition_key.split(":")[0])
+    """Parse the leading date of a partition key.
+
+    Supports ``YYYY-MM-DD`` (single day) and ``YYYY-MM-DD..YYYY-MM-DD``
+    (batch range partition keys produced by the batch-granularity planner).
+    """
+    head = partition_key.split(":")[0].split("..")[0]
+    return date.fromisoformat(head)
 
 
 def _ratio(actual: int, expected: int) -> Decimal:

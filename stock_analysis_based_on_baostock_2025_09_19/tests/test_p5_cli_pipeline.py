@@ -161,4 +161,4 @@ class TestSyncStatusCommand:
         payload = json.loads(out)
         assert payload
         assert payload[0]["status"] == "SUCCEEDED"
-        assert payload[0]["task_counts"]["SUCCESS"] == 2
+        assert payload[0]["task_counts"]["SUCCESS"] == 1  # 批量粒度:3 只一个 batch

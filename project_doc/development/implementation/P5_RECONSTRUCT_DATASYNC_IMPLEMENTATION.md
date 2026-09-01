@@ -161,14 +161,29 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 真实部分库验证：20/5,214 只完整 → 0.38%，不再假 100%。
 - 测试：`tests/test_backfill_v2_progress.py` 更新为股票语义；`tests/test_web_api.py::TestStockBasedProgress` 覆盖长窗口部分入库场景。
 
-### 9.8 上市/退市窗口（P5 §7.3）
-
-新上市股票在八年窗口内的交易日数远小于窗口总天数，按全窗口 95% 判定会被永久误标不完整。修正：
+### 9.8 上市/退市窗口（P5 §7.3）新上市股票在八年窗口内的交易日数远小于窗口总天数，按全窗口 95% 判定会被永久误标不完整。修正：
 
 - **Provider**：`BaostockProvider.fetch_stock_basics()` 分页调用 `query_stock_basic`（每页 2000，全市场约 3 页），解析 `ipoDate`/`outDate` 填充 `StockIdentity.listed_on`/`delisted_on`；`fetch_stocks()` 在同一 session 内合并（`session=False` 复用外层会话，不额外 login）。旧客户端无 `query_stock_basic` 时静默降级为未知上市日期。
 - **进度判定**：`_v2_window_coverage` 中每只股票的期望交易日 = 窗口 ∩ [listed_on, delisted_on]；上市日期未知时退化为全窗口（保守）。窗口外上市/退市的股票不纳入分母。
 - 测试：`tests/test_baostock_provider.py`（basics 解析、合并、缺失降级）；`tests/test_web_api.py::TestListingWindowProgress`（中途上市股票只看上市以来）。
 - 真实库现状：当前 `stocks.listed_on` 为 NULL（旧同步未填）；下次重拉 stocks 后自动带上市日期，进度口径自动收紧。
+
+### 9.9 批量粒度 Planner（回补/增量统一 20 只 × 区间）
+
+新 `SyncPlanner` 的任务粒度由「每股 × 每交易日」改为**批量粒度**（与旧 v2 同级，用户 2026-09-02 确认回补与增量同步统一采用）：
+
+- `PlanInput` 增加 `batch_size`（默认 20，进入 `plan_fingerprint`）；`planner_version` 升至 `p5-rd2-2`。
+- `_window_tasks` 重写：
+  - `stocks`：每交易日 1 任务（全市场快照，快照语义）。
+  - `daily_bars`：代码按 `batch_size` 分批，每批 1 任务覆盖**整个目标区间**（`range_start..range_end`，一次串行请求，同 v2）。
+  - `fundamentals`：代码分批，`as_of = target_end`。
+- 任务量对比：八年全量 5,214 只 → daily_bars ≈ 261 任务（÷20），而非旧粒度约 1,040 万；增量（1 个交易日）≈ 1 + 261 + 261 ≈ 523 次请求（非 5,000 次/股）。
+- 配套适配：
+  - `CoverageVerifier._verify_daily_bars` 按区间判定：每只代码在该区间内的 distinct 交易日 ≥ 95% 视为完整；无效值检查保留；重叠批次按代码去重（行级重复由 staging 主键结构性防止）。
+  - `ReadinessGate` 分区键支持 `YYYY-MM-DD..YYYY-MM-DD` 范围，覆盖边界取范围终点。
+  - `verifier._partition_date` / `committer._partition_date` 支持范围键。
+- 请求路径不变：`SerialFetchWorker → BaostockProvider`（串行、限速、超时、重登录），业务层不直连 SDK。
+- 测试：`tests/test_p5_rd2_planner.py`（批量任务、batch_size 分块）、`tests/test_p5_rd5_verifier.py`（区间完整性、重叠去重、无效值）、`tests/test_p5_rd10_e2e.py`（批量流水线）、`tests/test_p5_rd6_committer.py`（范围分区键门禁）。全量 **572 passed**。
 
 ### 9.4 本轮测试
 

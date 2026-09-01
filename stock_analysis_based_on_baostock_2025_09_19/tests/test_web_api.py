@@ -149,8 +149,8 @@ def _publish_legacy_generation(repository: SQLiteRepository) -> None:
 
     verifier = CoverageVerifier(
         factory,
-        trading_days=lambda start, end: tuple(
-            d for d in days if start <= d <= end
+        trading_days=lambda start, end: (
+            (TARGET_DAY,) if start <= TARGET_DAY <= end else ()
         ),
         expected_universe_size=lambda day: 2,
     )

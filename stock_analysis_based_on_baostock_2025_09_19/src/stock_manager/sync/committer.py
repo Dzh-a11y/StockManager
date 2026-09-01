@@ -363,12 +363,16 @@ class ReadinessGate:
                     ),
                 )
             keys = [
-                date.fromisoformat(row["partition_key"].split(":")[0])
+                _partition_date(row["partition_key"])
+                for row in partitions
+            ]
+            range_ends = [
+                _partition_date(row["partition_key"], end=True)
                 for row in partitions
             ]
             if keys:
                 covered_start = min(keys)
-                covered_end = max(keys)
+                covered_end = max(range_ends)
                 if requested_start < covered_start or requested_end > covered_end:
                     return ReadinessResult(
                         status=ReadinessStatus.OUT_OF_RANGE,
@@ -388,3 +392,16 @@ class ReadinessGate:
             generation=generation,
             reason=None,
         )
+
+
+def _partition_date(partition_key: str, *, end: bool = False) -> date:
+    """Parse a date from a partition key (single day or range).
+
+    ``end=True`` returns the range's end date; for a single-day key it equals
+    the start date.
+    """
+    head = partition_key.split(":")[0]
+    if ".." in head:
+        start, finish = head.split("..", maxsplit=1)
+        return date.fromisoformat(finish if end else start)
+    return date.fromisoformat(head)

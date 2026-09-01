@@ -51,13 +51,16 @@ class PlanInput:
     target_start: date
     target_end: date
     required_data_types: tuple[str, ...]
-    planner_version: str = "p5-rd2-1"
+    planner_version: str = "p5-rd2-2"
+    batch_size: int = 20
 
     def __post_init__(self) -> None:
         if self.target_start > self.target_end:
             raise ValueError("target_start must not be after target_end")
         if not self.required_data_types:
             raise ValueError("required_data_types must not be empty")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
         unknown = set(self.required_data_types) - set(DATA_TYPE_ORDER)
         if unknown:
             raise ValueError(f"unknown data types: {sorted(unknown)}")
@@ -82,6 +85,7 @@ class PlanInput:
             self.target_end.isoformat(),
             ",".join(self.required_data_types),
             self.planner_version,
+            str(self.batch_size),
         )
         digest.update("|".join(parts).encode("utf-8"))
         return digest.hexdigest()
@@ -128,6 +132,7 @@ class SyncPlanner:
         target_end: date,
         universe_policy: str = UNIVERSE_POLICY_DEFAULT,
         required_data_types: Sequence[str] = DATA_TYPE_ORDER,
+        batch_size: int = 20,
     ) -> PlannedOutput:
         """Plan a full first-generation build from an external source."""
         input_ = PlanInput(
@@ -139,6 +144,7 @@ class SyncPlanner:
             target_start,
             target_end,
             tuple(required_data_types),
+            batch_size=batch_size,
         )
         return self._emit(input_, parent_generation=None)
 
@@ -152,6 +158,7 @@ class SyncPlanner:
         target_end: date,
         universe_policy: str = UNIVERSE_POLICY_DEFAULT,
         required_data_types: Sequence[str] = DATA_TYPE_ORDER,
+        batch_size: int = 20,
     ) -> PlannedOutput:
         """Plan tail catch-up after the current active generation.
 
@@ -181,6 +188,7 @@ class SyncPlanner:
             tail_days[0],
             target_end,
             tuple(required_data_types),
+            batch_size=batch_size,
         )
         return self._emit(input_, parent_generation=active_generation)
 
@@ -258,6 +266,7 @@ class SyncPlanner:
         target_end: date,
         universe_policy: str = UNIVERSE_POLICY_DEFAULT,
         required_data_types: Sequence[str] = DATA_TYPE_ORDER,
+        batch_size: int = 20,
     ) -> PlannedOutput:
         """Plan a one-time import of the legacy shared tables."""
         input_ = PlanInput(
@@ -269,6 +278,7 @@ class SyncPlanner:
             target_start,
             target_end,
             tuple(required_data_types),
+            batch_size=batch_size,
         )
         return self._emit(input_, parent_generation=None)
 
@@ -327,11 +337,15 @@ class SyncPlanner:
         return plan, candidate
 
     def _window_tasks(self, input_: PlanInput) -> tuple[SyncTask, ...]:
-        """Generate per-partition tasks over the target window.
+        """Generate batch-granularity tasks over the target window.
 
-        Each data type gets one task per trading day (partition key = the
-        day). The code set is the sorted universe for the partition day so
-        the task identity is deterministic.
+        Batch granularity (P5 v2-equivalent, not per-stock-per-day): the
+        universe is sorted and chunked by ``batch_size``; ``daily_bars`` gets
+        one task per code batch covering the whole target range (one serial
+        request per batch, like the legacy v2 path), ``fundamentals`` one task
+        per code batch with ``as_of = target_end``, and ``stocks`` one task
+        per day (snapshot semantics). For an 8-year window over ~5,214 stocks
+        this yields ~261 tasks per data type instead of ~10 million.
         """
         days = tuple(
             sorted(self._calendar(input_.target_start, input_.target_end))
@@ -340,40 +354,87 @@ class SyncPlanner:
             raise PlanRejectedError(
                 "trading calendar is empty for the target window"
             )
+        batch_size = input_.batch_size
         tasks: list[SyncTask] = []
         seq = 0
         universe_cache: dict[date, tuple[str, ...]] = {}
         for data_type in DATA_TYPE_ORDER:
             if data_type not in input_.required_data_types:
                 continue
-            for day in days:
-                codes = universe_cache.get(day)
-                if codes is None:
-                    codes = tuple(sorted(self._universe_codes(day)))
-                    universe_cache[day] = codes
-                tasks.append(
-                    SyncTask(
-                        task_id=f"{input_.plan_id}:{seq:05d}",
-                        plan_id=input_.plan_id,
-                        sequence_no=seq,
-                        data_type=data_type,
-                        partition_key=day.isoformat(),
-                        codes=codes,
-                        range_start=day,
-                        range_end=day,
-                        dependencies=(),
-                        status=SyncTaskStatus.PENDING,
-                        attempt_count=0,
-                        not_before=None,
-                        row_count=None,
-                        error_code=None,
-                        error_message=None,
-                        started_at=None,
-                        finished_at=None,
+            if data_type == "stocks":
+                # 快照语义:每个交易日一个任务(整市场一次请求)。
+                for day in days:
+                    codes = universe_cache.get(day)
+                    if codes is None:
+                        codes = tuple(sorted(self._universe_codes(day)))
+                        universe_cache[day] = codes
+                    tasks.append(
+                        self._make_task(
+                            input_, seq, data_type, day.isoformat(),
+                            codes, day, day,
+                        )
                     )
-                )
+                    seq += 1
+                continue
+            # daily_bars / fundamentals:按代码分批,区间为整个目标窗口
+            # (daily_bars)或 as_of=target_end(fundamentals)。
+            universe_day = input_.target_end
+            codes = universe_cache.get(universe_day)
+            if codes is None:
+                codes = tuple(sorted(self._universe_codes(universe_day)))
+                universe_cache[universe_day] = codes
+            for offset in range(0, len(codes), batch_size):
+                chunk = codes[offset : offset + batch_size]
+                if not chunk:
+                    continue
+                if data_type == "daily_bars":
+                    tasks.append(
+                        self._make_task(
+                            input_, seq, data_type,
+                            f"{input_.target_start.isoformat()}..{input_.target_end.isoformat()}",
+                            chunk, input_.target_start, input_.target_end,
+                        )
+                    )
+                else:  # fundamentals
+                    tasks.append(
+                        self._make_task(
+                            input_, seq, data_type,
+                            input_.target_end.isoformat(),
+                            chunk, input_.target_end, input_.target_end,
+                        )
+                    )
                 seq += 1
         return tuple(tasks)
+
+    @staticmethod
+    def _make_task(
+        input_: PlanInput,
+        seq: int,
+        data_type: str,
+        partition_key: str,
+        codes: tuple[str, ...],
+        range_start: date,
+        range_end: date,
+    ) -> SyncTask:
+        return SyncTask(
+            task_id=f"{input_.plan_id}:{seq:05d}",
+            plan_id=input_.plan_id,
+            sequence_no=seq,
+            data_type=data_type,
+            partition_key=partition_key,
+            codes=codes,
+            range_start=range_start,
+            range_end=range_end,
+            dependencies=(),
+            status=SyncTaskStatus.PENDING,
+            attempt_count=0,
+            not_before=None,
+            row_count=None,
+            error_code=None,
+            error_message=None,
+            started_at=None,
+            finished_at=None,
+        )
 
     def _repair_tasks(
         self,

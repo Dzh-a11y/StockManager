@@ -184,17 +184,36 @@ class TestBootstrap:
             target_end=date(2026, 9, 3),
             required_data_types=("daily_bars", "stocks"),
         )
-        # 4 trading days x 2 data types
-        assert len(out.tasks) == 8
+        # 批量粒度:stocks 每交易日 1 任务(4 天),daily_bars 按代码批次(4 只一批 → 1 任务)覆盖整个区间。
+        assert len(out.tasks) == 5
         types = [t.data_type for t in out.tasks]
-        assert types == ["stocks"] * 4 + ["daily_bars"] * 4
+        assert types == ["stocks"] * 4 + ["daily_bars"]
         assert all(t.status is SyncTaskStatus.PENDING for t in out.tasks)
         assert all(t.codes == tuple(sorted(CODES)) for t in out.tasks)
         assert out.plan.mode is SyncPlanMode.BOOTSTRAP
         assert out.plan.source is SyncSource.BAOSTOCK
         assert out.plan.parent_generation is None
-        assert out.plan.task_count == 8
+        assert out.plan.task_count == 5
         assert out.candidate.status is CandidateGenerationStatus.PLANNED
+        # daily_bars 任务覆盖整个区间(不是单日)
+        bars_task = out.tasks[-1]
+        assert bars_task.range_start == date(2026, 8, 31)
+        assert bars_task.range_end == date(2026, 9, 3)
+
+    def test_bootstrap_batch_size_chunks_codes(self) -> None:
+        out = _planner().plan_bootstrap(
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=date(2026, 8, 31),
+            target_end=date(2026, 9, 3),
+            required_data_types=("daily_bars",),
+            batch_size=2,
+        )
+        # 4 只代码 ÷ 2 = 2 个 daily_bars 任务
+        assert len(out.tasks) == 2
+        assert [len(t.codes) for t in out.tasks] == [2, 2]
+        assert out.tasks[0].codes == tuple(sorted(CODES)[:2])
+        assert out.tasks[1].codes == tuple(sorted(CODES)[2:])
 
     def test_bootstrap_ordered_by_day(self) -> None:
         out = _planner().plan_bootstrap(
@@ -202,8 +221,9 @@ class TestBootstrap:
             adjustment=AdjustmentMethod.QFQ,
             target_start=date(2026, 8, 31),
             target_end=date(2026, 9, 3),
-            required_data_types=("daily_bars",),
+            required_data_types=("stocks",),
         )
+        # stocks 快照按交易日排序
         keys = [t.partition_key for t in out.tasks]
         assert keys == sorted(keys)
 
@@ -249,8 +269,11 @@ class TestIncremental:
         # 增量窗口从 coverage_end 之后第一个交易日开始(09-02),到 target_end。
         assert out.plan.target_start == date(2026, 9, 2)
         assert out.plan.target_end == date(2026, 9, 3)
-        # 09-02, 09-03 两个交易日
-        assert len(out.tasks) == 2
+        # 批量粒度:4 只代码一个 batch → daily_bars 1 个任务覆盖整个区间。
+        assert len(out.tasks) == 1
+        assert out.tasks[0].data_type == "daily_bars"
+        assert out.tasks[0].range_start == date(2026, 9, 2)
+        assert out.tasks[0].range_end == date(2026, 9, 3)
 
     def test_incremental_fingerprint_differs_from_bootstrap(self) -> None:
         inc = _planner().plan_incremental(
