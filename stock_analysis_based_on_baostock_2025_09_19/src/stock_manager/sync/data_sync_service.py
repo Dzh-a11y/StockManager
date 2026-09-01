@@ -80,6 +80,7 @@ class SyncConfig:
     dividend_lookback_years: int
     retention_days: int = 360
     history: SyncHistoryConfig | None = None
+    backfill_request_interval_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -88,6 +89,11 @@ class SyncConfig:
             raise ValueError("retry_cooldown must be non-negative")
         if self.minimum_request_interval_seconds < 0:
             raise ValueError("minimum_request_interval_seconds must be non-negative")
+        if (
+            self.backfill_request_interval_seconds is not None
+            and self.backfill_request_interval_seconds < 0
+        ):
+            raise ValueError("backfill_request_interval_seconds must be non-negative")
         if self.calendar_horizon_days <= 0:
             raise ValueError("calendar_horizon_days must be positive")
         if self.dividend_lookback_years <= 0:

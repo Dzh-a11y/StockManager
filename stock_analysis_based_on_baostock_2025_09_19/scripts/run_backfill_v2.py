@@ -54,7 +54,10 @@ def main() -> int:
 
     repository = SQLiteRepository(args.db)
     provider = BaostockProvider(
-        request_interval_seconds=config.minimum_request_interval_seconds,
+        request_interval_seconds=(
+            config.backfill_request_interval_seconds
+            or config.minimum_request_interval_seconds
+        ),
     )
 
     def progress(event: dict[str, object]) -> None:

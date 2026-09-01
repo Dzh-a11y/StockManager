@@ -140,7 +140,9 @@ class WebApp:
                 sync_config = load_sync_config(self._config.sync_config_path)
                 provider = self._make_provider(
                     request_interval_seconds=(
-                        sync_config.minimum_request_interval_seconds
+                        sync_config.backfill_request_interval_seconds
+                        if sync_config.history is not None
+                        else sync_config.minimum_request_interval_seconds
                     ),
                     progress_callback=self._on_backfill_batch_progress,
                 )

@@ -52,6 +52,11 @@ def _parse_policy(root: dict[str, Any]) -> dict[str, Any]:
         "calendar_horizon_days": _integer(policy, "calendar_horizon_days"),
         "dividend_lookback_years": _integer(policy, "dividend_lookback_years"),
         "retention_days": retention,
+        "backfill_request_interval_seconds": (
+            _number(policy, "backfill_request_interval_seconds")
+            if "backfill_request_interval_seconds" in policy
+            else None
+        ),
     }
 
 
