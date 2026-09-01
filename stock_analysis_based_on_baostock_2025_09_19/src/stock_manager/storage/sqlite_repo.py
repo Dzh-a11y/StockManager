@@ -2102,3 +2102,22 @@ class SQLiteRepository:
             generation=row["generation"],
             activated_at=datetime.fromisoformat(row["activated_at"]),
         )
+
+    def set_plan_runner_pid(self, plan_id: str, pid: int | None) -> None:
+        """Record the runner subprocess pid for a plan (residual detection)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE sync_plans SET runner_pid = ? WHERE plan_id = ?",
+                (pid, plan_id),
+            )
+
+    def get_plan_runner_pid(self, plan_id: str) -> int | None:
+        """Return the recorded runner pid for a plan, if any."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT runner_pid FROM sync_plans WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()
+        if row is None or row["runner_pid"] is None:
+            return None
+        return int(row["runner_pid"])

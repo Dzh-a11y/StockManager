@@ -18,7 +18,11 @@ from typing import Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from stock_manager import __version__
-from stock_manager.domain import AdjustmentMethod, SyncStatus
+from stock_manager.domain import (
+    AdjustmentMethod,
+    SyncPlanStatus,
+    SyncStatus,
+)
 from stock_manager.protocols import ProviderProtocol
 from stock_manager.rules.builtin import build_default_registry
 from stock_manager.rules.registry import RuleRegistry
@@ -994,6 +998,57 @@ class WebApp:
             "reason": result.reason,
         }
 
+    def _reset_stale_plan_if_needed(
+        self, repo: SQLiteRepository, plan: object
+    ) -> None:
+        """Reset a RUNNING plan whose runner is gone (residual RUNNING).
+
+        A live runner updates the RUNNING task's ``progress_json.updated_at``
+        at least every few seconds (per-code fetch progress). If the newest
+        RUNNING task's progress is older than the staleness threshold, the
+        runner process has died without cleanup: reset the plan to PLANNED and
+        mark its RUNNING tasks INTERRUPTED so the UI shows "stopped" instead
+        of a frozen progress bar.
+        """
+        if getattr(plan, "status", None) is not SyncPlanStatus.RUNNING:
+            return
+        tasks = repo.list_sync_tasks(plan.plan_id)
+        running = [t for t in tasks if t.status.value == "RUNNING"]
+        if not running:
+            return
+        newest = max(running, key=lambda t: t.started_at or datetime.min)
+        progress = repo.get_task_progress(newest.task_id)
+        updated_text = (
+            progress.get("updated_at") if isinstance(progress, dict) else None
+        )
+        stale = True
+        if updated_text:
+            try:
+                from datetime import datetime as _dt
+
+                updated = _dt.fromisoformat(updated_text)
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=SHANGHAI)
+                stale = (
+                    _dt.now(SHANGHAI) - updated
+                ).total_seconds() > 90
+            except (ValueError, TypeError):
+                stale = True
+        if not stale:
+            return
+        # runner 已死:计划回 PLANNED,任务标 INTERRUPTED(可重新开始)。
+        now = _dt.now(SHANGHAI)
+        repo.update_sync_plan_status(
+            plan.plan_id, SyncPlanStatus.PLANNED, now
+        )
+        for task in running:
+            from stock_manager.domain import SyncTask as _ST
+            from stock_manager.sync.pipeline import _as_interrupted
+
+            repo.update_sync_task_status(
+                _as_interrupted(task, now)
+            )
+
     def _pipeline_progress(self) -> dict[str, object]:
         """Live progress of the P5 SyncPipeline (new-architecture backfill).
 
@@ -1009,6 +1064,9 @@ class WebApp:
         if not plans:
             return {"status": "none"}
         plan = plans[0]
+        self._reset_stale_plan_if_needed(repo, plan)
+        # 若发生了重置,重新读取计划与任务,避免用旧状态。
+        plan = repo.get_sync_plan(plan.plan_id) or plan
         try:
             tasks = repo.list_sync_tasks(plan.plan_id)
         except Exception:

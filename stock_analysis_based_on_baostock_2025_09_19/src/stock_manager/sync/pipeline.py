@@ -278,6 +278,18 @@ class SyncPipeline:
 
     # -- internals ------------------------------------------------------------
 
+    def _on_fetch_progress(
+        self, task: SyncTask, event: dict[str, object]
+    ) -> None:
+        """Provider 逐码进度 → 写回任务 progress_json(批次内进度条)。"""
+        index = int(event.get("index", 0) or 0)
+        total = int(event.get("total", 0) or 0)
+        code = str(event.get("current_code", ""))
+        self._persist_task_progress(
+            task, completed=index, total=total or len(task.codes),
+            current_code=code,
+        )
+
     def _persist_task_progress(
         self,
         task: SyncTask,
@@ -289,6 +301,9 @@ class SyncPipeline:
         """Persist live per-task progress so the Web page can show it."""
         import json as _json
 
+        from datetime import datetime as _datetime
+        from zoneinfo import ZoneInfo as _ZoneInfo
+
         payload = _json.dumps(
             {
                 "data_type": task.data_type,
@@ -297,6 +312,9 @@ class SyncPipeline:
                 "total": total,
                 "current_code": current_code,
                 "status": task.status.value,
+                "updated_at": _datetime.now(
+                    _ZoneInfo("Asia/Shanghai")
+                ).isoformat(),
             },
             ensure_ascii=False,
         )
@@ -375,7 +393,21 @@ class SyncPipeline:
                 current_code=task.codes[0] if task.codes else "",
             )
             try:
-                result: TaskExecutionResult = worker.execute(running)
+                # 批次内实时进度:临时挂 provider 逐码回调,写回任务 progress_json。
+                provider = getattr(worker, "_provider", None)
+                original_callback = None
+                if provider is not None and hasattr(provider, "_progress_callback"):
+                    original_callback = provider._progress_callback
+                    provider._progress_callback = (
+                        lambda event, task=running: self._on_fetch_progress(
+                            task, event
+                        )
+                    )
+                try:
+                    result: TaskExecutionResult = worker.execute(running)
+                finally:
+                    if provider is not None and original_callback is not None:
+                        provider._progress_callback = original_callback
                 rows = result.rows
                 adjustment = (
                     plan.adjustment
@@ -480,3 +512,13 @@ class SyncPipeline:
             partitions=partitions,
         )
         return published.generation == verified.candidate_generation_id
+
+
+def _as_interrupted(task: SyncTask, finished_at: datetime) -> SyncTask:
+    """Return a copy of ``task`` marked INTERRUPTED (runner gone)."""
+    return replace(
+        task,
+        status=SyncTaskStatus.INTERRUPTED,
+        finished_at=finished_at,
+        error_message="runner process stopped without cleanup",
+    )

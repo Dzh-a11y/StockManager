@@ -1401,10 +1401,21 @@ class TestPipelineProgressEndpoint:
                 started_at=now, finished_at=None,
             )
         )
+        import json as _json
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+
         repo.update_task_progress(
             "t2",
-            '{"data_type":"daily_bars","partition_key":"2018-07-12..2026-09-01",'
-            '"completed":1,"total":2,"current_code":"sh.600519","status":"RUNNING"}',
+            _json.dumps({
+                "data_type": "daily_bars",
+                "partition_key": "2018-07-12..2026-09-01",
+                "completed": 1,
+                "total": 2,
+                "current_code": "sh.600519",
+                "status": "RUNNING",
+                "updated_at": _dt.now(_ZI("Asia/Shanghai")).isoformat(),
+            }),
         )
         status, body = _get(app, "/api/sync/pipeline/progress")
         assert status == 200
@@ -1416,3 +1427,63 @@ class TestPipelineProgressEndpoint:
         assert body["batch"]["completed"] == 1
         assert body["batch"]["total"] == 2
         assert body["batch"]["current_code"] == "sh.600519"
+
+
+class TestStalePlanReset:
+    """P5:runner 被杀后残留 RUNNING 自动重置为 INTERRUPTED/PLANNED。"""
+
+    def test_stale_running_plan_reset(self, tmp_path: Path) -> None:
+        app = _app(tmp_path)
+        repo = app._services.repository
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        from stock_manager.domain import (
+            SyncPlan, SyncPlanMode, SyncPlanStatus, SyncSource,
+            SyncTask, SyncTaskStatus,
+        )
+
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        old = now - timedelta(seconds=300)  # 5 分钟前(超过 90s 阈值)
+        plan = SyncPlan(
+            "plan-stale", 1, SyncPlanMode.BOOTSTRAP, SyncSource.BAOSTOCK,
+            "market", AdjustmentMethod.QFQ, "a-share",
+            date(2018, 7, 12), date(2026, 9, 1), date(2026, 9, 1),
+            None, "c-stale", ("daily_bars",), 1, "fp",
+            SyncPlanStatus.RUNNING, old, old,
+        )
+        repo.save_sync_plan(plan)
+        repo.save_sync_task(
+            SyncTask(
+                "t-stale", "plan-stale", 0, "daily_bars",
+                "2018-07-12..2026-09-01", ("sh.600000",),
+                date(2018, 7, 12), date(2026, 9, 1), (),
+                SyncTaskStatus.RUNNING, 1, None, None, None, None, old, None,
+            )
+        )
+        import json as _json
+
+        repo.update_task_progress(
+            "t-stale",
+            _json.dumps({
+                "data_type": "daily_bars",
+                "completed": 0,
+                "total": 1,
+                "current_code": "sh.600000",
+                "status": "RUNNING",
+                "updated_at": old.isoformat(),
+            }),
+        )
+        status, body = _get(app, "/api/sync/pipeline/progress")
+        assert status == 200
+        # 残留 RUNNING 被重置:计划 PLANNED,任务 INTERRUPTED
+        assert body["status"] == "PLANNED"
+        loaded_plan = repo.get_sync_plan("plan-stale")
+        assert loaded_plan is not None
+        assert loaded_plan.status is SyncPlanStatus.PLANNED
+        from collections import Counter
+
+        counts = dict(Counter(
+            t.status.value for t in repo.list_sync_tasks("plan-stale")
+        ))
+        assert counts.get("INTERRUPTED") == 1

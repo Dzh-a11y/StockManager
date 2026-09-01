@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS sync_plans (
     plan_fingerprint TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    runner_pid INTEGER
 );
 CREATE TABLE IF NOT EXISTS sync_tasks (
     task_id TEXT PRIMARY KEY,
@@ -221,6 +222,12 @@ def _migrate_to_v1(connection: sqlite3.Connection) -> None:
     if "progress_json" not in task_columns:
         connection.execute(
             "ALTER TABLE sync_tasks ADD COLUMN progress_json TEXT"
+        )
+    # 幂等补列:sync_plans 记录 runner 进程 pid(用于检测残留 RUNNING)。
+    plan_columns = _column_names(connection, "sync_plans")
+    if "runner_pid" not in plan_columns:
+        connection.execute(
+            "ALTER TABLE sync_plans ADD COLUMN runner_pid INTEGER"
         )
 
 
