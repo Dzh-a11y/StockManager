@@ -273,7 +273,7 @@ def test_cli_sync_builds_provider_with_configured_interval(
     )
 
     assert exit_code == 0
-    assert intervals == [0.2]
+    assert intervals == [1.0]
 
 
 def test_provider_smoke_test_exercises_all_endpoints_without_persistence(
@@ -341,7 +341,7 @@ def test_default_sync_config_is_versioned_and_explicit() -> None:
     config = load_sync_config(path)
     assert config.cutoff_time == time(17, 30)
     assert config.retry_cooldown == timedelta(minutes=5)
-    assert config.minimum_request_interval_seconds == 0.2
+    assert config.minimum_request_interval_seconds == 1.0
     assert config.retention_days == 360
 
 

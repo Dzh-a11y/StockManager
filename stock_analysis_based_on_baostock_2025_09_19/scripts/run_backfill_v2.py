@@ -36,8 +36,8 @@ def main() -> int:
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=8,
-        help="瞬时网络失败时最多重启尝试(断点续传)次数;默认 8",
+        default=15,
+        help="瞬时网络失败时最多重启尝试(断点续传)次数;默认 15",
     )
     parser.add_argument(
         "--cooldown",
