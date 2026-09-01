@@ -804,15 +804,13 @@ async function pollBackfillV2() {
       batchTrack.hidden = true;
       batchLabel.hidden = true;
     }
-    // 第二个进度条:总进度(已完成批次数)
+    // 第二个进度条:总进度(已完成批次数),最后一行动态显示阶段与进度
     track.hidden = false;
     fill.style.width = pct + '%';
     current.hidden = false;
-    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）· '
-      + p.target_start + ' ~ ' + p.target_end;
-    meta.hidden = false;
-    meta.textContent = '八年回补进行中 · ' + (batchPhaseLabel || '准备中') + ' · 总进度 ' + pct
-      + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）';
+    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）'
+      + (batchPhaseLabel ? ' · ' + batchPhaseLabel : '');
+    meta.hidden = true; // 去掉第一行静态描述,动态信息并入最后一行
   } catch (e) {
     backfillV2Active = false;
   }
