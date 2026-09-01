@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 # baostock 声明依赖 pandas>=0.18,但仅 demo 脚本使用,核心运行不需要。
 # 钉住 pandas<3:3.x 在 Python 3.11 的 Windows 上无预编译轮子,会触发源码编译失败。
-dependencies = ["baostock>=0.8.9", "pandas<3", "tzdata>=2024.1"]
+# backtrader 为 P5A 回测引擎(Pure-Python,GPLv3 详见 ADR_P5A_BACKTEST_ENGINE)。
+dependencies = ["baostock>=0.8.9", "pandas<3", "tzdata>=2024.1", "backtrader>=1.9.78.123"]
 
 [project.scripts]
 stock-manager = "stock_manager.cli.main:main"
