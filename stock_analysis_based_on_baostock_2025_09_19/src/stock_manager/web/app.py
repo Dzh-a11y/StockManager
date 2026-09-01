@@ -1031,7 +1031,7 @@ class WebApp:
                     updated = updated.replace(tzinfo=SHANGHAI)
                 stale = (
                     _dt.now(SHANGHAI) - updated
-                ).total_seconds() > 90
+                ).total_seconds() > 30
             except (ValueError, TypeError):
                 stale = True
         if not stale:

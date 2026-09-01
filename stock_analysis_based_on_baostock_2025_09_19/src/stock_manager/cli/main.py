@@ -172,6 +172,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_status.add_argument("--db", type=Path, required=True)
     sync_status.add_argument("--plan-id", default=None, help="show one plan (default: newest)")
 
+    sync_clean = commands.add_parser(
+        "sync-clean", help="reset stale RUNNING plan/task state (no runner process)"
+    )
+    sync_clean.add_argument("--db", type=Path, required=True)
+    sync_clean.add_argument(
+        "--plan-id", default=None,
+        help="clean one plan (default: all non-terminal plans)",
+    )
+
     sync_import_legacy = commands.add_parser(
         "sync-import-legacy", help="import legacy shared tables as LEGACY_IMPORT candidate"
     )
@@ -689,6 +698,57 @@ def _sync_status_command(args: argparse.Namespace, stdout: TextIO) -> int:
     return 0
 
 
+def _sync_clean_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    """手动清理残留的 RUNNING 计划/任务(无 runner 进程时的假状态)。"""
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo as _ZoneInfo
+
+    from stock_manager.domain import SyncPlanStatus, SyncTask, SyncTaskStatus
+
+    repository = _open_existing_repository(args.db)
+    now = _datetime.now(_ZoneInfo("Asia/Shanghai")).isoformat()
+    if args.plan_id is not None:
+        plans = [repository.get_sync_plan(args.plan_id)]
+    else:
+        plans = repository.list_sync_plans("market", AdjustmentMethod.QFQ)
+
+    cleaned_plans = 0
+    cleaned_tasks = 0
+    for plan in plans:
+        if plan is None:
+            continue
+        if plan.status.value == "RUNNING":
+            repository.update_sync_plan_status(
+                plan.plan_id, SyncPlanStatus.PLANNED, _datetime.fromisoformat(now)
+            )
+            cleaned_plans += 1
+        for task in repository.tasks_by_status(
+            plan.plan_id, (SyncTaskStatus.RUNNING, SyncTaskStatus.INTERRUPTED)
+        ):
+            repository.update_sync_task_status(
+                SyncTask(
+                    task_id=task.task_id, plan_id=task.plan_id,
+                    sequence_no=task.sequence_no, data_type=task.data_type,
+                    partition_key=task.partition_key, codes=task.codes,
+                    range_start=task.range_start, range_end=task.range_end,
+                    dependencies=task.dependencies,
+                    status=SyncTaskStatus.PENDING, attempt_count=task.attempt_count,
+                    not_before=None, row_count=None, error_code=None,
+                    error_message=None, started_at=None, finished_at=None,
+                )
+            )
+            cleaned_tasks += 1
+    _print_json(
+        {
+            "cleaned_plans": cleaned_plans,
+            "cleaned_tasks": cleaned_tasks,
+            "note": "RUNNING/INTERRUPTED 已重置为 PLANNED/PENDING,可重新开始。",
+        },
+        stdout,
+    )
+    return 0
+
+
 def _task_counts(tasks: Sequence[object]) -> dict[str, int]:
     from collections import Counter
 
@@ -746,6 +806,8 @@ def main(
             return _sync_retry_command(args, stdout)
         if args.command == "sync-status":
             return _sync_status_command(args, stdout)
+        if args.command == "sync-clean":
+            return _sync_clean_command(args, stdout)
         if args.command == "db-prepare-transfer":
             return _db_prepare_transfer_command(args, stdout)
         if args.command == "db-verify-transfer":
