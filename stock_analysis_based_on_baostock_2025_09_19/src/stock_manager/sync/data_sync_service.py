@@ -753,6 +753,39 @@ class DataSyncService:
         )
         self.sync_trading_calendar(calendar_start, coverage_end)
         days = self._repository.get_trading_days(calendar_start, now.date())
+        if not days or days[0] > calendar_start:
+            # 本地日历未覆盖窗口起点(例如 v1 只缓存了近一年):幂等跳过会复用
+            # 旧 coverage_end 的 SUCCESS 而不拉取更早年份,这里强制刷新整段日历。
+            with self._provider_process_lock, persistent_file_lock(
+                self._provider_file_lock
+            ):
+                fetched = self._provider_call(
+                    lambda: self._provider.fetch_trading_days(
+                        calendar_start, coverage_end
+                    )
+                )
+                self._validate_calendar(fetched, calendar_start, coverage_end)
+                calendar_metadata = DatasetMetadata(
+                    "trading_calendar",
+                    coverage_end,
+                    self._provider.source_name,
+                    now,
+                    AdjustmentMethod.UNADJUSTED,
+                )
+                self._repository.save_trading_days(fetched, calendar_metadata)
+                self._repository.save_sync_record(
+                    SyncRecord(
+                        "trading_calendar",
+                        coverage_end,
+                        SyncStatus.SUCCESS,
+                        self._provider.source_name,
+                        AdjustmentMethod.UNADJUSTED,
+                        now,
+                        now,
+                        None,
+                    )
+                )
+            days = self._repository.get_trading_days(calendar_start, now.date())
         target_end = latest_completed_trading_day(
             now, days, self._config.cutoff_time
         )

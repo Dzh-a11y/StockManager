@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "version": 1,
+    "version": 2,
     "timezone": "Asia/Shanghai"
   },
   "policy": {
@@ -8,7 +8,10 @@
     "retry_cooldown_seconds": 300,
     "minimum_request_interval_seconds": 0.2,
     "calendar_horizon_days": 45,
-    "dividend_lookback_years": 3,
-    "retention_days": 360
+    "dividend_lookback_years": 3
+  },
+  "history": {
+    "target_years": 8,
+    "coverage_policy": "latest_completed_trading_day"
   }
 }
