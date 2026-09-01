@@ -873,7 +873,8 @@ async function pollSyncProgress() {
 
 async function shutdownServer() {
   if (!window.confirm('确定停止本服务进程吗？停止后需要重新启动才能继续使用。')) return;
-  const status = $('#shutdown-status');
+  const status = $('#shutdown-status') || $('#gate-shutdown-status');
+  if (!status) return;
   status.hidden = false;  status.textContent = '正在停止服务…';
   try {
     await api('POST', '/api/shutdown', { confirm: true });
@@ -1498,6 +1499,8 @@ window.addEventListener('resize', () => {
 function bindEvents() {
   $('#run-screen').addEventListener('click', runScreen);
   $('#shutdown-server').addEventListener('click', shutdownServer);
+  const gateShutdown = $('#gate-shutdown');
+  if (gateShutdown) gateShutdown.addEventListener('click', shutdownServer);
   const bootBtn = $('#bootstrap-start');
   if (bootBtn) bootBtn.addEventListener('click', startBootstrap);
   const sourceSel = $('#bootstrap-source');
