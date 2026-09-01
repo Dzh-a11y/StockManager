@@ -7,11 +7,12 @@ or exhausted in-process retries), it waits a cooldown and relaunches. The v2
 backfill is idempotent and resumes from completed chunks, so every restart
 makes progress instead of redoing completed work.
 
-Usage (from the code repo root):
+The watchdog writes its own log to data/backfill_logs/backfill_watchdog.log
+(absolute path, so no shell redirect is needed). Run from the workspace root:
 
+    cd stock_analysis_based_on_baostock_2025_09_19
     nohup .venv/bin/python -u scripts/run_backfill_watchdog.py \
-        [--restart-cooldown 30] [--max-restarts 0] [--runner scripts/run_backfill_v2.py] \
-        > data/backfill_logs/backfill_watchdog.log 2>&1 &
+        [--restart-cooldown 30] [--max-restarts 0] &
 
 Exit codes:
     0 = backfill finished (window covered or completed);
@@ -29,6 +30,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VENV_PYTHON = ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 PID_FILE = ROOT / "data" / "backfill_logs" / "backfill_watchdog.pid"
+LOG_FILE = ROOT / "data" / "backfill_logs" / "backfill_watchdog.log"
+
+LOG_HANDLE = None
+
+
+def _redirect_log() -> None:
+    """Append stdout/stderr (watchdog and runner) to the watchdog's own log."""
+    global LOG_HANDLE
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOG_HANDLE = open(LOG_FILE, "a", encoding="utf-8")  # noqa: SIM115 - held for process lifetime
+    sys.stdout = LOG_HANDLE
+    sys.stderr = LOG_HANDLE
 
 
 def _write_pid() -> None:
@@ -75,6 +88,7 @@ def main() -> int:
     runner = args.runner.resolve()
     restarts = 0
     attempt = 0
+    _redirect_log()
     _write_pid()
     try:
         while True:
@@ -86,6 +100,8 @@ def main() -> int:
             result = subprocess.run(
                 [str(VENV_PYTHON), "-u", str(runner), *runner_args],
                 cwd=str(ROOT),
+                stdout=LOG_HANDLE,
+                stderr=LOG_HANDLE,
             )
             if result.returncode == 0:
                 print("[watchdog] backfill finished (window covered or completed)", flush=True)
