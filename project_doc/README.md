@@ -26,6 +26,7 @@ project_doc/
 
 - `PHASE_1_PLAN.md` ~ `PHASE_6_PLAN.md`：P1 至 P6 阶段计划。
 - `P5A_PLAN.md`：P5A 历史筛选与 Backtrader 一体化回测方案（含阶段状态与验收记录）。
+- `P5_RECONSTRUCT_DATASYNC.md`：DataSync 重构计划，定义确定性规划、串行抓取、staging、完整性验证、generation 原子发布、种子 SHA-256 与跨平台迁移。
 - `MIGRATION_PLAN.md`：核心逻辑迁移至新架构的生效计划。
 - `DELETE_MANIFEST.md`：可安全删除的非业务文件候选清单（P1-1 执行依据）。
 
