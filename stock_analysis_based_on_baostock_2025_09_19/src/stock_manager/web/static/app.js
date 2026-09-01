@@ -741,6 +741,34 @@ async function loadSyncStatus() {
       return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
     }).join('');
     $('#sync-status-bands-legend').hidden = false;
+    // 年度覆盖:每块 1 年(八年回补后按年聚合展示)
+    const years = $('#sync-status-years');
+    if (years && (s.year_bands || []).length) {
+      years.hidden = false;
+      years.style.display = 'flex';
+      years.style.gap = '2px';
+      years.innerHTML = (s.year_bands || []).map((b) => {
+        const pct = Math.max(0, Math.min(1, b.coverage || 0));
+        let color;
+        if (!b.has_data) {
+          color = '#ecf0f1'; // 该年无数据:浅灰
+        } else if (b.incomplete) {
+          color = '#f39c12'; // 含未完全同步天:橙
+        } else if (pct === 0) {
+          color = '#95a5a6'; // 有数据但无完整天:灰
+        } else {
+          const g = Math.round(150 + (pct * 105));
+          const rr = Math.round(140 - (pct * 115));
+          color = 'rgb(' + rr + ',' + g + ',120)';
+        }
+        const note = b.incomplete ? '（部分未同步）' : '';
+        const title = b.year + ' 年 · ' + (b.trading_days || 0) + ' 个交易日 · 覆盖率 '
+          + Math.round(pct * 100) + '%' + note;
+        return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
+      }).join('');
+      $('#sync-status-years-legend').hidden = false;
+    }
+
   } catch (e) { /* ignore */ }
 }
 
