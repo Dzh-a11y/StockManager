@@ -627,31 +627,36 @@ function startSyncPolling() {
   syncPollTimer = setInterval(function () { pollSyncProgress(); pollBackfillV2(); }, 1000);
 }
 
+
+let backfillV2Active = false;
 async function pollBackfillV2() {
   try {
     const p = await api('GET', '/api/sync/backfill/progress');
-    const label = $('#backfill-v2-label');
-    const track = $('#backfill-v2-track');
-    const fill = $('#backfill-v2-fill');
-    if (!p || p.status === 'none') {
-      if (label) { label.hidden = true; }
-      if (track) { track.hidden = true; }
+    const active = p && p.status === 'RUNNING';
+    backfillV2Active = active;
+    if (!active) {
+      // 空闲:由 renderSyncProgress 按原逻辑处理(Web 回补或隐藏)
       return;
     }
+    const track = $('#sync-progress-track');
+    const fill = $('#sync-progress-fill');
+    const current = $('#sync-current');
+    const meta = $('#sync-progress');
     const pct = Math.round((p.progress || 0) * 100);
-    if (label) {
-      label.hidden = false;
-      label.textContent = '八年回补：' + (p.status === 'RUNNING' ? '进行中' : p.status)
-        + ' · ' + p.target_start + ' ~ ' + p.target_end
-        + '（' + p.done_chunks + '/' + p.total_chunks + ' 批，' + pct + '%）';
-    }
-    if (track) {
-      track.hidden = false;
-      if (fill) { fill.style.width = pct + '%'; }
-    }
-  } catch (e) { /* ignore */ }
+    track.hidden = false;
+    fill.style.width = pct + '%';
+    current.hidden = false;
+    current.textContent = '八年回补 总进度 ' + pct + '%（' + p.done_chunks + '/' + p.total_chunks + ' 批）· '
+      + p.target_start + ' ~ ' + p.target_end;
+    meta.hidden = false;
+    meta.textContent = '八年回补进行中…';
+  } catch (e) {
+    backfillV2Active = false;
+  }
 }
+
 function renderSyncProgress(p) {
+  if (backfillV2Active) return; // 八年回补驱动中,由 pollBackfillV2 渲染
   const track = $('#sync-progress-track');
   const fill = $('#sync-progress-fill');
   const current = $('#sync-current');

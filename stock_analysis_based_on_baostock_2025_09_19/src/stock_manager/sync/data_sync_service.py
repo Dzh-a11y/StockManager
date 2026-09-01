@@ -983,6 +983,22 @@ class DataSyncService:
                 if daily.tail_gap is not None:
                     gaps.append(daily.tail_gap)
                 if not gaps:
+                    # ear/late 覆盖不代表完整:上次中断可能只拉了部分股票。
+                    # 校验窗口内每个交易日 bar 股票数是否达到股票池的 95%,
+                    # 不完整则把整个目标区间作为缺口重拉(幂等 INSERT OR REPLACE)。
+                    pool = max(1, len(self._repository.get_stocks(as_of)))
+                    complete_threshold = max(1, int(pool * 0.95))
+                    counts = self._repository.daily_bar_stock_counts(
+                        target_start, as_of, adjustment
+                    )
+                    incomplete_days = [
+                        day
+                        for day, n in counts.items()
+                        if n < complete_threshold
+                    ]
+                    if incomplete_days:
+                        gaps.append((target_start, as_of))
+                if not gaps:
                     finished = self._now()
                     self._update_coverage_rows(
                         dataset_id, adjustment, target_start, as_of
