@@ -25,10 +25,15 @@ class WebConfig:
     lock_directory: Path | None = None
 
     def validate(self) -> None:
-        """Verify startup prerequisites; do not create a missing database."""
-        if not self.database_path.is_file():
+        """Verify startup prerequisites.
+
+        The database file is allowed to be missing: a brand-new user starts
+        with no local database and the Web layer bootstraps one (P5 section
+        5.1 first-run state) instead of refusing to start.
+        """
+        if self.database_path.exists() and not self.database_path.is_file():
             raise ValueError(
-                f"local SQLite database does not exist: {self.database_path.name}"
+                f"database path exists but is not a file: {self.database_path}"
             )
         if not self.static_root.is_dir():
             raise ValueError("static root must be an existing directory")

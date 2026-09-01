@@ -72,7 +72,7 @@ def _seed_repository(database_path: Path) -> SQLiteRepository:
         FundamentalSnapshot(
             stock.code,
             date(2025, 12, 31),
-            date(2026, 4, 1),
+            TARGET_DAY,
             Decimal("15"),
             Decimal("1"),
             "fixture",
@@ -98,7 +98,112 @@ def _seed_repository(database_path: Path) -> SQLiteRepository:
     repository.save_market_snapshot(
         stocks, tuple(bars), fundamentals, dividends, days, metadata, success
     )
+    _publish_legacy_generation(repository)
     return repository
+
+
+def _publish_legacy_generation(repository: SQLiteRepository) -> None:
+    """P5 §11.1:把 seed 的 legacy 共享表数据导入为 generation 并发布。
+
+    让「legacy 数据只有经过 LEGACY_IMPORT 与新 verifier 才能被读取」的
+    红线在测试种子中同样成立;发布后 ReadinessGate 才返回 READY。
+    """
+    import sqlite3 as _sqlite3
+    from datetime import datetime as _datetime
+
+    from stock_manager.domain import CandidateGenerationStatus
+    from stock_manager.sync.committer import GenerationCommitter
+    from stock_manager.sync.legacy import LegacyImporter
+    from stock_manager.sync.verifier import CoverageVerifier
+
+    def factory() -> _sqlite3.Connection:
+        connection = _sqlite3.connect(repository.database_path, timeout=30.0)
+        connection.row_factory = _sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        return connection
+
+    now = _datetime(2026, 8, 25, 18, 0, tzinfo=SHANGHAI)
+    importer = LegacyImporter(factory, now=lambda: now)
+    candidate_id = "cand-seed"
+    candidate = importer.build_candidate(
+        dataset_id="market",
+        adjustment=AdjustmentMethod.QFQ,
+        plan_id="plan-seed",
+        candidate_id=candidate_id,
+    )
+    for data_type, adjustment in (
+        ("stocks", None),
+        ("daily_bars", AdjustmentMethod.QFQ),
+        ("fundamentals", None),
+    ):
+        importer.import_partition(
+            candidate,
+            data_type=data_type,
+            partition_key=TARGET_DAY.isoformat(),
+            batch_id=f"batch-seed-{data_type}",
+            source="seed",
+            adjustment=adjustment,
+        )
+    finished = importer.finish_candidate(candidate)
+
+    verifier = CoverageVerifier(
+        factory,
+        trading_days=lambda start, end: tuple(
+            d for d in days if start <= d <= end
+        ),
+        expected_universe_size=lambda day: 2,
+    )
+    from stock_manager.domain import SyncTask, SyncTaskStatus
+
+    tasks = tuple(
+        SyncTask(
+            task_id=f"seed-{data_type}",
+            plan_id="plan-seed",
+            sequence_no=index,
+            data_type=data_type,
+            partition_key=TARGET_DAY.isoformat(),
+            codes=("sh.600001", "sz.000002"),
+            range_start=TARGET_DAY,
+            range_end=TARGET_DAY,
+            dependencies=(),
+            status=SyncTaskStatus.SUCCESS,
+            attempt_count=1,
+            not_before=None,
+            row_count=2,
+            error_code=None,
+            error_message=None,
+            started_at=now,
+            finished_at=now,
+        )
+        for index, data_type in enumerate(
+            ("stocks", "daily_bars", "fundamentals")
+        )
+    )
+    outcome = verifier.verify(
+        finished,
+        adjustment=AdjustmentMethod.QFQ,
+        target_start=TARGET_DAY,
+        target_end=TARGET_DAY,
+        tasks=tasks,
+    )
+    for record in outcome.records:
+        repository.save_coverage_verification(record)
+    repository.update_candidate_status(
+        candidate_id, CandidateGenerationStatus.VERIFIED, now
+    )
+    verified = repository.get_candidate_generation(candidate_id)
+    if verified is None:
+        raise AssertionError("candidate missing after VERIFIED")
+    committer = GenerationCommitter(factory, now=lambda: now)
+    partitions = importer.partitions_for(candidate_id, generation=candidate_id)
+    committer.publish(
+        verified,
+        dataset_id="market",
+        adjustment=AdjustmentMethod.QFQ,
+        verifications=outcome.records,
+        partitions=partitions,
+    )
 
 
 def _app(tmp_path: Path) -> WebApp:
@@ -290,15 +395,28 @@ def test_health_and_static_whitelist(tmp_path: Path) -> None:
     assert b"NOT_FOUND" in body
 
 
-def test_app_rejects_missing_database(tmp_path: Path) -> None:
+def test_app_starts_on_first_run_without_database(tmp_path: Path) -> None:
+    """P5 §5.1:新用户无本地库时 Web 仍启动,进入 first_run 状态而非拒绝。"""
+    db = tmp_path / "missing.sqlite3"
     config = WebConfig(
-        database_path=tmp_path / "missing.sqlite3",
+        database_path=db,
         system_template_root=SYSTEM_TEMPLATES,
         user_template_root=tmp_path / "user",
         static_root=STATIC_ROOT,
+        sync_config_path=REPO / "config" / "sync.json",
+        lock_directory=tmp_path / "locks",
     )
-    with pytest.raises(ValueError, match="does not exist"):
-        WebApp(config)
+    app = WebApp(config, provider_factory=_fake_provider)
+    assert db.is_file()  # 空库被创建
+    status, progress = _get(app, "/api/sync/progress")
+    assert status == 200
+    assert progress["status"] == "first_run"
+    # 门禁:NO_GENERATION,筛选不可用并给出原因
+    status, body = _get(app, "/api/sync/status")
+    assert status == 200
+    assert body["active_generation"] is None
+    assert body["readiness"]["status"] == "NO_GENERATION"
+    assert body["readiness"]["reason"] is not None
 
 
 # ---------- P3-3: template APIs ----------
@@ -668,9 +786,10 @@ def test_sync_progress_endpoint_tracks_state(tmp_path: Path) -> None:
 
     status, progress = _get(app, "/api/sync/progress")
     assert status == 200
-    assert progress["status"] == "idle"
+    assert progress["status"] == "first_run"  # P5 §5.1:无 active generation
 
     # 启动自动回补通过这两个处理器写进度;这里直接驱动它们验证端点。
+    app._sync_progress.update({"status": "idle"})
     app._on_backfill_progress(
         {"phase": "daily_bars", "completed": 12, "total": 100, "current_code": "sh.600000"}
     )

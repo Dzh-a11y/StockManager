@@ -326,7 +326,9 @@ class TestReadinessGate:
             requested_start=DAY,
             requested_end=DAY,
         )
-        assert result.status is ReadinessStatus.NO_GENERATION  # 无 HFQ active
+        # 存在 qfq active,但请求 hfq → ADJUSTMENT_MISMATCH。
+        assert result.status is ReadinessStatus.ADJUSTMENT_MISMATCH
+        assert result.generation is None
 
     def test_bad_range_rejected(self, gate: ReadinessGate) -> None:
         with pytest.raises(Exception):

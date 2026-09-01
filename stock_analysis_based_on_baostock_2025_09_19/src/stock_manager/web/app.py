@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 import signal
@@ -129,10 +130,35 @@ class WebApp:
         sync-progress state instead of blocking the request path. Auto-backfill only
         runs on the real provider path; an injected ``provider_factory`` is a test
         seam and skips it.
+
+        First-run rule (P5 section 5.1): when no active generation exists yet,
+        auto-backfill is NOT started. The UI must show the initialization /
+        bootstrap choice (target range, adjustment, data types, source) instead
+        of silently starting a multi-hour network sync.
         """
-        if self._provider_factory is not None:
-            return
         if self._config.sync_config_path is None or self._config.lock_directory is None:
+            return
+        try:
+            active = self._services.repository.get_active_generation(
+                "market", AdjustmentMethod.QFQ
+            )
+        except Exception:
+            active = None
+        if active is None:
+            self._sync_progress.update(
+                {
+                    "status": "first_run",
+                    "phase": "bootstrap",
+                    "dataset_id": "market",
+                    "adjustment": "qfq",
+                    "message": (
+                        "首次启动:尚无本地 generation。请在界面选择种子导入 "
+                        "或在线 Bootstrap,不会自动开始全量网络同步。"
+                    ),
+                }
+            )
+            return
+        if self._provider_factory is not None:
             return
 
         def run_backfill() -> None:
@@ -445,6 +471,16 @@ class WebApp:
         plan = self._services.compiler.compile(template)
         codes = self._codes(data.get("codes"))
         max_workers = self._max_workers_value(data.get("max_workers"))
+        # P5 读取门禁:数据不足时筛选禁用并给出补齐建议,禁止隐式联网。
+        # ADJUSTMENT_MISMATCH 交由 service 校验(返回 400),这里只拦真实数据缺失。
+        readiness = self._readiness_for_screen(dataset_id, adjustment, trading_day)
+        if readiness["status"] in (
+            "NO_GENERATION",
+            "OUT_OF_RANGE",
+            "MISSING_DATA_TYPE",
+            "INCOMPLETE",
+        ):
+            raise NotFoundError(readiness["reason"])
         self._screen_progress = {
             "status": "running",
             "dataset_id": dataset_id,
@@ -570,6 +606,9 @@ class WebApp:
                 "stocks_count": 0,
                 "recent_days": [],
                 "older_bands": [],
+                "p5_plans": self._p5_plan_state(),
+                "active_generation": self._active_generation_state(),
+                "readiness": self._readiness_state(),
             }
         anchor = latest_meta.trading_day
         start = anchor - timedelta(days=359)
@@ -667,6 +706,7 @@ class WebApp:
             "year_bands": year_bands,
             "p5_plans": self._p5_plan_state(),
             "active_generation": self._active_generation_state(),
+            "readiness": self._readiness_state(),
         }
 
     def _p5_plan_state(self) -> list[dict[str, object]]:
@@ -714,6 +754,64 @@ class WebApp:
         return {
             "generation": active.generation,
             "activated_at": active.activated_at.isoformat(),
+        }
+
+    def _readiness_state(self) -> dict[str, object]:
+        """ReadinessGate result for the default market/qfq read (P5 section 8).
+
+        Used by the UI to show why screening/backtest is unavailable and to
+        offer the bootstrap choice on first run.
+        """
+        from stock_manager.sync.committer import ReadinessGate
+
+        repo = self._services.repository
+        database_path = getattr(repo, "database_path", None)
+
+        def factory() -> sqlite3.Connection:
+            connection = sqlite3.connect(database_path, timeout=30.0)
+            connection.row_factory = sqlite3.Row
+            return connection
+
+        gate = ReadinessGate(factory)
+        result = gate.evaluate(
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            required_data_types=("stocks", "daily_bars", "fundamentals"),
+            requested_start=date.today() - timedelta(days=30),
+            requested_end=date.today(),
+        )
+        return {
+            "status": result.status.value,
+            "generation": result.generation,
+            "reason": result.reason,
+        }
+
+    def _readiness_for_screen(
+        self, dataset_id: str, adjustment: AdjustmentMethod, trading_day: date
+    ) -> dict[str, object]:
+        """ReadinessGate for one screening request (P5 section 8)."""
+        from stock_manager.sync.committer import ReadinessGate
+
+        repo = self._services.repository
+        database_path = getattr(repo, "database_path", None)
+
+        def factory() -> sqlite3.Connection:
+            connection = sqlite3.connect(database_path, timeout=30.0)
+            connection.row_factory = sqlite3.Row
+            return connection
+
+        gate = ReadinessGate(factory)
+        result = gate.evaluate(
+            dataset_id=dataset_id,
+            adjustment=adjustment,
+            required_data_types=("stocks", "daily_bars", "fundamentals"),
+            requested_start=trading_day,
+            requested_end=trading_day,
+        )
+        return {
+            "status": result.status.value,
+            "generation": result.generation,
+            "reason": result.reason,
         }
 
     def _backfill_v2_progress(self) -> dict[str, object]:

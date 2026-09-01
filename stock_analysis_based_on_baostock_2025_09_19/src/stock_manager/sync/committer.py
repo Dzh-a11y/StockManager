@@ -311,6 +311,23 @@ class ReadinessGate:
                 (dataset_id, adjustment.value),
             ).fetchone()
             if active is None:
+                # 是否存在其它复权口径的 active generation?是 → ADJUSTMENT_MISMATCH。
+                other = connection.execute(
+                    """SELECT adjustment FROM active_generations
+                       WHERE dataset_id = ? LIMIT 1""",
+                    (dataset_id,),
+                ).fetchone()
+                if other is not None:
+                    return ReadinessResult(
+                        status=ReadinessStatus.ADJUSTMENT_MISMATCH,
+                        dataset_id=dataset_id,
+                        adjustment=adjustment,
+                        generation=None,
+                        reason=(
+                            f"active generation exists for adjustment "
+                            f"{other['adjustment']} but not for {adjustment.value}"
+                        ),
+                    )
                 return ReadinessResult(
                     status=ReadinessStatus.NO_GENERATION,
                     dataset_id=dataset_id,
