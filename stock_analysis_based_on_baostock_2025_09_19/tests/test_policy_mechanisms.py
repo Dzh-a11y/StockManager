@@ -158,3 +158,57 @@ def test_add_position_on_dip_after_buy() -> None:
     result = engine.run(spec, _eligible_from(DAYS[0]), market)
     buys = [t for t in result.trades if t.side == "buy"]
     assert len(buys) >= 2, "回调后应补仓(多次买入)"
+
+
+def test_sma_value_and_should_functions() -> None:
+    """sma_value / should_sma_below_entry / should_sma_above_exit 纯函数。"""
+    from stock_manager.backtest.policies import (
+        should_sma_above_exit,
+        should_sma_below_entry,
+        sma_value,
+    )
+
+    # 周期不足返回 None
+    assert sma_value(tuple(Decimal(x) for x in ["10"]), 3) is None
+    # 正常均线
+    seq = tuple(Decimal(x) for x in ["10", "10", "10"])
+    assert sma_value(seq, 3) == Decimal("10")
+    # 低于均线买入
+    assert should_sma_below_entry(tuple(Decimal(x) for x in ["12", "11", "10"]), 3)
+    assert not should_sma_below_entry(tuple(Decimal(x) for x in ["10", "10", "11"]), 3)
+    # 高于均线卖出
+    assert should_sma_above_exit(tuple(Decimal(x) for x in ["10", "10", "11"]), 3)
+    assert not should_sma_above_exit(tuple(Decimal(x) for x in ["12", "11", "10"]), 3)
+
+
+def test_sma_below_entry_buys_when_below_ma() -> None:
+    """均线买入:价格跌破 N 日均线后买入,而非高位买入。"""
+    closes = ["12", "12", "12", "10", "9", "8", "9", "10", "11", "12"]
+    market, start, end = _market(closes)
+    spec = _spec_when(
+        entry="sma_below_v1", exit="eligibility_exit_v1", allocation="equal_weight_v1",
+        entry_params={"sma_period": 3},
+        alloc_params={"max_positions": 5},
+    )
+    engine = BacktraderBacktestEngine()
+    result = engine.run(spec, _eligible_from(DAYS[0]), market)
+    buys = [t for t in result.trades if t.side == "buy"]
+    assert buys, "跌破均线后应买入"
+    # 买入价应处于跌破均线的低价段(< 11.5),而非初始高位 12
+    assert all(t.price < Decimal("11.5") for t in buys)
+
+
+def test_sma_above_exit_sells_when_above_ma() -> None:
+    """均线卖出:价格突破 N 日均线后卖出。"""
+    closes = ["10", "10", "10", "11", "12", "13", "14", "15", "16", "17"]
+    market, start, end = _market(closes)
+    spec = _spec_when(
+        entry="eligibility_enter_v1", exit="sma_above_v1", allocation="equal_weight_v1",
+        exit_params={"sma_period": 3},
+        alloc_params={"max_positions": 5},
+    )
+    engine = BacktraderBacktestEngine()
+    result = engine.run(spec, _eligible_from(DAYS[0]), market)
+    sells = [t for t in result.trades if t.side == "sell"]
+    assert sells, "突破均线后应卖出"
+    assert all(t.price > Decimal("10") for t in sells)

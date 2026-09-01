@@ -41,6 +41,8 @@ from stock_manager.backtest.policies import (
     rank_candidates,
     should_add_on_dip,
     should_pullback_entry,
+    should_sma_above_exit,
+    should_sma_below_entry,
     should_take_profit,
 )
 from stock_manager.domain import AdjustmentMethod, DailyBar, StockIdentity
@@ -189,6 +191,11 @@ class StockManagerPortfolioStrategy(bt.Strategy):
                 cost = self.cost_by_code.get(code)
                 if cost and closes and should_take_profit(cost, closes[-1], tp_ratio):
                     self._partial_sell(code, today, partial)
+        elif exit_policy.policy_id == "sma_above_v1":
+            sma_period = int(exit_policy.parameters.get("sma_period", 20))
+            for code in held_codes:
+                if should_sma_above_exit(self._closes(code), sma_period):
+                    exits.add(code)
         for code in sorted(exits):
             self._sell(code, today, "exit")
         # 2) 买入:候选按排名取 max_positions(回调入场时先过滤未达回调的)
@@ -204,6 +211,12 @@ class StockManagerPortfolioStrategy(bt.Strategy):
             candidates = tuple(
                 c for c in candidates
                 if self._pullback_ok(c.code, lb, dr)
+            )
+        if self.spec.entry_policy.policy_id == "sma_below_v1":
+            sma_period = int(self.spec.entry_policy.parameters.get("sma_period", 20))
+            candidates = tuple(
+                c for c in candidates
+                if should_sma_below_entry(self._closes(c.code), sma_period)
             )
         max_positions = int(
             self.spec.allocation_policy.parameters.get("max_positions", 20)

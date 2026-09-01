@@ -133,3 +133,26 @@ def should_add_on_dip(
     if cost <= 0 or add_count >= max_additions:
         return False
     return close <= cost * (Decimal("1") - add_drawdown_ratio)
+
+
+def sma_value(series: tuple[Decimal, ...], period: int) -> Decimal | None:
+    """简单移动平均:最近 period 个值的均值;周期不足或非法返回 None。"""
+    if period <= 0 or len(series) < period:
+        return None
+    return sum(series[-period:]) / Decimal(period)
+
+
+def should_sma_below_entry(closes: tuple[Decimal, ...], sma_period: int) -> bool:
+    """sma_below_v1: 收盘价低于 N 日均线才买入。"""
+    sma = sma_value(closes, sma_period)
+    if sma is None:
+        return False
+    return closes[-1] < sma
+
+
+def should_sma_above_exit(closes: tuple[Decimal, ...], sma_period: int) -> bool:
+    """sma_above_v1: 收盘价高于 N 日均线才卖出。"""
+    sma = sma_value(closes, sma_period)
+    if sma is None:
+        return False
+    return closes[-1] > sma

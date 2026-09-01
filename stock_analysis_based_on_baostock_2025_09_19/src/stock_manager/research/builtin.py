@@ -79,6 +79,23 @@ def build_default_policy_registry() -> PolicyRegistry:
                 ),
             ),
             PolicyDefinition(
+                "sma_below_v1",
+                PolicyKind.ENTRY,
+                1,
+                "收盘价低于 N 日均线时买入(均线买入,均值回归)",
+                (
+                    _parameter(
+                        "sma_period",
+                        PolicyParameterType.INTEGER,
+                        20,
+                        "均线周期",
+                        "低于该周期简单移动平均时才买入",
+                        minimum=2,
+                        maximum=250,
+                    ),
+                ),
+            ),
+            PolicyDefinition(
                 "eligibility_exit_v1",
                 PolicyKind.EXIT,
                 1,
@@ -142,6 +159,23 @@ def build_default_policy_registry() -> PolicyRegistry:
                         "止盈时卖出现有持仓的比例(0~1)",
                         minimum="0.01",
                         maximum="1",
+                    ),
+                ),
+            ),
+            PolicyDefinition(
+                "sma_above_v1",
+                PolicyKind.EXIT,
+                1,
+                "收盘价高于 N 日均线时卖出(均线卖出,均值回归)",
+                (
+                    _parameter(
+                        "sma_period",
+                        PolicyParameterType.INTEGER,
+                        20,
+                        "均线周期",
+                        "高于该周期简单移动平均时才卖出",
+                        minimum=2,
+                        maximum=250,
                     ),
                 ),
             ),
