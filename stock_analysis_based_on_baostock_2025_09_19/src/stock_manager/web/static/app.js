@@ -484,6 +484,8 @@ function renderStrategyPolicies() {
     const span = document.createElement('span');
     span.className = 'field__label';
     span.textContent = BT_KIND_LABELS[kind] || kind;
+    // 机制说明:问号悬停显示当前所选政策的中文机制(随选择更新)
+    const tip = termHelp('');
     const select = document.createElement('select');
     select.className = 'select';
     select.id = 'bt-policy-' + kind;
@@ -494,14 +496,20 @@ function renderStrategyPolicies() {
       select.appendChild(opt);
     });
     if (BT_KIND_DEFAULTS[kind]) { select.value = BT_KIND_DEFAULTS[kind]; }
+    const updateTip = function () {
+      const policy = btFindPolicy(kind, select.value);
+      tip.dataset.tip = policy ? policy.description : '';
+    };
+    updateTip();
     label.appendChild(span);
+    label.appendChild(tip);
     label.appendChild(select);
     block.appendChild(label);
     const params = document.createElement('div');
     params.className = 'policy-params';
     params.id = 'bt-policy-params-' + kind;
     block.appendChild(params);
-    select.addEventListener('change', function () { renderPolicyParams(kind); });
+    select.addEventListener('change', function () { renderPolicyParams(kind); updateTip(); });
     container.appendChild(block);
     renderPolicyParams(kind);
   });

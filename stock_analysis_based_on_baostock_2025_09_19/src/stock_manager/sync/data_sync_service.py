@@ -1097,23 +1097,38 @@ class DataSyncService:
                                     )
                                 )
                             )
-                            self._repository.save_daily_bars(bars, metadata)
-                            done_units += len(chunk)
-                            self._emit_v2_progress(
-                                run_id, "daily_bars", done_units, total_units, chunk[-1]
-                            )
+                            # 拉取保持整批一次(chunk 区间请求),保存与进度按代码逐只推进,
+                            # 使第一个进度条能"一只一只"平滑显示批内进度。
+                            batch_done = 0
+                            bars_by_code: dict[str, list[DailyBar]] = {}
+                            for bar in bars:
+                                bars_by_code.setdefault(bar.code, []).append(bar)
+                            for code in chunk:
+                                self._repository.save_daily_bars(
+                                    bars_by_code.get(code, ()), metadata
+                                )
+                                batch_done += 1
+                                self._emit_v2_progress(
+                                    run_id, "daily_bars",
+                                    batch_done, len(chunk), code,
+                                )
                             fundamentals = self._provider_call(
                                 lambda chunk=chunk: self._provider.fetch_fundamentals(
                                     chunk, as_of
                                 )
                             )
-                            self._repository.save_fundamentals(
-                                fundamentals, metadata
-                            )
-                            done_units += len(chunk)
-                            self._emit_v2_progress(
-                                run_id, "fundamentals", done_units, total_units, chunk[-1]
-                            )
+                            fund_by_code: dict[str, list[FundamentalSnapshot]] = {}
+                            for item in fundamentals:
+                                fund_by_code.setdefault(item.code, []).append(item)
+                            for code in chunk:
+                                self._repository.save_fundamentals(
+                                    fund_by_code.get(code, ()), metadata
+                                )
+                                batch_done += 1
+                                self._emit_v2_progress(
+                                    run_id, "fundamentals",
+                                    batch_done, 2 * len(chunk), code,
+                                )
                             self._repository.save_backfill_chunk_v2(
                                 BackfillChunkV2(
                                     run_id,
