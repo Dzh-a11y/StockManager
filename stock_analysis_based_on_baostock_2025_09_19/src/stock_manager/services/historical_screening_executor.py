@@ -255,7 +255,7 @@ class HistoricalScreeningExecutor:
         registry: RuleRegistry,
         *,
         database_path: str,
-        max_workers: int = 4,
+        max_workers: int = 16,
         batch_size: int = 100,
         small_serial_threshold: int = 50,
         reader_factory: Callable[[], PointInTimeReaderProtocol] | None = None,
