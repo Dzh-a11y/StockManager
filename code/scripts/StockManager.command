@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # StockManager 工作台 一键启动(macOS 双击入口)
-# 放到桌面 / 程序坞/Finder 中双击即可。
+# 保留在 scripts 目录中;可为此文件创建 Finder 替身放到桌面。
 #
-# 如果整个项目目录移动了,把下面这一行的路径改成新的项目路径即可。
+# 根据脚本所在目录定位代码目录,整个项目移动后无需修改路径。
 set -e
-cd "/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
 /usr/bin/env python3 scripts/launcher.py start
 

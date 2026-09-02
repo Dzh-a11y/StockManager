@@ -41,8 +41,12 @@ StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供�
 ## 目录结构
 
 - 项目根目录：`/Users/douzihao/StockManager`
-- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`
+- 代码仓库：`/Users/douzihao/StockManager/code`
 - 项目文档（project_doc）：`/Users/douzihao/StockManager/project_doc`
+
+2026-09-02 代码目录统一改名为 `code/`，Git 根目录仍是项目根目录。CI 测试、Windows 构建、macOS 启动脚本与文档入口均使用新路径；运行数据保留在 `code/data/`，目录改名不改变数据库内容或包版本。
+
+本次目录调整已同步本机虚拟环境的命令入口与 editable 安装路径，并重建 macOS App。验证：新目录下离线测试 601 passed（5 项预期警告）；macOS 启动脚本从其他工作目录调用时仍可定位 `code/`；Web 服务恢复后 `/health` 返回 `ok`。
 
 ## 数据库
 
@@ -53,15 +57,15 @@ StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供�
 先进入代码仓库：
 
 ```bash
-cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
+cd /Users/douzihao/StockManager/code
 ```
 
-首次运行会自动检测 Python 3.11+、创建 `.venv`、执行 `pip install -e '.[dev]'`（下载 baostock/tzdata 等，约 1–2 分钟），然后启动服务并打开浏览器；之后再次启动秒进，不再安装。服务已在运行时重复点击只会打开浏览器（幂等，不会重复启动）。
+首次运行会自动检测 Python 3.11+、创建 `.venv`、执行 `pip install -e '.[dev]'`（下载 baostock/tzdata 等，约 1–2 分钟），然后启动服务并打开浏览器；后续启动会检查依赖，已安装且可导入时跳过安装。服务已在运行时重复点击只会打开浏览器（幂等，不会重复启动）。
 
 ### macOS
 
-- **双击脚本（推荐，最简）**：把 `scripts/StockManager.command` 放到桌面或程序坞，双击即启动并自动打开浏览器。
-  - 注意：该脚本第一行写死了本项目路径；如果整个项目目录移动了，把那一行的路径改成新路径即可。
+- **双击脚本（推荐，最简）**：在 `code` 目录中双击 `scripts/StockManager.command`，即可启动并自动打开浏览器；也可为该脚本创建 Finder 替身放到桌面。
+  - 脚本按自身位置定位代码目录，移动整个项目无需修改路径；请保留原脚本在 `scripts/` 内。已有 `StockManager.app` 移动后需在新目录重新运行 `./scripts/make_app.sh`。
 - **桌面 App（带图标）**：先运行 `python3 scripts/make_icon.py` 生成图标（若已生成可跳过），再运行 `./scripts/make_app.sh`，在代码仓库根生成 `StockManager.app`，双击图标即可启动。
 - **命令行方式**：
 

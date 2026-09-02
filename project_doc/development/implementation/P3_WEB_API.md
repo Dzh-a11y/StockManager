@@ -1,5 +1,5 @@
 ---
-date: 2026-08-31
+date: 2026-09-02
 purpose: 记录 StockManager P3 本地 Web 工作台的启动方式、接口契约与错误映射。
 project: StockManager
 status: active
@@ -12,7 +12,7 @@ status: active
 P3 提供 `stock-manager web` 子命令，默认只监听 `127.0.0.1`。先进入代码仓库并安装依赖：
 
 ```bash
-cd /Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19
+cd /Users/douzihao/StockManager/code
 python3 -m pip install '.[dev]'
 
 stock-manager web \

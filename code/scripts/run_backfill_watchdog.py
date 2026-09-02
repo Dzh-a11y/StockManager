@@ -10,7 +10,7 @@ makes progress instead of redoing completed work.
 The watchdog writes its own log to data/backfill_logs/backfill_watchdog.log
 (absolute path, so no shell redirect is needed). Run from the workspace root:
 
-    cd stock_analysis_based_on_baostock_2025_09_19
+    cd code
     nohup .venv/bin/python -u scripts/run_backfill_watchdog.py \
         [--restart-cooldown 30] [--max-restarts 0] &
 

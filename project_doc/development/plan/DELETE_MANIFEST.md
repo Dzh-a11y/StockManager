@@ -1,5 +1,5 @@
 ---
-date: 2026-08-25
+date: 2026-09-02
 purpose: 列出 StockManager 项目中可安全删除的非业务文件候选清单
 project: StockManager
 status: active
@@ -9,7 +9,7 @@ status: active
 
 **状态说明**：以下所有条目均为**候选**，P1-1 执行前需架构审查代理复核。本清单不包含任何删除命令，避免误执行。
 
-**路径基准**：本清单中所有相对路径均相对于代码仓库 `/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`；项目根目录为 `/Users/douzihao/StockManager`。
+**路径基准**：本清单中所有相对路径均相对于代码仓库 `/Users/douzihao/StockManager/code`；项目根目录为 `/Users/douzihao/StockManager`。
 
 ## 1. PyInstaller 构建物
 

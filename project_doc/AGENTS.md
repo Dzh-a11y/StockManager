@@ -36,7 +36,7 @@ status: active
 项目规范路径如下：
 
 - 项目根目录：`/Users/douzihao/StockManager`。
-- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
+- 代码仓库：`/Users/douzihao/StockManager/code`。
 - 项目文档目录（project_doc）：`/Users/douzihao/StockManager/project_doc`。
 - 所有仓库相对路径均以上述代码仓库为基准解析。
 

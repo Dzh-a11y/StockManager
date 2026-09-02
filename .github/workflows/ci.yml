@@ -16,7 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: stock_analysis_based_on_baostock_2025_09_19
+        working-directory: code
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,7 +32,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: stock_analysis_based_on_baostock_2025_09_19
+        working-directory: code
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,4 +48,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: StockManager-windows-exe
-          path: stock_analysis_based_on_baostock_2025_09_19/dist/StockManager.exe
+          path: code/dist/StockManager.exe

@@ -1,5 +1,5 @@
 ---
-date: 2026-08-25
+date: 2026-09-02
 purpose: 记录 StockManager P1-1 工程骨架重建、清理与验收结果。
 project: StockManager
 status: active
@@ -9,7 +9,7 @@ status: active
 
 ## 范围
 
-- 代码仓库：`/Users/douzihao/StockManager/stock_analysis_based_on_baostock_2025_09_19`。
+- 代码仓库：`/Users/douzihao/StockManager/code`。
 - 建立 PEP 517/518 `src` 布局工程骨架。
 - 仅清理 `DELETE_MANIFEST.md` 批准的构建物、日志、缓存、PyInstaller spec 和 `.DS_Store`。
 - 不修改或删除任何旧业务 `.py`、`.idea` 或 `.venv` 内容。
