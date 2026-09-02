@@ -30,6 +30,10 @@ project_doc/
 - `MIGRATION_PLAN.md`：核心逻辑迁移至新架构的生效计划。
 - `DELETE_MANIFEST.md`：可安全删除的非业务文件候选清单（P1-1 执行依据）。
 
+延期且不属于当前工作序列的独立计划：
+
+- `PE_DATAEXTENSION.md`（deferred）：合并规划数据源可替换性与数据类型扩展；待 P5-A 回测验收和 P5-B CAPM 完成后，仅在用户再次明确授权时激活。
+
 ## development/architecture（架构手册与架构图）
 
 总体架构决策、ADR 与架构图（HTML/JSON 图表与手册同属一个文件夹）：
