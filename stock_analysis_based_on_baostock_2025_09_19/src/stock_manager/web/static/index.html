@@ -90,191 +90,212 @@
       </section>
     </div>
 
-    <!-- 工作台(数据就绪后显示) -->
+    <!-- 工作台(数据就绪后显示):三栏布局 -->
     <div id="workbench-view" hidden>
-    <!-- 数据 UI 返回入口 + 当前活跃 generation -->
-    <div class="panel__hint" style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
-      <button id="open-data-ui" class="btn btn--ghost" type="button">← 数据同步</button>
-      <span id="wb-active-gen" class="panel__hint"></span>
-    </div>
-    <!-- ① 运行条件 -->
-    <section class="panel panel--conditions" aria-label="运行条件">
-      <div class="panel__head">
-        <h2 class="panel__title">运行条件</h2>
-      </div>
-      <div class="panel__body">
-        <label class="field">
-          <span class="field__label">数据集</span>
-          <input id="dataset" class="input" type="text" value="market" autocomplete="off">
-        </label>
-        <label class="field">
-          <span class="field__label">交易日</span>
-          <input id="trading-day" class="input" type="date">
-        </label>
-        <label class="field">
-          <span class="field__label">复权方式</span>
-          <select id="adjustment" class="select">
-            <option value="qfq">前复权 (qfq)</option>
-            <option value="hfq">后复权 (hfq)</option>
-            <option value="unadjusted">不复权 (unadjusted)</option>
-          </select>
-        </label>
-        <label class="field">
-          <span class="field__label">筛选并发数（Worker 数，1-16）<span class="term__help" data-tip="同时启动的筛选进程数：数量越多越快，但内存占用与 CPU 占用越高；小数据量时效果不明显。">?</span></span>
-          <input id="max-workers" class="input" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
-          <span class="field__hint">worker 越多越快，但内存占用越多、CPU 要求越高</span>
-        </label>
-        <label class="field">
-          <span class="field__label">股票代码（可选，逗号分隔）</span>
-          <input id="codes" class="input" type="text" placeholder="如 sh.600000,sz.000001" autocomplete="off">
-        </label>
-        <button id="run-screen" class="btn btn--primary btn--block" type="button">
-          <span class="btn__label">运行筛选</span>
-        </button>
-        <p id="screen-progress" class="panel__hint" hidden></p>
-        <div class="progress-track" id="screen-progress-track" hidden>
-          <div class="progress-fill" id="screen-progress-fill"></div>
-        </div>
-        <p id="screen-current" class="panel__hint" hidden></p>
-
-        <div class="section-divider"></div>
-        <p id="sync-progress" class="panel__hint" hidden></p>
-        <div class="progress-track" id="sync-batch-track" hidden>
-          <div class="progress-fill" id="sync-batch-fill"></div>
-        </div>
-        <p id="sync-batch-label" class="panel__hint" hidden></p>
-        <div class="progress-track" id="sync-progress-track" hidden>
-          <div class="progress-fill" id="sync-progress-fill"></div>
-        </div>
-        <p id="sync-current" class="panel__hint" hidden></p>
-        <div class="section-divider"></div>
+      <!-- 数据库条(顶部,全宽):数据同步入口 + 数据状态 + 当前库 -->
+      <div class="db-bar">
+        <button id="open-data-ui" class="btn btn--ghost" type="button">← 数据同步</button>
         <p id="sync-status-title" class="panel__hint" hidden></p>
-        <div id="sync-status-daily" class="panel__hint"></div>
-        <p id="sync-status-daily-legend" class="panel__hint" hidden>最近的 30 天（绿=已同步 橙=拉取中/未完全同步 灰=缺失 红=失败 浅=非交易日）</p>
-        <div id="sync-status-bands" class="panel__hint"></div>
-        <p id="sync-status-bands-legend" class="panel__hint" hidden>更早的 11 段（每段约 30 天,色深=覆盖率高;橙=含未完全同步天）</p>
-        <div id="sync-status-years" class="panel__hint"></div>
-        <p id="sync-status-years-legend" class="panel__hint" hidden>年度覆盖（每块 1 年,色深=覆盖率高;橙=含未完全同步天;灰=该年无数据）</p>
-        <div class="section-divider"></div>
-        <div id="bootstrap-panel" class="panel__hint" hidden>
-          <p class="panel__hint" id="bootstrap-readiness"></p>
-          <label class="panel__label" for="bootstrap-source">初始化方式</label>
-          <select id="bootstrap-source" class="input">
-            <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
-            <option value="seed">导入种子数据库（需外部 manifest）</option>
-          </select>
-          <label class="panel__label" for="bootstrap-adjustment">复权方式</label>
-          <select id="bootstrap-adjustment" class="input">
-            <option value="qfq">前复权 qfq</option>
-            <option value="unadjusted">不复权 unadjusted</option>
-            <option value="hfq">后复权 hfq</option>
-          </select>
-          <label class="panel__label" for="bootstrap-seed-path">种子文件路径（选择“导入种子”时）</label>
-          <input id="bootstrap-seed-path" class="input" type="text" placeholder="如 /path/to/market.sqlite3" autocomplete="off">
-          <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
-            <span class="btn__label">开始初始化</span>
-          </button>
-          <p id="bootstrap-status" class="panel__hint" hidden></p>
-        </div>
-        <div class="section-divider"></div>
-        <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
-          <span class="btn__label">停止服务（结束本进程）</span>
-        </button>
-        <p id="shutdown-status" class="panel__hint" hidden></p>
-        <p id="instances-label" class="panel__hint" hidden></p>
-        <ul id="instances-list" class="panel__hint"></ul>
-        <p id="instances-note" class="panel__hint" hidden></p>
-      </div>
-    </section>
-
-    <!-- ② 策略编辑器 -->
-    <section class="panel panel--editor" aria-label="策略编辑器">
-      <div class="panel__head panel__head--tabs">
-        <div class="panel__title-group">
-          <h2 class="panel__title">策略编辑器</h2>
-          <span id="dirty-badge" class="badge badge--warn" hidden>未保存</span>
-        </div>
-        <label class="field field--inline">
-          <span class="field__label">模板</span>
-          <select id="template-select" class="select"></select>
-        </label>
+        <span id="wb-active-gen" class="panel__hint"></span>
       </div>
 
-      <div class="editor-meta">
-        <div id="template-meta" class="template-meta"></div>
-        <div class="editor-actions">
-          <button id="reload-template" class="btn btn--ghost" type="button">重新加载</button>
-          <button id="validate-template" class="btn btn--ghost" type="button">校验</button>
-          <button id="save-template" class="btn btn--secondary" type="button">保存</button>
-          <button id="save-as-template" class="btn btn--primary" type="button">另存为</button>
-          <button id="delete-template" class="btn btn--danger" type="button">删除</button>
-        </div>
-      </div>
-
-      <div id="editor-rules" class="editor-rules"></div>
-
-      <div class="composer">
-        <div class="composer__head">
-          <h3 class="composer__title">组合逻辑</h3>
-          <div class="segmented" role="group" aria-label="顶层组合方式">
-            <button class="segment" data-compose="all" type="button">全部满足 (all)<span class="term__help term__help--flip" data-tip="所有已启用规则都通过，整条策略才算通过。">?</span></button>
-            <button class="segment" data-compose="any" type="button">任一满足 (any)<span class="term__help term__help--flip" data-tip="任意一条已启用规则通过，整条策略即算通过。">?</span></button>
+      <!-- 左列:运行筛选 -->
+      <div class="wb-col wb-col--left">
+        <section class="panel panel--conditions" aria-label="运行条件">
+          <div class="panel__head">
+            <h2 class="panel__title">运行筛选</h2>
           </div>
-        </div>
-        <div id="groups" class="groups"></div>
-        <button id="add-group" class="btn btn--ghost" type="button">+ 组合分组</button>
-        <p id="composition-error" class="panel__hint panel__hint--error" hidden></p>
+          <div class="panel__body">
+            <label class="field">
+              <span class="field__label">数据集</span>
+              <input id="dataset" class="input" type="text" value="market" autocomplete="off">
+            </label>
+            <label class="field">
+              <span class="field__label">交易日</span>
+              <input id="trading-day" class="input" type="date">
+            </label>
+            <label class="field">
+              <span class="field__label">复权方式</span>
+              <select id="adjustment" class="select">
+                <option value="qfq">前复权 (qfq)</option>
+                <option value="hfq">后复权 (hfq)</option>
+                <option value="unadjusted">不复权 (unadjusted)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field__label">筛选并发数（Worker 数，1-16）<span class="term__help" data-tip="同时启动的筛选进程数：数量越多越快，但内存占用与 CPU 占用越高；小数据量时效果不明显。">?</span></span>
+              <input id="max-workers" class="input" type="number" min="1" max="16" step="1" value="4" inputmode="numeric">
+              <span class="field__hint">worker 越多越快，但内存占用越多、CPU 要求越高</span>
+            </label>
+            <label class="field">
+              <span class="field__label">股票代码（可选，逗号分隔）</span>
+              <input id="codes" class="input" type="text" placeholder="如 sh.600000,sz.000001" autocomplete="off">
+            </label>
+            <button id="run-screen" class="btn btn--primary btn--block" type="button">
+              <span class="btn__label">运行筛选</span>
+            </button>
+            <p id="screen-progress" class="panel__hint" hidden></p>
+            <div class="progress-track" id="screen-progress-track" hidden>
+              <div class="progress-fill" id="screen-progress-fill"></div>
+            </div>
+            <p id="screen-current" class="panel__hint" hidden></p>
+          </div>
+        </section>
+
+        <!-- 左列下:回测基础数据(资金/窗口/持仓+运行) -->
+        <section class="panel panel--conditions" aria-label="回测基础数据">
+          <div class="panel__head">
+            <h2 class="panel__title">回测基础数据</h2>
+          </div>
+          <div class="panel__body">
+            <label class="field">
+              <span class="field__label">回测窗口（年,1-8）<span class="term__help" data-tip="回测区间长度,终点为本地数据最新已完成交易日,起点按 N×260 个交易日向前。">?</span></span>
+              <input id="bt-window" class="input" type="number" min="1" max="8" step="1" value="5" inputmode="numeric">
+              <span class="field__hint">终点 = 最新已完成交易日；起点 = 终点向前 N×260 个交易日</span>
+            </label>
+            <label class="field">
+              <span class="field__label">初始资金（元）</span>
+              <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
+              <span class="field__hint">金额为十进制字符串,如 1000000</span>
+            </label>
+            <label class="field">
+              <span class="field__label">最大持仓数</span>
+              <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
+            </label>
+            <button id="run-backtest" class="btn btn--primary btn--block" type="button">
+              <span class="btn__label">用此模板回测</span>
+            </button>
+            <p id="bt-progress" class="panel__hint" hidden></p>
+          </div>
+        </section>
       </div>
 
-      <!-- ③ 回测策略编辑器 -->
-      <div class="composer">
-        <div class="composer__head">
-          <h3 class="composer__title">回测策略</h3>
-          <span class="composer__hint">六类政策各选其一并填写参数（参数白名单校验,禁止任意代码）</span>
-        </div>
-        <div id="strategy-policies" class="editor-rules"></div>
+      <!-- 中列:筛选模版 + 策略模版 -->
+      <div class="wb-col wb-col--mid">
+        <section class="panel panel--editor" aria-label="策略编辑器">
+          <div class="panel__head panel__head--tabs">
+            <div class="panel__title-group">
+              <h2 class="panel__title">筛选模版</h2>
+              <span id="dirty-badge" class="badge badge--warn" hidden>未保存</span>
+            </div>
+            <label class="field field--inline">
+              <span class="field__label">模板</span>
+              <select id="template-select" class="select"></select>
+            </label>
+          </div>
+          <div class="editor-meta">
+            <div id="template-meta" class="template-meta"></div>
+            <div class="editor-actions">
+              <button id="reload-template" class="btn btn--ghost" type="button">重新加载</button>
+              <button id="validate-template" class="btn btn--ghost" type="button">校验</button>
+              <button id="save-template" class="btn btn--secondary" type="button">保存</button>
+              <button id="save-as-template" class="btn btn--primary" type="button">另存为</button>
+              <button id="delete-template" class="btn btn--danger" type="button">删除</button>
+            </div>
+          </div>
+          <div id="editor-rules" class="editor-rules"></div>
+          <div class="composer">
+            <div class="composer__head">
+              <h3 class="composer__title">组合逻辑</h3>
+              <div class="segmented" role="group" aria-label="顶层组合方式">
+                <button class="segment" data-compose="all" type="button">全部满足 (all)<span class="term__help term__help--flip" data-tip="所有已启用规则都通过，整条策略才算通过。">?</span></button>
+                <button class="segment" data-compose="any" type="button">任一满足 (any)<span class="term__help term__help--flip" data-tip="任意一条已启用规则通过，整条策略即算通过。">?</span></button>
+              </div>
+            </div>
+            <div id="groups" class="groups"></div>
+            <button id="add-group" class="btn btn--ghost" type="button">+ 组合分组</button>
+            <p id="composition-error" class="panel__hint panel__hint--error" hidden></p>
+          </div>
+        </section>
+
+        <!-- 中列下:策略模版(回测策略/六类政策) -->
+        <section class="panel panel--editor" aria-label="策略模版">
+          <div class="panel__head">
+            <h2 class="panel__title">策略模版</h2>
+          </div>
+          <div class="panel__body">
+            <p class="panel__hint">六类政策各选其一并填写参数（参数白名单校验,禁止任意代码）</p>
+            <div id="strategy-policies" class="editor-rules"></div>
+          </div>
+        </section>
       </div>
 
-      <!-- ④ 回测系统 -->
-      <div class="composer">
-        <div class="composer__head">
-          <h3 class="composer__title">回测</h3>
-        </div>
-        <label class="field">
-          <span class="field__label">回测窗口（年,1-8）<span class="term__help" data-tip="回测区间长度,终点为本地数据最新已完成交易日,起点按 N×260 个交易日向前。">?</span></span>
-          <input id="bt-window" class="input" type="number" min="1" max="8" step="1" value="5" inputmode="numeric">
-          <span class="field__hint">终点 = 最新已完成交易日；起点 = 终点向前 N×260 个交易日</span>
-        </label>
-        <label class="field">
-          <span class="field__label">初始资金（元）</span>
-          <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
-          <span class="field__hint">金额为十进制字符串,如 1000000</span>
-        </label>
-        <label class="field">
-          <span class="field__label">最大持仓数</span>
-          <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
-        </label>
-        <button id="run-backtest" class="btn btn--primary btn--block" type="button">
-          <span class="btn__label">用此模板回测</span>
-        </button>
-        <p id="bt-progress" class="panel__hint" hidden></p>
-        <div id="bt-result" class="panel__hint" hidden></div>
-      </div>
-    </section>
+      <!-- 右列:筛选结果 + 回测结果 -->
+      <div class="wb-col wb-col--right">
+        <section class="panel panel--results" aria-label="筛选结果">
+          <div class="panel__head">
+            <h2 class="panel__title">筛选结果</h2>
+            <span id="result-revision" class="panel__subtitle"></span>
+          </div>
+          <div id="result-body" class="panel__body">
+            <div class="empty-state">
+              <p class="empty-state__title">尚未运行筛选</p>
+              <p class="empty-state__hint">设置运行条件后点击「运行筛选」。模板临时配置不会被自动保存。</p>
+            </div>
+          </div>
+        </section>
 
-    <!-- ③ 筛选结果 -->
-    <section class="panel panel--results" aria-label="筛选结果">
-      <div class="panel__head">
-        <h2 class="panel__title">筛选结果</h2>
-        <span id="result-revision" class="panel__subtitle"></span>
+        <section class="panel panel--results" aria-label="回测结果">
+          <div class="panel__head">
+            <h2 class="panel__title">回测结果</h2>
+          </div>
+          <div id="bt-result" class="panel__body" hidden></div>
+        </section>
       </div>
-      <div id="result-body" class="panel__body">
-        <div class="empty-state">
-          <p class="empty-state__title">尚未运行筛选</p>
-          <p class="empty-state__hint">设置运行条件后点击「运行筛选」。模板临时配置不会被自动保存。</p>
+
+      <!-- 数据同步与维护(全宽底部) -->
+      <section class="panel panel--conditions wb-datasync" aria-label="数据同步与维护">
+        <div class="panel__head">
+          <h2 class="panel__title">数据同步与维护</h2>
         </div>
-      </div>
-    </section>
+        <div class="panel__body">
+          <p id="sync-progress" class="panel__hint" hidden></p>
+          <div class="progress-track" id="sync-batch-track" hidden>
+            <div class="progress-fill" id="sync-batch-fill"></div>
+          </div>
+          <p id="sync-batch-label" class="panel__hint" hidden></p>
+          <div class="progress-track" id="sync-progress-track" hidden>
+            <div class="progress-fill" id="sync-progress-fill"></div>
+          </div>
+          <p id="sync-current" class="panel__hint" hidden></p>
+          <div class="section-divider"></div>
+          <div id="sync-status-daily" class="panel__hint"></div>
+          <p id="sync-status-daily-legend" class="panel__hint" hidden>最近的 30 天（绿=已同步 橙=拉取中/未完全同步 灰=缺失 红=失败 浅=非交易日）</p>
+          <div id="sync-status-bands" class="panel__hint"></div>
+          <p id="sync-status-bands-legend" class="panel__hint" hidden>更早的 11 段（每段约 30 天,色深=覆盖率高;橙=含未完全同步天）</p>
+          <div id="sync-status-years" class="panel__hint"></div>
+          <p id="sync-status-years-legend" class="panel__hint" hidden>年度覆盖（每块 1 年,色深=覆盖率高;橙=含未完全同步天;灰=该年无数据）</p>
+          <div class="section-divider"></div>
+          <div id="bootstrap-panel" class="panel__hint" hidden>
+            <p class="panel__hint" id="bootstrap-readiness"></p>
+            <label class="panel__label" for="bootstrap-source">初始化方式</label>
+            <select id="bootstrap-source" class="input">
+              <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
+              <option value="seed">导入种子数据库（需外部 manifest）</option>
+            </select>
+            <label class="panel__label" for="bootstrap-adjustment">复权方式</label>
+            <select id="bootstrap-adjustment" class="input">
+              <option value="qfq">前复权 qfq</option>
+              <option value="unadjusted">不复权 unadjusted</option>
+              <option value="hfq">后复权 hfq</option>
+            </select>
+            <label class="panel__label" for="bootstrap-seed-path">种子文件路径（选择“导入种子”时）</label>
+            <input id="bootstrap-seed-path" class="input" type="text" placeholder="如 /path/to/market.sqlite3" autocomplete="off">
+            <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
+              <span class="btn__label">开始初始化</span>
+            </button>
+            <p id="bootstrap-status" class="panel__hint" hidden></p>
+          </div>
+          <div class="section-divider"></div>
+          <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
+            <span class="btn__label">停止服务（结束本进程）</span>
+          </button>
+          <p id="shutdown-status" class="panel__hint" hidden></p>
+          <p id="instances-label" class="panel__hint" hidden></p>
+          <ul id="instances-list" class="panel__hint"></ul>
+          <p id="instances-note" class="panel__hint" hidden></p>
+        </div>
+      </section>
     </div><!-- /#workbench-view -->
   </main>
 

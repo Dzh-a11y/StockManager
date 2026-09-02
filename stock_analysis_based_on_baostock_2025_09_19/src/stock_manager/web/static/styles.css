@@ -105,6 +105,44 @@ body {
 }
 
 /* ---------- Panels ---------- */
+/* ---------- Workbench 三栏布局 (1.13.1) ---------- */
+#gate-view,
+#workbench-view { grid-column: 1 / -1; }
+#workbench-view {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 400px;
+  gap: 18px;
+  align-items: start;
+}
+.wb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+/* 数据库条(顶部,全宽):数据同步入口 + 数据状态 + 当前库 */
+.db-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.db-bar .panel__hint { margin: 0; }
+/* 数据同步与维护(全宽底部) */
+.wb-datasync { grid-column: 1 / -1; }
+@media (max-width: 1180px) {
+  #workbench-view { grid-template-columns: 1fr 1fr; }
+  .wb-col { grid-column: 1 / -1; }
+}
+@media (max-width: 860px) {
+  #workbench-view { grid-template-columns: 1fr; }
+}
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);

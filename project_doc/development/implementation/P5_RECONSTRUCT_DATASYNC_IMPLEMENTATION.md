@@ -269,6 +269,22 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 版本：1.13.0 → 1.13.1（PATCH，新 UI 内容；三处版本号同步）。
 - 测试：`test_sync_status_exposes_p5_plan_state` 增 `can_enter is True`；`test_app_starts_on_first_run_without_database` 增 `can_enter is False`；新增 `test_instances_endpoint_lists_backfill_runner`（mock `subprocess.run` 输出含 `run_backfill_v2.py`）。
 
+### 12.5 三栏横向布局与数据库条（1.13.2）
+
+用户反馈主 UI 竖排不顺。工作台改为三栏网格，并新增顶部「数据库条」：
+
+- **顶部数据库条（全宽）**：`← 数据同步` 按钮 + `#sync-status-title`（数据状态：最近同步/覆盖/N 只）+ `#wb-active-gen`（当前库 generation）。
+- **左栏**：运行筛选（数据集/交易日/复权/worker/代码 → 运行筛选）+ 回测基础数据（窗口/初始资金/最大持仓 → 运行回测）。
+- **中栏**：筛选模版（模板选择/校验/保存/另存/删除 + 规则卡片 + 组合逻辑）+ 策略模版（回测六类政策）。
+- **右栏**：筛选结果（`#result-body`）+ 回测结果（`#bt-result`）。
+- **底部全宽「数据同步与维护」**：同步进度条、覆盖示意图、bootstrap 面板、停止服务、实例列表。
+- 样式：`styles.css` 新增 `#workbench-view` 网格（300px / 1fr / 400px，≤1180px 两栏、≤860px 单栏）、`.db-bar`、`.wb-col`；`#gate-view` 与 `#workbench-view` 各占满网格全宽。所有元素 id 不变，`app.js` 无需改动。
+- 版本：1.13.1 → 1.13.2（新 UI 内容，PATCH）。
+
+### 12.6 年度覆盖按当年股票池计算（1.13.3）
+
+「数据状态」的年度覆盖条原以最新一年的股票总数（5,214×0.95）判定全部历史年完整性，导致 2018~2022 等早年（当时市场股票更少）被误标「未完全同步」。修正：`_sync_status` 的 `year_bands` 按**该年实际股票池**判定——以截至该日在当已出现过的 distinct 股票数峰值（年内累计）作为该日参考，某天完整 ⇔ 当天 bar 股票数 ≥ 该日参考×0.95；当年新股上市只增不减，避免把市场增长误判为数据缺失。版本 1.13.2 → 1.13.3（修复 PATCH）。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。

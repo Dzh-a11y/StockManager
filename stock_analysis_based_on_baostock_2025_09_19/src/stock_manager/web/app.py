@@ -884,10 +884,15 @@ class WebApp:
                 cal = set(repo.get_trading_days(y_start, y_end))
                 year_bar_days = repo.daily_bar_days(y_start, y_end, qfq)
                 year_counts = repo.daily_bar_stock_counts(y_start, y_end, qfq)
-                complete = {
-                    day for day, n in year_counts.items()
-                    if n >= complete_threshold
-                }
+                # 按该年实际股票池判定完整性:以截至该日在当已出现过的
+                # distinct 股票数峰值(年内累计)作为该日参考——当年新股上市使
+                # 股票池只增不减,避免把市场增长误判为"数据缺失"。
+                running_ref = 0
+                complete: set[date] = set()
+                for day, n in sorted(year_counts.items()):
+                    running_ref = max(running_ref, n)
+                    if n >= max(1, int(running_ref * 0.95)):
+                        complete.add(day)
                 seg = [d for d in cal]
                 coverage = (
                     sum(1 for d in seg if d in complete) / len(seg)
