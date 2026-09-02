@@ -313,6 +313,10 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 测试：`test_research_accepts_max_workers` / `test_research_max_workers_upper_bound_is_16` / `test_research_max_workers_lower_bound_is_1`。全量离线测试 **601 passed**。版本 1.13.7 → 1.13.8（PATCH，UI 内容）。
 - 备注：回测与筛选仍各自独立 worker 池（不同入口的并发机制），统一并发入口另行评估。
 
+### 12.10 回测前置提示（1.13.9）
+
+「回测基础数据」面板「用此模板回测」按钮下方新增提示：进行回测前必须把模板里的 PE（市盈率）选项关掉。原因：本地基本面仅最新交易日一份快照（published_on 单日），开着 `pe_positive` 会让历史窗口每日无入选，回测不产生交易（实证：test 模板 260 天入选池仅 1 天非空、订单 0；去除后 316/520 天非空、产生交易）。纯 UI 文案变更，版本 1.13.8 → 1.13.9（PATCH）。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。
