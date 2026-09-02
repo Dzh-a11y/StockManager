@@ -7,6 +7,14 @@ status: accepted
 
 # P3 本地 Web 工作台验收记录
 
+## Windows CI 进程列表测试修复（2026-09-02）
+
+- 问题证据：[CI run 33649852072](https://github.com/Dzh-a11y/StockManager/actions/runs/33649852072) 中 Windows Python 3.11、3.14 均在 `test_instances_endpoint_lists_backfill_runner` 失败，其他平台及 `build-exe` 成功。
+- 根因：测试固定模拟 Unix `ps` 文本；Windows 实现使用 PowerShell JSON，解析该文本失败后返回空列表。故障位于测试 fixture 的平台假设。
+- 修复：在任一宿主平台显式测试 `posix` 与 `nt` 分支，分别提供 `ps` 文本和 PowerShell JSON；验证 runner/Web 进程、PID、`is_self`、Windows 单对象返回与空列表。只替换 Web 模块的 `os` 引用，不修改全局 `os.name`，避免影响 `Path` 与 pytest。空列表和未知 PID 测试使用固定输入，不再枚举宿主真实进程，并断言未知 PID 不发送终止信号。
+- 复现与本地验收：修复前在 macOS 强制执行 `nt` 分支，得到 **1 failed, 1 passed**；修复后相关 **6 passed**，完整离线套件 **604 passed, 5 warnings in 8.10s**。
+- 修改范围为测试与本验收文档，运行时代码、接口、页面加载流程均未改变，包版本保持 1.13.10。Windows 实机执行结果以 GitHub Actions 中该修复提交的 CI 记录为准。
+
 ## 1.13.10 首次加载进度验收（2026-09-02）
 
 - 已实现：中央加载卡片、五个真实步骤、已等待秒数、10 秒慢提示、60 秒手动重新加载、持续可见的失败原因、成功立即进入原有页面。计划见 `../plan/PHASE_3_PLAN.md` 的已确认扩展。

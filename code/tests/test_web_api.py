@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -921,40 +922,98 @@ def test_sync_status_label_reflects_record_status(tmp_path: Path) -> None:
     assert app._sync_status_label(None, False, False) == "missing"
 
 
-def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform", ["posix", "nt"])
+def test_instances_endpoint_reports_local_processes(tmp_path: Path, platform: str) -> None:
+    """空进程列表使用固定输出，不读取测试宿主机的真实进程。"""
     app = _app(tmp_path)
-    status, payload = _get(app, "/api/instances")
+    with (
+        mock.patch("stock_manager.web.app.os") as host_os,
+        mock.patch(
+            "stock_manager.web.app.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ) as run,
+    ):
+        host_os.name = platform
+        status, payload = _get(app, "/api/instances")
     assert status == 200
-    assert "instances" in payload
+    assert payload == {"instances": []}
+    run.assert_called_once()
 
 
-def test_instances_endpoint_lists_backfill_runner(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform", ["posix", "nt"])
+def test_instances_endpoint_lists_backfill_runner(tmp_path: Path, platform: str) -> None:
     """数据 UI 停止按钮依赖 /api/instances 能识别回补 runner 进程。"""
     app = _app(tmp_path)
 
-    class _FakeResult:
-        stdout = (
-            "  4242 python3 /repo/scripts/run_backfill_v2.py "
-            "--config config/sync.json\n"
-            "  5151 python3 -m stock_manager.web.httpd\n"
-        )
-        stderr = ""
+    runner_command = (
+        r'python "C:\StockManager\scripts\run_backfill_v2.py" --config config/sync.json'
+        if platform == "nt"
+        else "python3 /repo/scripts/run_backfill_v2.py --config config/sync.json"
+    )
+    web_command = "python -m stock_manager.web.httpd"
+    process_output = (
+        json.dumps([
+            {"ProcessId": 4242, "CommandLine": runner_command},
+            {"ProcessId": 5151, "CommandLine": web_command},
+        ])
+        if platform == "nt"
+        else f"  4242 {runner_command}\n  5151 {web_command}\n  6262 unrelated-process\n"
+    )
 
-    with mock.patch(
-        "stock_manager.web.app.subprocess.run",
-        return_value=_FakeResult(),
+    with (
+        mock.patch("stock_manager.web.app.os") as host_os,
+        mock.patch(
+            "stock_manager.web.app.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=process_output, stderr=""),
+        ) as run,
     ):
+        host_os.name = platform
+        host_os.getpid.return_value = 5151
         status, payload = _get(app, "/api/instances")
     assert status == 200
-    commands = [str(item["command"]) for item in payload["instances"]]
-    assert any("run_backfill" in command for command in commands)
-    assert any("stock_manager" in command for command in commands)
+    assert payload == {"instances": [
+        {"pid": 4242, "command": runner_command, "is_self": False},
+        {"pid": 5151, "command": web_command, "is_self": True},
+    ]}
+    run.assert_called_once()
+    command = run.call_args.args[0]
+    if platform == "nt":
+        assert command[:3] == ["powershell", "-NoProfile", "-Command"]
+        assert "run_backfill" in command[3]
+        assert "stock_manager" in command[3]
+        assert "ConvertTo-Json" in command[3]
+    else:
+        assert command == ["ps", "-Ao", "pid=,command="]
+
+
+def test_instances_endpoint_accepts_windows_single_process(tmp_path: Path) -> None:
+    """PowerShell 只有一个匹配进程时输出 JSON 对象，而不是数组。"""
+    app = _app(tmp_path)
+    command = r'python "C:\StockManager\scripts\run_backfill_v2.py"'
+    output = json.dumps({"ProcessId": 4242, "CommandLine": command})
+    with (
+        mock.patch("stock_manager.web.app.os") as host_os,
+        mock.patch(
+            "stock_manager.web.app.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+        ),
+    ):
+        host_os.name = "nt"
+        host_os.getpid.return_value = 5151
+        status, payload = _get(app, "/api/instances")
+    assert status == 200
+    assert payload == {"instances": [{"pid": 4242, "command": command, "is_self": False}]}
 
 
 def test_kill_instance_rejects_unknown_pid(tmp_path: Path) -> None:
     app = _app(tmp_path)
-    status, payload = _post(app, "/api/instances/kill", {"pid": 99999999})
+    with (
+        mock.patch.object(app, "_list_instances", return_value=[]),
+        mock.patch("stock_manager.web.app.os.kill") as kill,
+    ):
+        status, payload = _post(app, "/api/instances/kill", {"pid": 99999999})
     assert status == 404
+    kill.assert_not_called()
 
 
 # ---------- local daily bars (K-line source) ----------
