@@ -818,6 +818,7 @@ class WebApp:
                 "p5_plans": self._p5_plan_state(),
                 "active_generation": self._active_generation_state(),
                 "readiness": self._readiness_state(),
+                "can_enter": self._active_generation_state() is not None,
             }
         anchor = latest_meta.trading_day
         start = anchor - timedelta(days=359)
@@ -916,6 +917,7 @@ class WebApp:
             "p5_plans": self._p5_plan_state(),
             "active_generation": self._active_generation_state(),
             "readiness": self._readiness_state(),
+            "can_enter": self._active_generation_state() is not None,
         }
 
     def _p5_plan_state(self) -> list[dict[str, object]]:
@@ -1248,7 +1250,7 @@ class WebApp:
             if os.name == "nt":
                 ps = (
                     "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.CommandLine -match 'stock_manager' } | "
+                    "Where-Object { $_.CommandLine -match 'stock_manager|run_backfill' } | "
                     "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
                 )
                 result = subprocess.run(
@@ -1280,7 +1282,9 @@ class WebApp:
                 )
                 for line in result.stdout.splitlines():
                     parts = line.strip().split(None, 1)
-                    if len(parts) == 2 and "stock_manager" in parts[1]:
+                    if len(parts) == 2 and (
+                        "stock_manager" in parts[1] or "run_backfill" in parts[1]
+                    ):
                         pid = int(parts[0])
                         items.append(
                             {"pid": pid, "command": parts[1], "is_self": pid == os.getpid()}

@@ -153,6 +153,8 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 
 后端 `POST /api/sync/bootstrap` 支持 `source`：`online`（在线 Bootstrap，经 `startup_sync` 走 SyncPipeline）、`seed`（外部 manifest 校验 → `LegacyImporter` 导入）、`incremental`（已有 active generation 时补齐尾部）。门禁判定依据 ReadinessGate：无 active generation → `NO_GENERATION` → 门禁页；部分数据未发布 → 同样门禁页并显示回补进度。
 
+> 1.13.1（2026-09-02）起：有已激活 generation 时，数据页可点选本地库后手动进入工作台（不再强制 `READY`）；仅当完全没有已激活代时，才停留在本页描述的首次启动流程。放行规则与数据页新增能力详见 §12。
+
 ### 9.7 八年回补进度改为按完整入库股票数
 
 原 `_v2_window_coverage` 按「每年最大覆盖数做基准」的逐日判定会在只拉一批时立即 100%。现改为**按完整入库股票数**：
@@ -236,6 +238,36 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - `non_st` 与 `pe_positive` 可以进入筛选/回测的规则计划和请求契约；
 - 它们只能在对应研究日有可信股票状态/基本面快照时执行；
 - 在补齐历史 PIT 基本面与历史 ST 状态前，不得把当前快照回填到过去日期，也不得宣称八年历史回测已完整支持这两个条件。
+
+## 12. 2026-09-02 UI：门禁放行、数据页增强与返回导航（1.13.1）
+
+用户反馈「增量同步期间被锁在数据页无法使用已有数据做研究」，本版对 Web 门禁与数据 UI 做向后兼容增强（`tests/test_web_api.py` 共 48 passed 含本版新增断言）。
+
+### 12.1 放行规则：有已激活库即可选择进入
+
+- `/api/sync/status` 新增 `can_enter`：`market/qfq` 存在已激活 generation（`active_generations` 有行）时为 `true`。
+- 门禁页新增「本地数据库」区：展示当前 generation 标识、激活时间、**数据截至日**（`latest_synced_trading_day`）、股票数与覆盖区间提示；说明「本地仅保留最新一代数据；未覆盖交易日筛选会被拒绝」。
+- 用户点选该库（即使只有一项）后，「使用所选数据库进入筛选工作台」才启用；不再要求 `readiness.status == READY`。
+- 筛选安全性不变：`POST /api/screen` 仍按请求交易日走 `ReadinessGate`（未覆盖日返回 404 与原因），不因放行而绕过。
+- 首次启动（无任何已激活代）流程不变：门禁页只提供在线 Bootstrap / 导入种子 / 增量同步。
+
+### 12.2 数据页 runner 状态与停止按钮
+
+- `/api/instances` 的进程匹配扩展为 `stock_manager|run_backfill`，使独立回补 runner（`scripts/run_backfill_v2.py`）对 Web 可见。
+- 门禁页显示「回补进程运行中 · pid N」+「停止同步」按钮，复用 `POST /api/instances/kill`（SIGTERM）。
+- 停止后的状态收敛沿用既有机制：runner 死亡后 RUNNING 计划经 30 秒 staleness 重置为 `PLANNED`、RUNNING 任务标 `INTERRUPTED`；未完成任务下次显式启动续跑，SUCCESS 任务不重拉。
+
+### 12.3 视图切换与说明文案
+
+- 工作台顶部新增「← 数据同步」按钮（`state.uiView` 手动视图优先于自动切换），数据页与工作台可随时互切。
+- 数据同步区新增说明文案：「1. 数据增量约需 4~5 小时；进度条若卡住会在 5 分钟后自动重启。」
+
+### 12.4 改动与验收
+
+- 后端：`src/stock_manager/web/app.py`（`can_enter`、instances 匹配）。
+- 前端：`src/stock_manager/web/static/index.html`、`static/app.js`（视图切换、版本选择、runner 行、文案）。
+- 版本：1.13.0 → 1.13.1（PATCH，新 UI 内容；三处版本号同步）。
+- 测试：`test_sync_status_exposes_p5_plan_state` 增 `can_enter is True`；`test_app_starts_on_first_run_without_database` 增 `can_enter is False`；新增 `test_instances_endpoint_lists_backfill_runner`（mock `subprocess.run` 输出含 `run_backfill_v2.py`）。
 
 ## 免责声明
 

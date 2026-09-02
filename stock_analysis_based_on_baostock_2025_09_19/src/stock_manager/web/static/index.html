@@ -68,12 +68,18 @@
             <div class="progress-fill" id="sync-progress-fill"></div>
           </div>
           <p id="sync-current" class="panel__hint" hidden></p>
+          <p class="panel__hint" style="opacity:.75">1. 数据增量约需 4~5 小时；进度条若卡住会在 5 分钟后自动重启。</p>
+          <div class="section-divider"></div>
+          <p id="gate-runner-status" class="panel__hint" hidden></p>
+          <p id="db-select-title" class="panel__hint" hidden>本地数据库 · 进入前请选择</p>
+          <div id="db-versions" class="panel__hint"></div>
+          <p id="db-cutoff-hint" class="panel__hint" hidden></p>
           <div class="section-divider"></div>
           <p id="gate-status-title" class="panel__hint" hidden></p>
           <div id="gate-status-daily" class="panel__hint"></div>
           <div id="gate-status-bands" class="panel__hint"></div>
           <button id="gate-enter" class="btn btn--primary btn--block" type="button" hidden>
-            <span class="btn__label">数据就绪，进入筛选工作台</span>
+            <span class="btn__label">使用所选数据库进入筛选工作台</span>
           </button>
           <div class="section-divider"></div>
           <button id="gate-shutdown" class="btn btn--danger btn--block" type="button">
@@ -86,6 +92,11 @@
 
     <!-- 工作台(数据就绪后显示) -->
     <div id="workbench-view" hidden>
+    <!-- 数据 UI 返回入口 + 当前活跃 generation -->
+    <div class="panel__hint" style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+      <button id="open-data-ui" class="btn btn--ghost" type="button">← 数据同步</button>
+      <span id="wb-active-gen" class="panel__hint"></span>
+    </div>
     <!-- ① 运行条件 -->
     <section class="panel panel--conditions" aria-label="运行条件">
       <div class="panel__head">

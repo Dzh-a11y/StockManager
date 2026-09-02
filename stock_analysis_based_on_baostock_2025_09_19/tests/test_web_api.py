@@ -347,6 +347,8 @@ def test_sync_status_exposes_p5_plan_state(tmp_path: Path) -> None:
     assert body["p5_plans"][0]["candidate_status"] == "PUBLISHED"
     assert body["active_generation"] is not None
     assert body["active_generation"]["generation"] == "cand-test"
+    # UI 门禁放行依据:有已激活库 → can_enter 为 True
+    assert body["can_enter"] is True
 
 
 # ---------- P3-1: rule catalog ----------
@@ -418,6 +420,8 @@ def test_app_starts_on_first_run_without_database(tmp_path: Path) -> None:
     assert body["active_generation"] is None
     assert body["readiness"]["status"] == "NO_GENERATION"
     assert body["readiness"]["reason"] is not None
+    # 无已激活库 → 门禁不放行(界面只提供初始化/种子导入)
+    assert body["can_enter"] is False
 
 
 # ---------- P3-3: template APIs ----------
@@ -881,6 +885,29 @@ def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
     status, payload = _get(app, "/api/instances")
     assert status == 200
     assert "instances" in payload
+
+
+def test_instances_endpoint_lists_backfill_runner(tmp_path: Path) -> None:
+    """数据 UI 停止按钮依赖 /api/instances 能识别回补 runner 进程。"""
+    app = _app(tmp_path)
+
+    class _FakeResult:
+        stdout = (
+            "  4242 python3 /repo/scripts/run_backfill_v2.py "
+            "--config config/sync.json\n"
+            "  5151 python3 -m stock_manager.web.httpd\n"
+        )
+        stderr = ""
+
+    with mock.patch(
+        "stock_manager.web.app.subprocess.run",
+        return_value=_FakeResult(),
+    ):
+        status, payload = _get(app, "/api/instances")
+    assert status == 200
+    commands = [str(item["command"]) for item in payload["instances"]]
+    assert any("run_backfill" in command for command in commands)
+    assert any("stock_manager" in command for command in commands)
 
 
 def test_kill_instance_rejects_unknown_pid(tmp_path: Path) -> None:
