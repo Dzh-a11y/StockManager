@@ -303,6 +303,16 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 
 **修复**：`ResearchBacktestService` 新增公开方法 `recover_interrupted_runs()`，Web `WebApp.__init__` 构造回测服务后调用一次。新增测试 `test_web_startup_marks_orphaned_backtest_runs_interrupted`。全量离线测试 **598 passed**。版本 1.13.6 → 1.13.7（修复 PATCH）。
 
+### 12.9 回测并发数 UI 可配置（1.13.8）
+
+回测的 eligibility worker 原在 Web 装配写死 `max_workers=2`，与「运行筛选」的 Max-Workers 可调不一致。本版对齐：
+
+- 回测基础数据卡片新增「回测并发数（Worker 数，1-16）」输入（`#bt-workers`，默认 2）。
+- `ResearchBacktestService.submit` 新增 `max_workers` 参数（1..16 校验，None 回落服务默认）；按 `run_id` 记录，`_build_eligibility` 建执行器时取用。
+- Web `POST /api/research/backtests` 解析并校验 `max_workers` 后传入。
+- 测试：`test_research_accepts_max_workers` / `test_research_max_workers_upper_bound_is_16` / `test_research_max_workers_lower_bound_is_1`。全量离线测试 **601 passed**。版本 1.13.7 → 1.13.8（PATCH，UI 内容）。
+- 备注：回测与筛选仍各自独立 worker 池（不同入口的并发机制），统一并发入口另行评估。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。

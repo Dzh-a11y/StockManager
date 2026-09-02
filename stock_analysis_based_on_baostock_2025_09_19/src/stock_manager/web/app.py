@@ -377,8 +377,14 @@ class WebApp:
             policies = data.get("policies")
             initial_cash = Decimal(str(data["initial_cash"]))
             max_positions = int(data.get("max_positions", 20))
+            raw_workers = data.get("max_workers")
+            max_workers = None if raw_workers is None else int(raw_workers)
         except (KeyError, ValueError, TypeError) as error:
             return self._error(BadRequestError("invalid research request: " + str(error)))
+        if max_workers is not None and not 1 <= max_workers <= 16:
+            return self._error(
+                BadRequestError("max_workers must be between 1 and 16")
+            )
         try:
             run_id = self._research.submit(
                 template_id=template_id,
@@ -390,6 +396,7 @@ class WebApp:
                 policies=policies,
                 initial_cash=initial_cash,
                 max_positions=max_positions,
+                max_workers=max_workers,
             )
         except Exception as error:
             return self._error(BadRequestError(str(error)))

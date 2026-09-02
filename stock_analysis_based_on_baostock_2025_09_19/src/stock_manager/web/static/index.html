@@ -162,6 +162,11 @@
               <span class="field__label">最大持仓数</span>
               <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
             </label>
+            <label class="field">
+              <span class="field__label">回测并发数（Worker 数，1-16）<span class="term__help" data-tip="回测信号构建(每日入选池)同时启动的 worker 进程数：数量越多越快，但内存占用与 CPU 占用越高。">?</span></span>
+              <input id="bt-workers" class="input" type="number" min="1" max="16" step="1" value="2" inputmode="numeric">
+              <span class="field__hint">worker 越多越快，但内存占用越多、CPU 要求越高；默认 2</span>
+            </label>
             <button id="run-backtest" class="btn btn--primary btn--block" type="button">
               <span class="btn__label">用此模板回测</span>
             </button>

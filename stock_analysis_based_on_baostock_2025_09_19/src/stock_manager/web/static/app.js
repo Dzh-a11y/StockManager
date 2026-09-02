@@ -600,6 +600,7 @@ async function submitBacktest() {
     window_years: windowYears,
     initial_cash: $('#bt-cash').value.trim() || '1000000',
     max_positions: Math.min(500, Math.max(1, Math.floor(Number($('#bt-positions').value) || 20))),
+    max_workers: Math.min(16, Math.max(1, Math.floor(Number($('#bt-workers').value) || 2))),
   };
   btn.disabled = true;
   result.hidden = true;

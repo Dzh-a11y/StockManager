@@ -1097,6 +1097,54 @@ def test_sync_status_marks_partial_bar_day_as_incomplete(tmp_path: Path) -> None
 
 
 
+# ---------- research submit max_workers(回测并发,UI 可配) ----------
+def _research_body(**overrides: object) -> dict:
+    body: dict[str, object] = {
+        "template_id": "system-default",
+        "template_revision": 1,
+        "strategy_spec_id": "x",
+        "backtest_start": "2021-01-01",
+        "backtest_end": "2026-01-01",
+        "initial_cash": "1000000",
+        "max_positions": 20,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_research_accepts_max_workers(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    submit = mock.MagicMock(return_value="rb-x")
+    app._research = mock.MagicMock()
+    app._research.submit = submit
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=4)
+    )
+    assert status == 202
+    assert data["run_id"] == "rb-x"
+    kwargs = submit.call_args.kwargs
+    assert kwargs["max_workers"] == 4
+
+
+def test_research_max_workers_upper_bound_is_16(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=17)
+    )
+    assert status == 400
+    assert "max_workers" in data["error"]["message"]
+
+
+def test_research_max_workers_lower_bound_is_1(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=0)
+    )
+    assert status == 400
+    assert "max_workers" in data["error"]["message"]
+
+
+
 # ---------- max_workers & elapsed (worker 配置) ----------
 def test_screen_accepts_max_workers_and_reports_elapsed(tmp_path: Path) -> None:
     app = _app(tmp_path)
