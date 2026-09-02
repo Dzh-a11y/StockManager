@@ -287,6 +287,14 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 
 「数据状态」的年度覆盖条原以最新一年的股票总数（5,214×0.95）判定全部历史年完整性，导致 2018~2022 等早年（当时市场股票更少）被误标「未完全同步」。修正：`_sync_status` 的 `year_bands` 按**该年实际股票池**判定——以截至该日在当已出现过的 distinct 股票数峰值（年内累计）作为该日参考，某天完整 ⇔ 当天 bar 股票数 ≥ 该日参考×0.95；当年新股上市只增不减，避免把市场增长误判为数据缺失。版本 1.13.2 → 1.13.3（修复 PATCH）。
 
+### 12.7 历史回测股票池向后重建（1.13.6）
+
+**现象**：回测报「historical run blocked by missing data: rule non_st requires historical stock universe snapshots, but no stocks coverage exists」。
+
+**根因**：`non_st` 是 `UNIVERSE_STATE_PIT_READY` 规则。历史回测的 `universe_as_of(day)` 与执行器 `_universe_for(day, snapshots)` 均按契约取 `as_of <= day` 的快照；而 `stocks` 表只有 2026-09-01 单一快照，于是任何早于该日的回测起点（如 5 年窗口 2021-09）都无快照 → 返回空 → 守卫判「无股票池覆盖」→ 拦截。这与接线复杂度无关，是"历史股票池快照不足"的数据契约问题，P5 §11.4 早已声明该边界。
+
+**修复**：当无 `as_of <= day` 快照时，回退到**最早快照**，用 `listed_on / delisted_on` **向后重建**该日股票池存在性（`SQLitePointInTimeReader.universe_as_of` 与 `historical_screening_executor._universe_for` 两处一致）。存在性 PIT 正确（上市/退市日为事实）；ST 仍取快照值，属 P5A-2 §约定「最近快照近似」——不回填历史逐日 ST、不宣称八年完整支持 ST。真实库验证：`universe_as_of(2021-09-01)` 由 0 → **4,268 只**。新增回归测试 `test_universe_reconstructed_before_earliest_snapshot` 与 `test_universe_for_reconstructs_before_earliest_snapshot`。全量离线测试 **597 passed**。版本 1.13.5 → 1.13.6（修复 PATCH）。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。
