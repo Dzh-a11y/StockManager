@@ -565,6 +565,26 @@ class WebApp:
             pass
         if self._config.sync_config_path is None:
             return self._error(BadRequestError("sync config is required"))
+        repo_root = _Path(self._config.sync_config_path).resolve().parent.parent
+        # 防重复启动:runner 进程持有独占文件锁,锁被持有说明有回补实例存活。
+        # DB 中 RUNNING 计划检查不可靠(进程被杀后残留 RUNNING),文件锁是最终
+        # 防线,优先于测试占位分支:任何模式只要锁被持有都不允许再启动。
+        from stock_manager.sync.locks import is_file_lock_held as _lock_held
+
+        runner_lock = repo_root / "data" / "locks" / "backfill_runner.lock"
+        if _lock_held(runner_lock):
+            return self._json(
+                409,
+                {
+                    "error": {
+                        "code": "ALREADY_RUNNING",
+                        "message": (
+                            "回补 runner 已在运行(backfill_runner.lock 被持有),"
+                            "请勿重复启动;杀掉该进程即可停止"
+                        ),
+                    }
+                },
+            )
         if self._provider_factory is not None:
             # 测试注入的 provider_factory:不启动真实子进程,直接返回占位。
             return self._json(
@@ -575,7 +595,6 @@ class WebApp:
                     "note": "测试模式:未启动真实回补进程。",
                 },
             )
-        repo_root = _Path(self._config.sync_config_path).resolve().parent.parent
         runner = repo_root / "scripts" / "run_backfill_v2.py"
         python = _sys.executable
         log_dir = repo_root / "data" / "backfill_logs"
@@ -1014,30 +1033,37 @@ class WebApp:
             return
         tasks = repo.list_sync_tasks(plan.plan_id)
         running = [t for t in tasks if t.status.value == "RUNNING"]
+        now = datetime.now(SHANGHAI)
+
+        def _is_stale(updated: object) -> bool:
+            """True 当 updated 早于 30 秒阈值(或无法解析,视为 stale)。"""
+            if updated is None:
+                return True
+            try:
+                parsed = datetime.fromisoformat(str(updated))
+            except (ValueError, TypeError):
+                return True
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=SHANGHAI)
+            return (now - parsed).total_seconds() > 30
+
         if not running:
+            # 无 RUNNING 任务但计划仍 RUNNING:runner 在任务间隙被杀或
+            # 刚启动即退出。用 plan.updated_at 判定是否早已无更新。
+            if not _is_stale(plan.updated_at):
+                return
+            repo.update_sync_plan_status(
+                plan.plan_id, SyncPlanStatus.PLANNED, now
+            )
             return
         newest = max(running, key=lambda t: t.started_at or datetime.min)
         progress = repo.get_task_progress(newest.task_id)
         updated_text = (
             progress.get("updated_at") if isinstance(progress, dict) else None
         )
-        stale = True
-        if updated_text:
-            try:
-                from datetime import datetime as _dt
-
-                updated = _dt.fromisoformat(updated_text)
-                if updated.tzinfo is None:
-                    updated = updated.replace(tzinfo=SHANGHAI)
-                stale = (
-                    _dt.now(SHANGHAI) - updated
-                ).total_seconds() > 30
-            except (ValueError, TypeError):
-                stale = True
-        if not stale:
+        if not _is_stale(updated_text):
             return
         # runner 已死:计划回 PLANNED,任务标 INTERRUPTED(可重新开始)。
-        now = _dt.now(SHANGHAI)
         repo.update_sync_plan_status(
             plan.plan_id, SyncPlanStatus.PLANNED, now
         )

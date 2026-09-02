@@ -892,6 +892,10 @@ async function pollPipelineProgress() {
       return;
     }
     pipelineProgressActive = true;
+    // 回补运行状态 → 初始化按钮禁用/恢复(防重复点击;杀 runner 后
+    // 计划被重置为 PLANNED,按钮随之恢复可点)。
+    const running = p.status === 'RUNNING';
+    setBootstrapButtonsDisabled(running, running ? '回补进行中…' : null);
     const track = $('#sync-progress-track');
     const fill = $('#sync-progress-fill');
     const current = $('#sync-current');
@@ -1054,12 +1058,12 @@ async function startBootstrap() {
   const adjustment = $('#bootstrap-adjustment').value;
   const seedPath = $('#bootstrap-seed-path').value.trim();
   const status = $('#bootstrap-status');
-  const btn = $('#bootstrap-start');
   status.hidden = false;
   status.textContent = source === 'incremental'
     ? '正在增量同步…（仅补齐尾部交易日）'
     : '正在初始化…（联网模式可能耗时较长,请勿关闭页面）';
-  btn.disabled = true;
+  // 防重复启动:点击后立即禁用,直到轮询确认回补不再运行。
+  setBootstrapButtonsDisabled(true, '回补进行中…');
   try {
     const body = { source: source, adjustment: adjustment };
     if (source === 'seed') {
@@ -1067,13 +1071,36 @@ async function startBootstrap() {
       body.seed_path = seedPath;
     }
     const r = await api('POST', '/api/sync/bootstrap', body);
-    status.textContent = '完成：' + JSON.stringify(r);
+    status.textContent = '已启动：' + JSON.stringify(r);
+    if (source === 'seed') {
+      // seed 是同步导入,无后台 runner,完成后直接恢复按钮。
+      setBootstrapButtonsDisabled(false);
+    } else {
+      // 独立 runner 进程在后台跑:保持禁用,轮询到空闲自动恢复;
+      // 杀掉 runner 进程即停止,计划 30s 内重置为 PLANNED 后按钮恢复。
+      status.textContent += '（进度见下方;杀掉 runner 进程即停止）';
+      setBootstrapButtonsDisabled(true, '回补进行中…');
+    }
     await loadSyncStatus();
   } catch (err) {
     status.textContent = '失败：' + (err.message || err);
-  } finally {
-    btn.disabled = false;
+    // 失败(含 409 已在运行):恢复按钮,由轮询按真实运行状态接管。
+    setBootstrapButtonsDisabled(false);
   }
+}
+
+// 初始化按钮存在两个(门禁页 + 工作台面板,id 重复),统一按运行状态禁用/恢复。
+function setBootstrapButtonsDisabled(disabled, label) {
+  document.querySelectorAll('#bootstrap-start').forEach((btn) => {
+    btn.disabled = disabled;
+    const span = btn.querySelector('.btn__label');
+    if (!span) return;
+    if (label) {
+      span.textContent = label;
+    } else {
+      span.textContent = btn.dataset.origLabel || span.textContent;
+    }
+  });
 }
 
 async function loadVersion() {
@@ -1554,8 +1581,13 @@ function bindEvents() {
   $('#shutdown-server').addEventListener('click', shutdownServer);
   const gateShutdown = $('#gate-shutdown');
   if (gateShutdown) gateShutdown.addEventListener('click', shutdownServer);
-  const bootBtn = $('#bootstrap-start');
-  if (bootBtn) bootBtn.addEventListener('click', startBootstrap);
+  document.querySelectorAll('#bootstrap-start').forEach((bootBtn) => {
+    const span = bootBtn.querySelector('.btn__label');
+    if (span) bootBtn.dataset.origLabel = span.textContent;
+    if (bootBtn === $('#bootstrap-start')) {
+      bootBtn.addEventListener('click', startBootstrap);
+    }
+  });
   const sourceSel = $('#bootstrap-source');
   if (sourceSel) sourceSel.addEventListener('change', toggleSeedField);
   const enterBtn = $('#gate-enter');

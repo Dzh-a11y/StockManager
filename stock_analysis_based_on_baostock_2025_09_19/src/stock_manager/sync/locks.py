@@ -101,6 +101,26 @@ def persistent_file_lock(path: Path) -> Iterator[None]:
             _unlock(lock_file)
 
 
+@contextmanager
+def try_persistent_file_lock(path: Path) -> Iterator[bool]:
+    """Non-blocking exclusive lock: yield ``True`` when acquired, ``False``
+    when another process holds the lock (never waits, never raises).
+
+    The try-lock happens atomically in one step, so concurrent starters
+    either get the lock or immediately learn it is taken — no TOCTOU window
+    between "check" and "acquire".
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_file:
+        _ensure_byte(lock_file)
+        acquired = _try_lock_exclusive(lock_file)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                _unlock(lock_file)
+
+
 def is_file_lock_held(path: Path) -> bool:
     """Report whether another process currently holds an existing lock file."""
     if not path.exists():

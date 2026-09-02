@@ -6,6 +6,7 @@ import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1111,18 +1112,47 @@ class TestBootstrapEndpoint:
             lock_directory=locks,
         )
         app = WebApp(config)  # 无 provider_factory → 真实启动
-        status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
-        assert status == 200, payload
-        assert isinstance(payload["runner_pid"], int)
-        assert payload["runner_pid"] > 0
-        # 清理:杀掉刚启动的子进程(避免测试残留)
-        import os
-        import signal as _signal
+        # 防重复启动的锁检查可能被真实环境残留锁命中(该锁文件位于真实
+        # repo data/locks,与临时库无关),此处模拟"锁空闲"专注验证 Popen。
+        with mock.patch(
+            "stock_manager.sync.locks.is_file_lock_held", return_value=False
+        ):
+            status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
+            assert status == 200, payload
+            assert isinstance(payload["runner_pid"], int)
+            assert payload["runner_pid"] > 0
+            # 清理:杀掉刚启动的子进程(避免测试残留)
+            import os
+            import signal as _signal
 
-        try:
-            os.kill(int(payload["runner_pid"]), _signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+            try:
+                os.kill(int(payload["runner_pid"]), _signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def test_bootstrap_rejected_when_runner_lock_held(self, tmp_path: Path) -> None:
+        """防重复启动:backfill_runner.lock 被持有(有回补实例存活)→ 409。"""
+        db = tmp_path / "market.sqlite3"
+        SQLiteRepository(db)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        config = WebConfig(
+            database_path=db,
+            system_template_root=SYSTEM_TEMPLATES,
+            user_template_root=tmp_path / "user-templates",
+            static_root=STATIC_ROOT,
+            sync_config_path=REPO / "config" / "sync.json",
+            lock_directory=locks,
+        )
+        app = WebApp(config, provider_factory=_fake_provider)
+        with mock.patch(
+            "stock_manager.sync.locks.is_file_lock_held", return_value=True
+        ):
+            status, payload = _post(
+                app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"}
+            )
+        assert status == 409, payload
+        assert payload["error"]["code"] == "ALREADY_RUNNING"
 
     def test_bootstrap_bad_source_rejected(self, tmp_path: Path) -> None:
         app = _app(tmp_path)

@@ -69,6 +69,40 @@ def main() -> int:
         stamp = datetime.now(SHANGHAI).strftime("%H:%M:%S")
         print(f"[{stamp}] {phase} {completed}/{total} {current}", flush=True)
 
+    # 防重复启动:非阻塞独占锁,第二个进程启动即退出,避免多实例抢同一计划。
+    from stock_manager.sync.locks import try_persistent_file_lock
+
+    lock_path = Path("data/locks/backfill_runner.lock")
+    with try_persistent_file_lock(lock_path) as acquired:
+        if not acquired:
+            print(
+                "另一个回补进程已在运行(backfill_runner.lock 被持有),本进程退出。",
+                file=sys.stderr,
+            )
+            return 2
+        return _run_with_lock(args, config, repository, provider, progress)
+
+
+def _run_with_lock(args, config, repository, provider, progress) -> int:
+    """在持有 backfill_runner.lock 期间执行回补(重试循环)。"""
+    from dataclasses import replace
+
+    from stock_manager.domain import SyncTaskStatus
+    from stock_manager.sync import DataSyncService
+
+    # 上一实例(已被杀,否则拿不到锁)可能残留 FAILED/RUNNING 任务:
+    # 重置为 PENDING,使断点续传能重跑这些块,避免 _run_tasks 跳过
+    # FAILED 块导致验证缺数据而无法发布。
+    for plan in repository.list_sync_plans("market", AdjustmentMethod.QFQ):
+        if plan.status.value == "SUCCEEDED":
+            continue
+        for task in repository.tasks_by_status(
+            plan.plan_id, (SyncTaskStatus.FAILED, SyncTaskStatus.RUNNING)
+        ):
+            repository.update_sync_task_status(
+                replace(task, status=SyncTaskStatus.PENDING, error_message=None)
+            )
+
     service = DataSyncService(provider, repository, Path("data/locks"), config, progress=progress)
 
     # 瞬时网络故障会抛 SyncFailedError;为让八年回补能完成,

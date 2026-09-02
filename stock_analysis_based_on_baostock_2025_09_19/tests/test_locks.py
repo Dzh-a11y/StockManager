@@ -10,6 +10,7 @@ from stock_manager.sync.locks import (
     dataset_lock_path,
     is_file_lock_held,
     persistent_file_lock,
+    try_persistent_file_lock,
 )
 
 
@@ -24,6 +25,27 @@ def test_lock_is_held_while_acquired_and_released_after(tmp_path: Path) -> None:
     assert is_file_lock_held(path) is False  # not created yet
     with persistent_file_lock(path):
         assert path.exists()
+        assert is_file_lock_held(path) is True
+    assert is_file_lock_held(path) is False
+
+
+def test_try_lock_is_nonblocking_when_held(tmp_path: Path) -> None:
+    path = tmp_path / "try.lock"
+    # 未被持有 → 立即获得
+    with try_persistent_file_lock(path) as acquired:
+        assert acquired is True
+    # 被持有 → 立即返回 False(不阻塞等待)
+    with persistent_file_lock(path):
+        with try_persistent_file_lock(path) as acquired:
+            assert acquired is False
+    # 释放后可再次获得
+    with try_persistent_file_lock(path) as acquired:
+        assert acquired is True
+
+
+def test_try_lock_holds_until_context_exits(tmp_path: Path) -> None:
+    path = tmp_path / "try-held.lock"
+    with try_persistent_file_lock(path):
         assert is_file_lock_held(path) is True
     assert is_file_lock_held(path) is False
 
