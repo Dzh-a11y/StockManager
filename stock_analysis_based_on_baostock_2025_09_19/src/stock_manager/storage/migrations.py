@@ -14,7 +14,7 @@ import sqlite3
 from typing import Any
 
 #: Current schema version after all migrations.
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 #: Data tables that gain an immutable-batch binding column.
 _BATCH_TABLES: tuple[tuple[str, str], ...] = (
@@ -143,6 +143,18 @@ def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
+def _execute_statements(connection: sqlite3.Connection, script: str) -> None:
+    """Execute a static SQL script without ``executescript`` auto-commits."""
+    statement = ""
+    for line in script.splitlines():
+        statement = f"{statement}\n{line}"
+        if sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete migration SQL statement")
+
+
 _STAGING_TABLES = """
 CREATE TABLE IF NOT EXISTS stocks_staging (
     batch_id TEXT NOT NULL,
@@ -215,8 +227,8 @@ def _migrate_to_v1(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE dataset_versions ADD COLUMN parent_generation TEXT"
         )
-    connection.executescript(_BOOKKEEPING_TABLES)
-    connection.executescript(_STAGING_TABLES)
+    _execute_statements(connection, _BOOKKEEPING_TABLES)
+    _execute_statements(connection, _STAGING_TABLES)
     # 幂等补列:sync_tasks 增加逐任务批次进度(老库已迁移过时补上)。
     task_columns = _column_names(connection, "sync_tasks")
     if "progress_json" not in task_columns:
@@ -231,8 +243,60 @@ def _migrate_to_v1(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+    """Preserve every code batch in manifests and add provider safety state."""
+    primary_key = [
+        str(row[1])
+        for row in connection.execute(
+            "PRAGMA table_info(generation_partitions)"
+        ).fetchall()
+        if int(row[5]) > 0
+    ]
+    desired_key = ["generation", "data_type", "partition_key", "batch_id"]
+    if primary_key != desired_key:
+        connection.execute(
+            "ALTER TABLE generation_partitions RENAME TO generation_partitions_v1"
+        )
+        connection.execute(
+            """CREATE TABLE generation_partitions (
+                   generation TEXT NOT NULL,
+                   data_type TEXT NOT NULL,
+                   partition_key TEXT NOT NULL,
+                   batch_id TEXT NOT NULL,
+                   PRIMARY KEY (generation, data_type, partition_key, batch_id)
+               )"""
+        )
+        connection.execute(
+            """INSERT INTO generation_partitions
+                   (generation, data_type, partition_key, batch_id)
+               SELECT generation, data_type, partition_key, batch_id
+               FROM generation_partitions_v1"""
+        )
+        connection.execute("DROP TABLE generation_partitions_v1")
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS provider_request_ledger (
+            source TEXT NOT NULL,
+            request_day TEXT NOT NULL,
+            request_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (source, request_day)
+        )"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS provider_circuit_breakers (
+            source TEXT PRIMARY KEY,
+            circuit_open_until TEXT,
+            reason TEXT,
+            occurrence_year INTEGER NOT NULL,
+            occurrence_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _migrate_to_v1,
+    2: _migrate_to_v2,
 }
 
 
@@ -262,11 +326,12 @@ def migrate_database(connection: sqlite3.Connection) -> int:
     while current < CURRENT_SCHEMA_VERSION:
         step = _MIGRATIONS[current + 1]
         try:
+            connection.execute("BEGIN IMMEDIATE")
             step(connection)
+            connection.execute(f"PRAGMA user_version = {current + 1}")
+            connection.commit()
         except sqlite3.Error:
             connection.rollback()
             raise
-        connection.execute(f"PRAGMA user_version = {current + 1}")
-        connection.commit()
         current += 1
     return current

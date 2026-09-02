@@ -12,7 +12,9 @@ active generation.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -67,10 +69,15 @@ class CoverageVerifier:
         *,
         trading_days: Callable[[date, date], Sequence[date]],
         expected_universe_size: Callable[[date], int],
+        stock_lifecycles: (
+            Callable[[date], Mapping[str, tuple[date | None, date | None]]]
+            | None
+        ) = None,
     ) -> None:
         self._connection_factory = connection_factory
         self._trading_days = trading_days
         self._expected_universe_size = expected_universe_size
+        self._stock_lifecycles = stock_lifecycles
 
     def verify(
         self,
@@ -93,15 +100,19 @@ class CoverageVerifier:
         records: list[CoverageVerificationRecord] = []
         candidate_id = candidate.candidate_generation_id
         write_revision = candidate.write_revision
-        seen: set[tuple[str, str]] = set()
+        partition_counts = Counter(
+            (task.data_type, task.partition_key) for task in tasks
+        )
         try:
-            with self._connection_factory() as connection:
+            with closing(self._connection_factory()) as connection:
                 manifest_sha256 = self._candidate_manifest(connection, candidate_id)
                 for task in tasks:
                     key = (task.data_type, task.partition_key)
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                    evidence_partition_key = (
+                        task.partition_key
+                        if partition_counts[key] == 1
+                        else f"{task.partition_key}:{task.sequence_no:05d}"
+                    )
                     self._verify_partition(
                         connection,
                         candidate_id,
@@ -111,6 +122,7 @@ class CoverageVerifier:
                         adjustment,
                         target_start,
                         target_end,
+                        evidence_partition_key,
                         issues,
                         records,
                     )
@@ -164,6 +176,7 @@ class CoverageVerifier:
         adjustment: AdjustmentMethod,
         target_start: date,
         target_end: date,
+        evidence_partition_key: str,
         issues: list[VerificationIssue],
         records: list[CoverageVerificationRecord],
     ) -> None:
@@ -174,7 +187,7 @@ class CoverageVerifier:
                     issue_id=f"{candidate_id}:{task.data_type}:{task.partition_key}:type",
                     candidate_generation_id=candidate_id,
                     data_type=task.data_type,
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=_partition_date(task.partition_key),
                     codes=tuple(sorted(task.codes)),
                     issue_type=IssueType.INVALID,
@@ -189,22 +202,22 @@ class CoverageVerifier:
         if task.data_type == "daily_bars":
             self._verify_daily_bars(
                 connection, candidate_id, write_revision, manifest_sha256,
-                task, adjustment, day, issues, records,
+                task, adjustment, day, evidence_partition_key, issues, records,
             )
         elif task.data_type == "stocks":
             self._verify_stocks(
                 connection, candidate_id, write_revision, manifest_sha256,
-                task, day, issues, records,
+                task, day, evidence_partition_key, issues, records,
             )
         elif task.data_type == "fundamentals":
             self._verify_fundamentals(
                 connection, candidate_id, write_revision, manifest_sha256,
-                task, day, issues, records,
+                task, day, evidence_partition_key, issues, records,
             )
         elif task.data_type == "dividends":
             self._verify_dividends(
                 connection, candidate_id, write_revision, manifest_sha256,
-                task, day, issues, records,
+                task, day, evidence_partition_key, issues, records,
             )
         else:  # pragma: no cover - guarded above
             raise AssertionError("unreachable")
@@ -218,15 +231,33 @@ class CoverageVerifier:
         task: SyncTask,
         adjustment: AdjustmentMethod,
         day: date,
+        evidence_partition_key: str,
         issues: list[VerificationIssue],
         records: list[CoverageVerificationRecord],
     ) -> None:
         codes = tuple(sorted(task.codes))
         placeholders = ",".join("?" for _ in codes) if codes else "''"
-        expected = len(codes)
-        # 批量粒度:一个任务覆盖整个区间(range_start..range_end)。
-        # 每只代码在该区间内应拥有 bar;按 distinct code 判定完整性,
-        # 并检查无效值(high<low/负值)与跨批次重复。
+        trading_days = tuple(
+            sorted(self._trading_days(task.range_start, task.range_end))
+        )
+        lifecycles = (
+            {}
+            if self._stock_lifecycles is None
+            else self._stock_lifecycles(task.range_end)
+        )
+        expected_days_by_code: dict[str, set[str]] = {}
+        for code in codes:
+            listed_on, delisted_on = lifecycles.get(code, (None, None))
+            expected_days_by_code[code] = {
+                trading_day.isoformat()
+                for trading_day in trading_days
+                if (listed_on is None or trading_day >= listed_on)
+                and (delisted_on is None or trading_day <= delisted_on)
+            }
+        expected_days_by_code = {
+            code: days for code, days in expected_days_by_code.items() if days
+        }
+        expected_codes = set(expected_days_by_code)
         rows = connection.execute(
             f"""SELECT code, trading_day, open, high, low, close, volume
                 FROM daily_bars_staging
@@ -243,41 +274,73 @@ class CoverageVerifier:
                 *codes,
             ),
         ).fetchall()
-        days_in_range = len(
-            self._trading_days(task.range_start, task.range_end)
-        )
-        complete_threshold = max(1, int(days_in_range * 0.95))
         day_counts: dict[str, set[str]] = {}
+        row_keys: Counter[tuple[str, str]] = Counter()
+        row_values: dict[tuple[str, str], set[tuple[object, ...]]] = {}
         invalid_rows = 0
         for row in rows:
             day_counts.setdefault(row["code"], set()).add(row["trading_day"])
+            row_key = (row["code"], row["trading_day"])
+            row_keys[row_key] += 1
+            row_values.setdefault(row_key, set()).add(
+                (
+                    row["open"], row["high"], row["low"], row["close"],
+                    row["volume"],
+                )
+            )
             if not _valid_bar(row):
                 invalid_rows += 1
         complete_codes = {
-            code for code, days in day_counts.items() if len(days) >= complete_threshold
+            code
+            for code, expected_days in expected_days_by_code.items()
+            if len(day_counts.get(code, set()) & expected_days)
+            >= _coverage_threshold(len(expected_days))
         }
-        present_codes = set(day_counts)
-        actual = len(present_codes)
-        duplicates = 0
+        undercovered_missing: set[str] = set()
+        for trading_day in trading_days:
+            day_text = trading_day.isoformat()
+            expected_on_day = {
+                code
+                for code, expected_days in expected_days_by_code.items()
+                if day_text in expected_days
+            }
+            if not expected_on_day:
+                continue
+            present_on_day = {
+                code for code in expected_on_day if day_text in day_counts.get(code, set())
+            }
+            if _ratio(len(present_on_day), len(expected_on_day)) < DAILY_BAR_COMPLETE_RATIO:
+                undercovered_missing.update(expected_on_day - present_on_day)
+        present_codes = set(day_counts) & expected_codes
+        expected_pairs = sum(len(days) for days in expected_days_by_code.values())
+        actual_pairs = sum(
+            1
+            for code, expected_days in expected_days_by_code.items()
+            for day_text in expected_days
+            if (code, day_text) in row_keys
+        )
+        duplicates = sum(
+            max(0, len(values) - 1) for values in row_values.values()
+        )
         invalid = invalid_rows
-        missing = tuple(sorted(set(codes) - complete_codes))
-        ratio = _ratio(len(complete_codes), expected)
+        missing = tuple(sorted((expected_codes - complete_codes) | undercovered_missing))
+        ratio = _ratio(actual_pairs, expected_pairs)
         if missing:
             issues.append(
                 VerificationIssue(
                     issue_id=f"{candidate_id}:daily_bars:{task.partition_key}:coverage",
                     candidate_generation_id=candidate_id,
                     data_type="daily_bars",
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=_partition_date(task.partition_key),
                     codes=missing,
                     issue_type=IssueType.MISSING,
-                    expected_count=expected,
-                    actual_count=actual,
+                    expected_count=expected_pairs,
+                    actual_count=actual_pairs,
                     repairability=Repairability.REFETCH,
                     details=(
                         f"coverage {ratio:.2%} below {DAILY_BAR_COMPLETE_RATIO:.0%}; "
-                        f"missing {len(missing)} of {expected} codes over "
+                        f"missing {len(missing)} of {len(expected_codes)} codes over "
                         f"{task.range_start.isoformat()}..{task.range_end.isoformat()}"
                     ),
                 )
@@ -288,14 +351,33 @@ class CoverageVerifier:
                     issue_id=f"{candidate_id}:daily_bars:{task.partition_key}:invalid",
                     candidate_generation_id=candidate_id,
                     data_type="daily_bars",
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=_partition_date(task.partition_key),
                     codes=tuple(sorted(present_codes)),
                     issue_type=IssueType.INVALID,
-                    expected_count=expected,
-                    actual_count=actual,
+                    expected_count=expected_pairs,
+                    actual_count=actual_pairs,
                     repairability=Repairability.REFETCH,
                     details=f"{invalid} invalid bar rows in the batch range",
+                )
+            )
+        if duplicates > 0:
+            issues.append(
+                VerificationIssue(
+                    issue_id=(
+                        f"{candidate_id}:daily_bars:"
+                        f"{evidence_partition_key}:duplicate"
+                    ),
+                    candidate_generation_id=candidate_id,
+                    data_type="daily_bars",
+                    partition_key=evidence_partition_key,
+                    trading_day=day,
+                    codes=tuple(sorted(present_codes)),
+                    issue_type=IssueType.DUPLICATE,
+                    expected_count=expected_pairs,
+                    actual_count=actual_pairs,
+                    repairability=Repairability.REBUILD,
+                    details=f"{duplicates} duplicate code/day rows across batches",
                 )
             )
         status = (
@@ -307,14 +389,14 @@ class CoverageVerifier:
             CoverageVerificationRecord(
                 candidate_generation_id=candidate_id,
                 data_type="daily_bars",
-                partition_key=task.partition_key,
-                expected_count=expected,
-                actual_count=actual,
+                partition_key=evidence_partition_key,
+                expected_count=expected_pairs,
+                actual_count=actual_pairs,
                 distinct_count=len(present_codes),
                 duplicate_count=duplicates,
                 invalid_count=invalid,
                 coverage_ratio=ratio,
-                missing_items=tuple(sorted(set(codes) - complete_codes)),
+                missing_items=missing,
                 status=status,
                 verified_revision=write_revision,
                 manifest_sha256=manifest_sha256,
@@ -331,6 +413,7 @@ class CoverageVerifier:
         manifest_sha256: str,
         task: SyncTask,
         day: date,
+        evidence_partition_key: str,
         issues: list[VerificationIssue],
         records: list[CoverageVerificationRecord],
     ) -> None:
@@ -344,40 +427,44 @@ class CoverageVerifier:
         ).fetchall()
         actual = len(rows)
         expected = max(1, self._expected_universe_size(day))
-        missing: tuple[str, ...] = ()
-        if actual == 0:
+        present = {row["code"] for row in rows}
+        missing = tuple(sorted(set(task.codes) - present))
+        ratio = _ratio(actual, expected)
+        if ratio < DAILY_BAR_COMPLETE_RATIO:
             issues.append(
                 VerificationIssue(
                     issue_id=f"{candidate_id}:stocks:{day.isoformat()}",
                     candidate_generation_id=candidate_id,
                     data_type="stocks",
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=day,
-                    codes=(),
+                    codes=missing,
                     issue_type=IssueType.MISSING,
                     expected_count=expected,
                     actual_count=actual,
                     repairability=Repairability.REFETCH,
-                    details="no staged stock snapshot for the day",
+                    details=(
+                        f"stock snapshot coverage {ratio:.2%} below "
+                        f"{DAILY_BAR_COMPLETE_RATIO:.0%}"
+                    ),
                 )
             )
-            missing = ("all",)
         status = (
             VerificationStatus.COMPLETE
-            if actual > 0
+            if ratio >= DAILY_BAR_COMPLETE_RATIO
             else VerificationStatus.INCOMPLETE
         )
         records.append(
             CoverageVerificationRecord(
                 candidate_generation_id=candidate_id,
                 data_type="stocks",
-                partition_key=task.partition_key,
+                partition_key=evidence_partition_key,
                 expected_count=expected,
                 actual_count=actual,
                 distinct_count=actual,
                 duplicate_count=0,
                 invalid_count=0,
-                coverage_ratio=_ratio(actual, expected),
+                coverage_ratio=ratio,
                 missing_items=missing,
                 status=status,
                 verified_revision=write_revision,
@@ -395,17 +482,20 @@ class CoverageVerifier:
         manifest_sha256: str,
         task: SyncTask,
         day: date,
+        evidence_partition_key: str,
         issues: list[VerificationIssue],
         records: list[CoverageVerificationRecord],
     ) -> None:
+        codes = tuple(sorted(task.codes))
+        placeholders = ",".join("?" for _ in codes) if codes else "''"
         rows = connection.execute(
-            """SELECT code, report_date, published_on FROM fundamentals_staging
+            f"""SELECT code, report_date, published_on FROM fundamentals_staging
                WHERE batch_id IN (
                    SELECT batch_id FROM ingest_batches
                    WHERE candidate_generation_id = ? AND data_type = ?
                      AND partition_key = ?
-               )""",
-            (candidate_id, "fundamentals", task.partition_key),
+               ) AND code IN ({placeholders})""",
+            (candidate_id, "fundamentals", task.partition_key, *codes),
         ).fetchall()
         # PIT 约束:published_on > day 的记录不得出现在该日可见集合。
         violated = tuple(
@@ -423,7 +513,7 @@ class CoverageVerifier:
                     issue_id=f"{candidate_id}:fundamentals:{day.isoformat()}:pit",
                     candidate_generation_id=candidate_id,
                     data_type="fundamentals",
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=day,
                     codes=violated,
                     issue_type=IssueType.PIT_VIOLATION,
@@ -435,27 +525,49 @@ class CoverageVerifier:
             )
         visible = [row for row in rows if row["published_on"] <= day.isoformat()]
         distinct_visible = {row["code"] for row in visible}
-        actual = len(visible)
+        actual = len(distinct_visible)
+        expected_codes = set(task.codes)
+        missing = tuple(sorted(expected_codes - distinct_visible))
+        ratio = _ratio(len(distinct_visible), len(expected_codes))
+        if missing and ratio < DAILY_BAR_COMPLETE_RATIO:
+            issues.append(
+                VerificationIssue(
+                    issue_id=(
+                        f"{candidate_id}:fundamentals:"
+                        f"{evidence_partition_key}:coverage"
+                    ),
+                    candidate_generation_id=candidate_id,
+                    data_type="fundamentals",
+                    partition_key=evidence_partition_key,
+                    trading_day=day,
+                    codes=missing,
+                    issue_type=IssueType.MISSING,
+                    expected_count=len(expected_codes),
+                    actual_count=len(distinct_visible),
+                    repairability=Repairability.REFETCH,
+                    details=(
+                        f"fundamentals coverage {ratio:.2%} below "
+                        f"{DAILY_BAR_COMPLETE_RATIO:.0%}"
+                    ),
+                )
+            )
         status = (
             VerificationStatus.COMPLETE
-            if not violated
+            if not violated and ratio >= DAILY_BAR_COMPLETE_RATIO
             else VerificationStatus.INCOMPLETE
         )
         records.append(
             CoverageVerificationRecord(
                 candidate_generation_id=candidate_id,
                 data_type="fundamentals",
-                partition_key=task.partition_key,
-                expected_count=len(distinct_visible),
+                partition_key=evidence_partition_key,
+                expected_count=len(expected_codes),
                 actual_count=actual,
                 distinct_count=len(distinct_visible),
                 duplicate_count=0,
                 invalid_count=len(violated),
-                coverage_ratio=_ratio(
-                    len(distinct_visible),
-                    max(1, len(distinct_visible)),
-                ),
-                missing_items=violated,
+                coverage_ratio=ratio,
+                missing_items=tuple(sorted(set(violated) | set(missing))),
                 status=status,
                 verified_revision=write_revision,
                 manifest_sha256=manifest_sha256,
@@ -472,6 +584,7 @@ class CoverageVerifier:
         manifest_sha256: str,
         task: SyncTask,
         day: date,
+        evidence_partition_key: str,
         issues: list[VerificationIssue],
         records: list[CoverageVerificationRecord],
     ) -> None:
@@ -491,7 +604,7 @@ class CoverageVerifier:
                     issue_id=f"{candidate_id}:dividends:{day.isoformat()}",
                     candidate_generation_id=candidate_id,
                     data_type="dividends",
-                    partition_key=task.partition_key,
+                    partition_key=evidence_partition_key,
                     trading_day=day,
                     codes=(),
                     issue_type=IssueType.MISSING,
@@ -506,7 +619,7 @@ class CoverageVerifier:
             CoverageVerificationRecord(
                 candidate_generation_id=candidate_id,
                 data_type="dividends",
-                partition_key=task.partition_key,
+                partition_key=evidence_partition_key,
                 expected_count=0,
                 actual_count=actual,
                 distinct_count=actual,
@@ -543,6 +656,13 @@ def _ratio(actual: int, expected: int) -> Decimal:
     return Decimal(actual) / Decimal(expected)
 
 
+def _coverage_threshold(expected: int) -> int:
+    """Return ceil(expected * 95%) without floating-point rounding."""
+    if expected <= 0:
+        return 0
+    return (expected * 95 + 99) // 100
+
+
 def _valid_bar(row: sqlite3.Row) -> bool:
     try:
         high = Decimal(row["high"])
@@ -550,7 +670,7 @@ def _valid_bar(row: sqlite3.Row) -> bool:
         open_ = Decimal(row["open"])
         close = Decimal(row["close"])
         volume = Decimal(row["volume"])
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         return False
     if high < low or high < 0 or low < 0:
         return False

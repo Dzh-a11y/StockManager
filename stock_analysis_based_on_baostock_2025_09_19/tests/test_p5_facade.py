@@ -237,6 +237,77 @@ class TestPipelineDefaultSwitch:
         assert run.published is True
         assert repo.get_active_generation("market", AdjustmentMethod.QFQ) is not None
 
+    def test_fresh_database_fetches_universe_before_planning(
+        self, tmp_path: Path
+    ) -> None:
+        """全新用户无需预装股票池即可启动 BOOTSTRAP。"""
+        from datetime import time as wall_time
+
+        class CountingProvider(FacadeProvider):
+            def __init__(self) -> None:
+                self.stock_calls = 0
+
+            def fetch_stocks(self, as_of: date) -> list[StockIdentity]:
+                self.stock_calls += 1
+                return super().fetch_stocks(as_of)
+
+        repo = SQLiteRepository(tmp_path / "market.sqlite3")
+        provider = CountingProvider()
+        config = SyncConfig(
+            cutoff_time=wall_time(9, 0),
+            retry_cooldown=timedelta(seconds=5),
+            minimum_request_interval_seconds=0.0,
+            calendar_horizon_days=5,
+            dividend_lookback_years=1,
+            retention_days=360,
+            history=SyncHistoryConfig(target_years=8),
+            pipeline_default=True,
+        )
+        service = DataSyncService(
+            provider, repo, tmp_path / "locks", config, clock=lambda: NOW
+        )
+        run = service.startup_sync("market", AdjustmentMethod.QFQ)
+        assert isinstance(run, PipelineRun)
+        assert run.published is True
+        assert provider.stock_calls >= 2  # planner preflight + stocks task
+        assert repo.get_stocks(DAYS[0])
+
+    def test_startup_incremental_uses_actual_daily_bar_tail(
+        self, tmp_path: Path
+    ) -> None:
+        """已有 generation 时只规划最后覆盖日之后的交易日。"""
+        from datetime import time as wall_time
+
+        repo = SQLiteRepository(tmp_path / "market.sqlite3")
+        config = SyncConfig(
+            cutoff_time=wall_time(9, 0),
+            retry_cooldown=timedelta(seconds=5),
+            minimum_request_interval_seconds=0.0,
+            calendar_horizon_days=5,
+            dividend_lookback_years=1,
+            retention_days=360,
+            history=SyncHistoryConfig(target_years=8),
+            pipeline_default=True,
+        )
+        first = DataSyncService(
+            FacadeProvider(), repo, tmp_path / "locks", config,
+            clock=lambda: NOW,
+        ).startup_sync("market", AdjustmentMethod.QFQ)
+        assert isinstance(first, PipelineRun) and first.published
+
+        next_now = datetime(2026, 9, 2, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        second = DataSyncService(
+            FacadeProvider(), repo, tmp_path / "locks", config,
+            clock=lambda: next_now,
+        ).startup_sync("market", AdjustmentMethod.QFQ)
+        assert isinstance(second, PipelineRun) and second.published
+        assert repo.actual_coverage(
+            AdjustmentMethod.QFQ, "daily_bars"
+        )[1] == DAYS[-1]
+        active = repo.get_active_generation("market", AdjustmentMethod.QFQ)
+        assert active is not None
+        assert len(repo.list_generation_partitions(active.generation)) == 6
+
     def test_startup_sync_falls_back_when_disabled(
         self, tmp_path: Path
     ) -> None:

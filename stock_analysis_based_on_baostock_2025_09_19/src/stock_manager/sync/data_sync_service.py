@@ -16,6 +16,7 @@ from stock_manager.domain import (
     BackfillChunkV2,
     BackfillRunStatus,
     BackfillRunV2,
+    CandidateGenerationStatus,
     DailyBar,
     DataCoverageStatus,
     DatasetCoverage,
@@ -28,6 +29,7 @@ from stock_manager.domain import (
     SyncOutcome,
     SyncRecord,
     SyncStatus,
+    SyncTaskStatus,
 )
 from stock_manager.protocols import LocalRepositoryProtocol, ProviderProtocol
 from stock_manager.sync.history_plan import (
@@ -83,6 +85,8 @@ class SyncConfig:
     history: SyncHistoryConfig | None = None
     backfill_request_interval_seconds: float | None = None
     pipeline_default: bool = False
+    daily_request_soft_limit: int = 45_000
+    daily_request_hard_limit: int = 50_000
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -102,6 +106,16 @@ class SyncConfig:
             raise ValueError("dividend_lookback_years must be positive")
         if self.retention_days <= 0:
             raise ValueError("retention_days must be positive")
+        if self.daily_request_soft_limit <= 0:
+            raise ValueError("daily_request_soft_limit must be positive")
+        if not 0 < self.daily_request_hard_limit <= 50_000:
+            raise ValueError(
+                "daily_request_hard_limit must be within 1..50000"
+            )
+        if self.daily_request_soft_limit > self.daily_request_hard_limit:
+            raise ValueError(
+                "daily_request_soft_limit must not exceed daily_request_hard_limit"
+            )
 
 
 def latest_completed_trading_day(
@@ -150,8 +164,26 @@ class DataSyncService:
         self._provider_progress_original = getattr(provider, "_progress_callback", None)
         try:
             setattr(provider, "_progress_callback", self._on_provider_progress)
-        except (AttributeError, TypeError):
-            pass
+        except (AttributeError, TypeError) as error:
+            warnings.warn(
+                f"provider progress callback unavailable: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        self._request_budget = None
+        budget_setter = getattr(provider, "set_request_budget", None)
+        database_path = getattr(repository, "database_path", None)
+        if callable(budget_setter) and isinstance(database_path, Path):
+            from stock_manager.sync.request_budget import SQLiteProviderRequestBudget
+
+            self._request_budget = SQLiteProviderRequestBudget(
+                database_path,
+                source=provider.source_name,
+                soft_limit=config.daily_request_soft_limit,
+                hard_limit=config.daily_request_hard_limit,
+                now=self._now,
+            )
+            budget_setter(self._request_budget)
         provider_key = f"{lock_directory.resolve()}:{provider.source_name}:provider"
         self._provider_process_lock = process_lock(provider_key)
         self._provider_file_lock = lock_directory / f"{provider.source_name}.provider.lock"
@@ -1316,6 +1348,20 @@ class DataSyncService:
         def universe(as_of: date) -> tuple[str, ...]:
             return tuple(stock.code for stock in repository.get_stocks(as_of))
 
+        lifecycle_cache: dict[
+            date, dict[str, tuple[date | None, date | None]]
+        ] = {}
+
+        def stock_lifecycles(
+            as_of: date,
+        ) -> dict[str, tuple[date | None, date | None]]:
+            if as_of not in lifecycle_cache:
+                lifecycle_cache[as_of] = {
+                    stock.code: (stock.listed_on, stock.delisted_on)
+                    for stock in repository.get_stocks(as_of)
+                }
+            return lifecycle_cache[as_of]
+
         planner = SyncPlanner(
             calendar=calendar,
             coverage=coverage,
@@ -1324,10 +1370,10 @@ class DataSyncService:
         )
         provider = self._provider
 
-        def worker_factory() -> SerialFetchWorker:
+        def worker_factory(adjustment: AdjustmentMethod) -> SerialFetchWorker:
             return SerialFetchWorker(
                 provider,
-                adjustment=AdjustmentMethod.QFQ,
+                adjustment=adjustment,
                 now=self._now,
             )
 
@@ -1338,6 +1384,7 @@ class DataSyncService:
             expected_universe_size=lambda day: max(
                 1, len(repository.get_stocks(day))
             ),
+            stock_lifecycles=stock_lifecycles,
         )
         committer = GenerationCommitter(connection_factory, now=self._now)
         gate = ReadinessGate(connection_factory)
@@ -1353,7 +1400,6 @@ class DataSyncService:
             legacy=legacy,
             now=self._now,
             retry_cooldown=self._config.retry_cooldown,
-            max_attempts=3,
         )
 
     def run_pipeline_plan(
@@ -1394,6 +1440,7 @@ class DataSyncService:
         *,
         force_pipeline: bool = False,
         batch_size: int = 20,
+        retry_failed: bool = False,
     ) -> object:
         """Startup sync through the P5 pipeline (default entry when enabled).
 
@@ -1411,11 +1458,33 @@ class DataSyncService:
                 return self.backfill_on_startup_v2(dataset_id, adjustment)
             return self.backfill_on_startup(dataset_id, adjustment)
         target = self._latest_completed_trading_day()
-        pipeline = self.build_pipeline()
         active = self._repository.get_active_generation(dataset_id, adjustment)
         from stock_manager.domain import SyncPlanMode
 
         if active is None:
+            if not self._repository.get_stocks(target):
+                with self._provider_process_lock, persistent_file_lock(
+                    self._provider_file_lock
+                ):
+                    stocks = self._provider_call(
+                        lambda: self._provider.fetch_stocks(target)
+                    )
+                if not stocks:
+                    raise ValueError(
+                        "Baostock returned an empty stock universe; "
+                        "cannot plan BOOTSTRAP"
+                    )
+                self._repository.save_stocks(
+                    stocks,
+                    DatasetMetadata(
+                        dataset_id,
+                        target,
+                        self._provider.source_name,
+                        self._now(),
+                        adjustment,
+                    ),
+                )
+            pipeline = self.build_pipeline()
             # 首次启动:无 active generation → BOOTSTRAP。
             # 八年 = 终点向前 2080 个交易日(P5A 决策),禁止用自然日推算。
             from stock_manager.sync.history_plan import trading_day_lookback
@@ -1444,11 +1513,21 @@ class DataSyncService:
                 batch_size=batch_size,
             )
         else:
+            pipeline = self.build_pipeline()
+            _coverage_start, coverage_end = self._repository.actual_coverage(
+                adjustment, "daily_bars"
+            )
+            if coverage_end is None:
+                raise ValueError(
+                    "active generation has no daily_bars coverage; repair it first"
+                )
+            if coverage_end >= target:
+                return None
             output = pipeline.plan(
                 mode=SyncPlanMode.INCREMENTAL,
                 dataset_id=dataset_id,
                 adjustment=adjustment,
-                target_start=target,
+                target_start=coverage_end,
                 target_end=target,
                 required_data_types=(
                     "stocks",
@@ -1460,6 +1539,21 @@ class DataSyncService:
         with self._provider_process_lock, persistent_file_lock(
             self._provider_file_lock
         ):
+            if retry_failed:
+                candidate = self._repository.get_candidate_generation(
+                    output.plan.candidate_generation_id
+                )
+                failed = self._repository.tasks_by_status(
+                    output.plan.plan_id, (SyncTaskStatus.FAILED,)
+                )
+                if failed or (
+                    candidate is not None
+                    and candidate.status in (
+                        CandidateGenerationStatus.NEEDS_REPAIR,
+                        CandidateGenerationStatus.VERIFICATION_FAILED,
+                    )
+                ):
+                    return pipeline.retry(output.plan.plan_id)
             return pipeline.execute(output.plan.plan_id)
 
     def publish_legacy_generation(
@@ -1575,6 +1669,10 @@ class DataSyncService:
             expected_universe_size=lambda day: max(
                 1, len(repository.get_stocks(day))
             ),
+            stock_lifecycles=lambda day: {
+                stock.code: (stock.listed_on, stock.delisted_on)
+                for stock in repository.get_stocks(day)
+            },
         )
         outcome = verifier.verify(
             finished,

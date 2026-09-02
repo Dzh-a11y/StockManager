@@ -8,7 +8,8 @@ launch resumes only PENDING/INTERRUPTED tasks; SUCCESS tasks are never
 re-fetched.
 
 Usage:
-    python3 scripts/run_backfill_v2.py [--config config/sync.json] [--db data/market.sqlite3]
+    python3 scripts/run_backfill_v2.py [--config config/sync.json]
+        [--db data/market.sqlite3] [--lock-dir data/locks]
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -25,6 +27,7 @@ from stock_manager.providers.baostock_provider import BaostockProvider
 from stock_manager.storage.sqlite_repo import SQLiteRepository
 from stock_manager.sync import DataSyncService
 from stock_manager.sync.config import load_sync_config
+from stock_manager.sync.data_sync_service import SyncConfig
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -33,12 +36,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="run the P5A-1 eight-year v2 backfill")
     parser.add_argument("--config", type=Path, default=Path("config/sync.json"))
     parser.add_argument("--db", type=Path, default=Path("data/market.sqlite3"))
+    parser.add_argument("--lock-dir", type=Path, default=Path("data/locks"))
+    parser.add_argument(
+        "--adjustment",
+        choices=tuple(item.value for item in AdjustmentMethod),
+        default=AdjustmentMethod.QFQ.value,
+    )
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=15,
-        help="瞬时网络失败时最多重启尝试(断点续传)次数;默认 15",
+        default=1,
+        help="本次显式启动内的最大尝试次数;默认 1,避免后台自动重试",
     )
     parser.add_argument(
         "--cooldown",
@@ -72,7 +81,7 @@ def main() -> int:
     # 防重复启动:非阻塞独占锁,第二个进程启动即退出,避免多实例抢同一计划。
     from stock_manager.sync.locks import try_persistent_file_lock
 
-    lock_path = Path("data/locks/backfill_runner.lock")
+    lock_path = args.lock_dir / "backfill_runner.lock"
     with try_persistent_file_lock(lock_path) as acquired:
         if not acquired:
             print(
@@ -83,26 +92,37 @@ def main() -> int:
         return _run_with_lock(args, config, repository, provider, progress)
 
 
-def _run_with_lock(args, config, repository, provider, progress) -> int:
-    """在持有 backfill_runner.lock 期间执行回补(重试循环)。"""
+def _run_with_lock(
+    args: argparse.Namespace,
+    config: SyncConfig,
+    repository: SQLiteRepository,
+    provider: BaostockProvider,
+    progress: Callable[[dict[str, object]], None],
+) -> int:
+    """在持有 backfill_runner.lock 期间执行一次显式回补。"""
     from stock_manager.sync import DataSyncService
 
-    service = DataSyncService(provider, repository, Path("data/locks"), config, progress=progress)
+    adjustment = AdjustmentMethod(args.adjustment)
+    service = DataSyncService(
+        provider,
+        repository,
+        args.lock_dir,
+        config,
+        progress=progress,
+    )
     pipeline = service.build_pipeline()
 
-    # 上一实例(已被杀,否则拿不到锁)可能残留 FAILED/RUNNING 任务和 FAILED
-    # candidate:统一重置(任务→PENDING,FAILED candidate→PLANNED),使断点
-    # 续传能重跑这些块——否则 _run_tasks 跳过 FAILED 块、write_batch 拒绝
-    # FAILED candidate,重试循环会一直空转。
-    for plan in repository.list_sync_plans("market", AdjustmentMethod.QFQ):
+    # 上一实例被强制终止时可能残留 RUNNING 任务；只恢复中断状态。
+    # FAILED 状态仍由下面的 retry_failed=True 走显式重试与冷却检查。
+    for plan in repository.list_sync_plans("market", adjustment):
         if plan.status.value == "SUCCEEDED":
             continue
         reset = pipeline.recover_interrupted(plan.plan_id)
         if reset:
             print(f"清理上一实例残留: 重置 {reset} 个任务为 PENDING", flush=True)
 
-    # 瞬时网络故障会抛 SyncFailedError;为让八年回补能完成,
-    # 在 runner 层做有界重启(断点续传,复用已完成块),避免整批任务因单次抖动报废。
+    # 默认只尝试一次；只有调用者主动传 --max-attempts 才会在同一
+    # 显式启动内做有界重试。Provider 自己仍负责单请求瞬时网络重试。
     max_attempts = max(args.max_attempts, 1)
     cooldown = max(args.cooldown, 0.0)
     started = time.monotonic()
@@ -117,8 +137,9 @@ def _run_with_lock(args, config, repository, provider, progress) -> int:
             # (20 只 × 区间),staging → 验证 → 原子发布 generation。
             # pipeline.execute 幂等:SUCCESS 任务跳过,中断后从 PENDING/INTERRUPTED 续传。
             run = service.startup_sync(
-                "market", AdjustmentMethod.QFQ, force_pipeline=True,
+                "market", adjustment, force_pipeline=True,
                 batch_size=args.batch_size,
+                retry_failed=True,
             )
             elapsed_minutes = (time.monotonic() - started) / 60
             plan_status = getattr(run, "plan_status", None)

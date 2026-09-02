@@ -249,6 +249,7 @@ class SQLiteRepository:
                 connection.execute(
                     "ALTER TABLE backfill_runs_v2 ADD COLUMN progress_json TEXT"
                 )
+            connection.commit()
             # P5-RD-1:版本化幂等迁移(batch_id 绑定、书签表、user_version)。
             migrate_database(connection)
 

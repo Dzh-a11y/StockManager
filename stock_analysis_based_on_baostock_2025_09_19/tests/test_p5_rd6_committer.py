@@ -49,9 +49,10 @@ def _verification(
     data_type: str = "daily_bars",
     partition_key: str = DAY.isoformat(),
     status: VerificationStatus = VerificationStatus.COMPLETE,
+    candidate_generation_id: str = "cand-1",
 ) -> CoverageVerification:
     return CoverageVerification(
-        candidate_generation_id="cand-1",
+        candidate_generation_id=candidate_generation_id,
         data_type=data_type,
         partition_key=partition_key,
         expected_count=1,
@@ -69,10 +70,12 @@ def _verification(
     )
 
 
-def _partition(data_type: str = "daily_bars") -> GenerationPartition:
+def _partition(
+    data_type: str = "daily_bars", *, batch_id: str = "batch-1"
+) -> GenerationPartition:
     return GenerationPartition(
         generation="cand-1", data_type=data_type, partition_key=DAY.isoformat(),
-        batch_id="batch-1",
+        batch_id=batch_id,
     )
 
 
@@ -171,6 +174,40 @@ class TestGenerationCommitter:
                 partitions=(_partition(), _partition(data_type="fundamentals")),
             )
 
+    def test_publish_requires_one_evidence_record_per_batch(
+        self, repo: SQLiteRepository, committer: GenerationCommitter
+    ) -> None:
+        candidate = _seed_candidate_and_verifications(repo)
+        with pytest.raises(PublishError, match="evidence count"):
+            committer.publish(
+                candidate,
+                dataset_id="market",
+                adjustment=AdjustmentMethod.QFQ,
+                verifications=(_verification(),),
+                partitions=(
+                    _partition(),
+                    _partition(batch_id="batch-2"),
+                ),
+            )
+
+    def test_publish_rejects_reused_evidence(
+        self, repo: SQLiteRepository, committer: GenerationCommitter
+    ) -> None:
+        candidate = _seed_candidate_and_verifications(repo)
+        with pytest.raises(PublishError, match="duplicate verification"):
+            committer.publish(
+                candidate,
+                dataset_id="market",
+                adjustment=AdjustmentMethod.QFQ,
+                verifications=(_verification(), _verification()),
+                partitions=(
+                    _partition(),
+                    GenerationPartition(
+                        "cand-1", "daily_bars", DAY.isoformat(), "batch-2"
+                    ),
+                ),
+            )
+
     def test_publish_empty_partitions_rejected(self, repo: SQLiteRepository, committer: GenerationCommitter) -> None:
         candidate = _seed_candidate_and_verifications(repo)
         with pytest.raises(PublishError):
@@ -241,15 +278,22 @@ class TestGenerationCommitter:
         )
         repo.save_candidate_generation(second)
         repo.save_coverage_verification(
-            _verification(partition_key="2026-09-02")
+            _verification(
+                partition_key="2026-09-02",
+                candidate_generation_id="cand-2",
+            )
         )
         committer.publish(
             second,
             dataset_id="market",
             adjustment=AdjustmentMethod.QFQ,
-            verifications=(_verification(partition_key="2026-09-02"),),
+            verifications=(
+                _verification(
+                    partition_key="2026-09-02",
+                    candidate_generation_id="cand-2",
+                ),
+            ),
             partitions=(
-                GenerationPartition("cand-2", "daily_bars", DAY.isoformat(), "batch-1"),
                 GenerationPartition("cand-2", "daily_bars", "2026-09-02", "batch-2"),
             ),
         )
@@ -258,6 +302,8 @@ class TestGenerationCommitter:
         assert active.generation == "cand-2"
         # 旧 generation 的 partitions 仍可查
         assert len(repo.list_generation_partitions("cand-1")) == 1
+        # 新 generation 继承父 manifest，并追加本次 tail batch。
+        assert len(repo.list_generation_partitions("cand-2")) == 2
 
 
 class TestReadinessGate:

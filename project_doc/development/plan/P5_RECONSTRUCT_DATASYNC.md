@@ -1,8 +1,8 @@
 ---
-date: 2026-09-01
+date: 2026-09-02
 purpose: 定义 StockManager P5 DataSync 重构的目标架构、数据库 generation 边界、种子与跨平台迁移契约、任务包和验收标准。
 project: StockManager
-status: draft
+status: active
 ---
 
 # P5_RECONSTRUCT_DATASYNC：数据同步重构计划
@@ -13,14 +13,14 @@ status: draft
 
 本计划不切换数据源，不引入自动交易，不允许筛选、规则、回测、API 或 CLI 绕过本地数据库直接访问 Baostock。现有 `DataSyncService` 保留为唯一外部数据入口和兼容门面，内部拆分为可测试组件。
 
-本文件只定义架构、接口边界、迁移顺序、任务包和验收标准，不代表功能已经实现。
+本文件定义架构、接口边界、迁移顺序、任务包和验收标准。实现事实与 2026-09-02 稳定性修复证据以 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 为准。
 
 ### 0.1 AI 分工声明
 
 - 架构与任务拆分代理：**Codex**。
 - 实现、测试、调试、数据库迁移、代码审查与最终技术验收代理：**DeepSeek V4 Flash**。
 - 文档助手：**Qwen3.8:27b**，仅在真实代码契约稳定并通过技术验收后，根据完整任务包起草注释和 Markdown 技术文档。
-- Codex 本轮只交付本计划，不修改业务代码、测试、配置或数据库。
+- 2026-09-02 用户在当前维护任务中明确调整分工：Codex 直接负责数据同步 Bug 修复、测试、数据库恢复与技术文档同步；本次明确指令覆盖上述默认分工。
 
 ### 0.2 产品与数据边界
 
@@ -532,7 +532,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 13. 实施任务包
 
-> **状态注记（2026-09-01）**：P5-RD-0..P5-RD-10 已由 DeepSeek V4 Flash 实现并通过离线测试（版本 1.12.0，新增 151 项，全量 544 passed），详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md`。第 17 章第 8 条（Windows 实机人工验收）按用户确认不纳入完成定义。本计划仍保持 `draft`：DataSyncService 兼容门面尚未切换为默认入口、八年种子在线 Bootstrap 的实网验收未执行。
+> **状态注记（2026-09-02）**：P5-RD-0..P5-RD-10 已实现；本轮由用户明确改派 Codex 完成稳定性修复、schema v2 迁移与真实工作库恢复。当前版本 1.13.0，全量离线测试 602 passed，DataSyncService/SyncPipeline 已用于 Web 在线 Bootstrap runner。真实 Baostock 八年回补尚未完成，所以计划保持 `active`，不能把未发布 candidate 写成已完成数据集；详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 第 11 节。
 
 ### P5-RD-0：架构 ADR 与真实库基准门禁 —— 已完成（2026-09-01 验收）
 

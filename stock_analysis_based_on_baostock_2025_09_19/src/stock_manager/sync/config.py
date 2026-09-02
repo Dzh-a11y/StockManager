@@ -46,6 +46,12 @@ def _parse_policy(root: dict[str, Any]) -> dict[str, Any]:
     pipeline_default = policy.get("pipeline_default", False)
     if not isinstance(pipeline_default, bool):
         raise ValueError("pipeline_default must be a boolean")
+    request_soft_limit = policy.get("daily_request_soft_limit", 45_000)
+    request_hard_limit = policy.get("daily_request_hard_limit", 50_000)
+    if not isinstance(request_soft_limit, int) or isinstance(request_soft_limit, bool):
+        raise ValueError("daily_request_soft_limit must be an integer")
+    if not isinstance(request_hard_limit, int) or isinstance(request_hard_limit, bool):
+        raise ValueError("daily_request_hard_limit must be an integer")
     return {
         "cutoff_time": cutoff_time,
         "retry_cooldown": timedelta(seconds=_integer(policy, "retry_cooldown_seconds")),
@@ -56,6 +62,8 @@ def _parse_policy(root: dict[str, Any]) -> dict[str, Any]:
         "dividend_lookback_years": _integer(policy, "dividend_lookback_years"),
         "retention_days": retention,
         "pipeline_default": pipeline_default,
+        "daily_request_soft_limit": request_soft_limit,
+        "daily_request_hard_limit": request_hard_limit,
         "backfill_request_interval_seconds": (
             _number(policy, "backfill_request_interval_seconds")
             if "backfill_request_interval_seconds" in policy
@@ -105,4 +113,3 @@ def load_sync_config(path: Path) -> SyncConfig:
         return SyncConfig(**_parse_policy(root))
     history = _parse_history(root)
     return SyncConfig(**_parse_policy(root), history=history)
-

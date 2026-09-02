@@ -547,22 +547,19 @@ class WebApp:
         import sys as _sys
         from pathlib import Path as _Path
 
-        try:
-            plans = self._services.repository.list_sync_plans(
-                "market", adjustment
+        plans = self._services.repository.list_sync_plans(
+            "market", adjustment
+        )
+        if any(p.status.value == "RUNNING" for p in plans):
+            return self._json(
+                409,
+                {
+                    "error": {
+                        "code": "ALREADY_RUNNING",
+                        "message": "回补已在运行中,请勿重复启动",
+                    }
+                },
             )
-            if any(p.status.value == "RUNNING" for p in plans):
-                return self._json(
-                    409,
-                    {
-                        "error": {
-                            "code": "ALREADY_RUNNING",
-                            "message": "回补已在运行中,请勿重复启动",
-                        }
-                    },
-                )
-        except Exception:
-            pass
         if self._config.sync_config_path is None:
             return self._error(BadRequestError("sync config is required"))
         repo_root = _Path(self._config.sync_config_path).resolve().parent.parent
@@ -571,7 +568,9 @@ class WebApp:
         # 防线,优先于测试占位分支:任何模式只要锁被持有都不允许再启动。
         from stock_manager.sync.locks import is_file_lock_held as _lock_held
 
-        runner_lock = repo_root / "data" / "locks" / "backfill_runner.lock"
+        runner_lock = (
+            _Path(self._config.lock_directory) / "backfill_runner.lock"
+        )
         if _lock_held(runner_lock):
             return self._json(
                 409,
@@ -599,19 +598,22 @@ class WebApp:
         python = _sys.executable
         log_dir = repo_root / "data" / "backfill_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_handle = open(  # noqa: SIM115 - held for child lifetime
+        with open(
             log_dir / "runner_web.log", "a", encoding="utf-8"
-        )
-        proc = _subprocess.Popen(
-            [
-                python, "-u", str(runner),
-                "--config", str(self._config.sync_config_path),
-            ],
-            cwd=str(repo_root),
-            stdout=log_handle,
-            stderr=_subprocess.STDOUT,
-            start_new_session=True,
-        )
+        ) as log_handle:
+            proc = _subprocess.Popen(
+                [
+                    python, "-u", str(runner),
+                    "--config", str(self._config.sync_config_path),
+                    "--db", str(self._config.database_path),
+                    "--lock-dir", str(self._config.lock_directory),
+                    "--adjustment", adjustment.value,
+                ],
+                cwd=str(repo_root),
+                stdout=log_handle,
+                stderr=_subprocess.STDOUT,
+                start_new_session=True,
+            )
         self._sync_progress.update(
             {
                 "status": "running",
@@ -655,9 +657,13 @@ class WebApp:
         except Exception as error:
             raise BadRequestError(f"invalid seed manifest: {error}") from error
         verifier = SeedPackageVerifier()
+        from stock_manager.storage.migrations import CURRENT_SCHEMA_VERSION
+
         try:
             verifier.verify(
-                seed_path, manifest, expected_schema_version=1
+                seed_path,
+                manifest,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
             verifier.check_no_absolute_paths(seed_path)
         except Exception as error:

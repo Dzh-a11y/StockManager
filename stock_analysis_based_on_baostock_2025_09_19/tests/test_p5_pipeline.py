@@ -51,6 +51,7 @@ class DeterministicProvider:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fail_next_daily_bars = False
+        self.adjustments: list[AdjustmentMethod] = []
 
     def fetch_stocks(self, as_of: date) -> list[StockIdentity]:
         self.calls.append("stocks")
@@ -62,6 +63,7 @@ class DeterministicProvider:
         self, codes: list[str], start: date, end: date, adjustment: AdjustmentMethod
     ) -> list[DailyBar]:
         self.calls.append("daily_bars")
+        self.adjustments.append(adjustment)
         if self.fail_next_daily_bars:
             self.fail_next_daily_bars = False
             raise RuntimeError("simulated provider failure")
@@ -120,8 +122,8 @@ def _pipeline(repo: SQLiteRepository, provider: DeterministicProvider) -> SyncPi
         universe_codes=lambda day: CODES,
         now=lambda: NOW,
     )
-    worker_factory = lambda: SerialFetchWorker(  # noqa: E731
-        provider, adjustment=AdjustmentMethod.QFQ, now=lambda: NOW
+    worker_factory = lambda adjustment: SerialFetchWorker(  # noqa: E731
+        provider, adjustment=adjustment, now=lambda: NOW
     )
     staging = StagingWriter(_factory(repo), now=lambda: NOW)
     verifier = CoverageVerifier(
@@ -143,7 +145,6 @@ def _pipeline(repo: SQLiteRepository, provider: DeterministicProvider) -> SyncPi
         legacy=legacy,
         now=lambda: NOW,
         retry_cooldown=timedelta(seconds=10),
-        max_attempts=2,
     )
 
 
@@ -251,9 +252,10 @@ class TestPipeline:
         running = repo.tasks_by_status(output.plan.plan_id, (SyncTaskStatus.RUNNING,))
         assert not running
 
-    def test_recover_interrupted_resets_failed_states(self, repo: SQLiteRepository) -> None:
-        """runner 被杀后的残留(FAILED/RUNNING 任务 + FAILED candidate)
-        recover_interrupted 必须全部重置,使 execute 能断点续传并发布。"""
+    def test_recover_interrupted_preserves_explicit_retry(
+        self, repo: SQLiteRepository
+    ) -> None:
+        """崩溃恢复只重置 RUNNING；FAILED 必须走显式 retry。"""
         provider = DeterministicProvider()
         pipeline = _pipeline(repo, provider)
         output = pipeline.plan(
@@ -262,7 +264,7 @@ class TestPipeline:
             adjustment=AdjustmentMethod.QFQ,
             target_start=DAYS[0],
             target_end=DAYS[-1],
-            required_data_types=("daily_bars",),
+            required_data_types=("stocks", "daily_bars"),
         )
         plan_id = output.plan.plan_id
         candidate_id = output.plan.candidate_generation_id
@@ -287,16 +289,14 @@ class TestPipeline:
 
         n = pipeline.recover_interrupted(plan_id)
         assert n >= 1
-        # 计划回 PLANNED、任务全 PENDING、candidate 回 PLANNED
+        # 计划回 PLANNED、RUNNING 回 PENDING；FAILED 状态不被偷偷解锁。
         assert repo.get_sync_plan(plan_id).status is SyncPlanStatus.PLANNED
         assert repo.get_candidate_generation(candidate_id).status is \
-            CandidateGenerationStatus.PLANNED
-        remaining = repo.tasks_by_status(
-            plan_id, (SyncTaskStatus.FAILED, SyncTaskStatus.RUNNING)
-        )
-        assert not remaining
-        # 恢复后 execute 能正常完成并发布
-        run = pipeline.execute(plan_id)
+            CandidateGenerationStatus.FAILED
+        assert repo.tasks_by_status(plan_id, (SyncTaskStatus.FAILED,))
+        assert not repo.tasks_by_status(plan_id, (SyncTaskStatus.RUNNING,))
+        # 用户显式 retry 后才会解锁并发布。
+        run = pipeline.retry(plan_id)
         assert run.published is True
         assert run.plan_status is SyncPlanStatus.SUCCEEDED
 
@@ -334,12 +334,69 @@ class TestPipeline:
             required_data_types=("daily_bars",),
         )
         run = pipeline.execute(output.plan.plan_id)
-        # 有验证问题 → 未发布,但计划仍算执行完成(需要 REPAIR 后再验证)
+        # 有验证问题 → 未发布,计划不得伪装成 SUCCEEDED。
         assert run.published is False
+        assert run.plan_status is SyncPlanStatus.FAILED
+        assert repo.get_sync_plan(output.plan.plan_id).status is SyncPlanStatus.FAILED
         candidate = repo.get_candidate_generation(output.candidate.candidate_generation_id)
         assert candidate is not None
         assert candidate.status is CandidateGenerationStatus.NEEDS_REPAIR
         assert repo.get_active_generation("market", AdjustmentMethod.QFQ) is None
+
+    def test_retry_needs_repair_refetches_only_incomplete_task(
+        self, repo: SQLiteRepository
+    ) -> None:
+        class SparseThenCompleteProvider(DeterministicProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.sparse = True
+
+            def fetch_daily_bars(self, codes, start, end, adjustment):
+                if self.sparse:
+                    self.sparse = False
+                    return [_bar_for_pipeline(CODES[0], DAYS[0])]
+                return super().fetch_daily_bars(codes, start, end, adjustment)
+
+        provider = SparseThenCompleteProvider()
+        pipeline = _pipeline(repo, provider)
+        output = pipeline.plan(
+            mode=SyncPlanMode.BOOTSTRAP,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=DAYS[0],
+            target_end=DAYS[-1],
+            required_data_types=("daily_bars",),
+        )
+        first = pipeline.execute(output.plan.plan_id)
+        assert first.plan_status is SyncPlanStatus.FAILED
+        repaired = pipeline.retry(output.plan.plan_id)
+        assert repaired.published is True
+        assert repaired.plan_status is SyncPlanStatus.SUCCEEDED
+
+    def test_plan_adjustment_reaches_worker_provider(
+        self, repo: SQLiteRepository
+    ) -> None:
+        provider = DeterministicProvider()
+        pipeline = _pipeline(repo, provider)
+        output = pipeline.plan(
+            mode=SyncPlanMode.BOOTSTRAP,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.HFQ,
+            target_start=DAYS[0],
+            target_end=DAYS[-1],
+            required_data_types=("daily_bars",),
+        )
+        run = pipeline.execute(output.plan.plan_id)
+        assert run.published is True
+        assert provider.adjustments == [AdjustmentMethod.HFQ]
+
+
+def _bar_for_pipeline(code: str, day: date) -> DailyBar:
+    return DailyBar(
+        code, day, Decimal("10"), Decimal("11"), Decimal("9"),
+        Decimal("10.5"), Decimal("10"), Decimal("1000"),
+        Decimal("10500"), True,
+    )
 
 
 def _with_now(pipeline: SyncPipeline, now):

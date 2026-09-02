@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections import Counter
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -96,7 +98,25 @@ class GenerationCommitter:
                 f"candidate {candidate.candidate_generation_id} is "
                 f"{candidate.status.value}, not VERIFIED"
             )
-        required_types = {p.data_type for p in partitions}
+        candidate_partitions = tuple(partitions)
+        required_types = {p.data_type for p in candidate_partitions}
+        if any(
+            verification.candidate_generation_id
+            != candidate.candidate_generation_id
+            for verification in verifications
+        ):
+            raise PublishError("verification belongs to another candidate")
+        verification_keys = {
+            (verification.data_type, verification.partition_key)
+            for verification in verifications
+        }
+        if len(verification_keys) != len(verifications):
+            raise PublishError("duplicate verification evidence was supplied")
+        partition_batch_ids = {
+            partition.batch_id for partition in candidate_partitions
+        }
+        if len(partition_batch_ids) != len(candidate_partitions):
+            raise PublishError("duplicate candidate partition batch was supplied")
         for verification in verifications:
             if verification.status.value != "COMPLETE":
                 raise PublishError(
@@ -110,16 +130,36 @@ class GenerationCommitter:
             raise PublishError(
                 f"missing verifications for types: {sorted(missing_types)}"
             )
-        if not partitions:
+        partition_counts = Counter(
+            partition.data_type for partition in candidate_partitions
+        )
+        verification_counts = Counter(
+            verification.data_type for verification in verifications
+        )
+        if partition_counts != verification_counts:
+            raise PublishError(
+                "verification evidence count does not match candidate "
+                f"partitions: expected {dict(partition_counts)}, "
+                f"got {dict(verification_counts)}"
+            )
+        if not candidate_partitions:
             raise PublishError("cannot publish a candidate with no partitions")
-        if any(p.generation != candidate.candidate_generation_id for p in partitions):
+        if any(
+            p.generation != candidate.candidate_generation_id
+            for p in candidate_partitions
+        ):
             raise PublishError("partition generation must match the candidate id")
         now = self._now()
-        manifest_sha256 = self._manifest_digest(partitions)
-        with self._connection_factory() as connection:
+        connection = self._connection_factory()
+        try:
             try:
+                connection.execute("BEGIN IMMEDIATE")
+                partitions = self._inherit_parent_partitions(
+                    connection, candidate, candidate_partitions
+                )
+                manifest_sha256 = self._manifest_digest(partitions)
                 self._recheck_inside_txn(
-                    connection, candidate, verifications, partitions
+                    connection, candidate, verifications, candidate_partitions
                 )
                 connection.execute(
                     """UPDATE candidate_generations SET status = ?, updated_at = ?
@@ -175,6 +215,19 @@ class GenerationCommitter:
                         now.isoformat(),
                     ),
                 )
+                if candidate.parent_generation is not None:
+                    connection.execute(
+                        """UPDATE candidate_generations
+                           SET status = ?, updated_at = ?
+                           WHERE candidate_generation_id = ?
+                             AND status = ?""",
+                        (
+                            CandidateGenerationStatus.SUPERSEDED.value,
+                            now.isoformat(),
+                            candidate.parent_generation,
+                            CandidateGenerationStatus.PUBLISHED.value,
+                        ),
+                    )
                 connection.commit()
             except sqlite3.Error as error:
                 connection.rollback()
@@ -182,6 +235,8 @@ class GenerationCommitter:
                     f"publish failed for candidate "
                     f"{candidate.candidate_generation_id}: {error}"
                 ) from error
+        finally:
+            connection.close()
         return PublishedGeneration(
             generation=candidate.candidate_generation_id,
             dataset_id=dataset_id,
@@ -190,6 +245,42 @@ class GenerationCommitter:
             manifest_sha256=manifest_sha256,
             published_at=now,
             status=CandidateGenerationStatus.PUBLISHED,
+        )
+
+    @staticmethod
+    def _inherit_parent_partitions(
+        connection: sqlite3.Connection,
+        candidate: CandidateGeneration,
+        candidate_partitions: Sequence[GenerationPartition],
+    ) -> tuple[GenerationPartition, ...]:
+        """Carry the parent manifest forward without copying parent rows."""
+        inherited: list[GenerationPartition] = []
+        if candidate.parent_generation is not None:
+            rows = connection.execute(
+                """SELECT data_type, partition_key, batch_id
+                   FROM generation_partitions WHERE generation = ?""",
+                (candidate.parent_generation,),
+            ).fetchall()
+            inherited.extend(
+                GenerationPartition(
+                    generation=candidate.candidate_generation_id,
+                    data_type=row["data_type"],
+                    partition_key=row["partition_key"],
+                    batch_id=row["batch_id"],
+                )
+                for row in rows
+            )
+        unique = {
+            (partition.data_type, partition.partition_key, partition.batch_id): partition
+            for partition in (*inherited, *candidate_partitions)
+        }
+        return tuple(
+            sorted(
+                unique.values(),
+                key=lambda item: (
+                    item.data_type, item.partition_key, item.batch_id
+                ),
+            )
         )
 
     @staticmethod
@@ -258,6 +349,8 @@ class GenerationCommitter:
                 raise PublishError("verification not COMPLETE inside transaction")
             if int(check["verified_revision"]) != candidate.write_revision:
                 raise PublishError("verification revision mismatch inside transaction")
+            if check["manifest_sha256"] != verification.manifest_sha256:
+                raise PublishError("verification manifest mismatch inside transaction")
 
     @staticmethod
     def _manifest_digest(
@@ -304,7 +397,7 @@ class ReadinessGate:
             raise ReadGateError("requested_start must not be after requested_end")
         if not required_data_types:
             raise ReadGateError("required_data_types must not be empty")
-        with self._connection_factory() as connection:
+        with closing(self._connection_factory()) as connection:
             active = connection.execute(
                 """SELECT generation, activated_at FROM active_generations
                    WHERE dataset_id = ? AND adjustment = ?""",

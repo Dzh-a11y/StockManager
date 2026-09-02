@@ -353,7 +353,7 @@ class TestMigration:
         repo = SQLiteRepository(path)
         with sqlite3.connect(path) as connection:
             assert schema_version(connection) == CURRENT_SCHEMA_VERSION
-            assert schema_version(connection) == 1
+            assert schema_version(connection) == 2
         repo = None  # noqa: F841
 
     def test_batch_columns_added(self, tmp_path: Path) -> None:
@@ -390,6 +390,20 @@ class TestMigration:
                 ).fetchall()
             }
         assert expected <= tables
+
+    def test_generation_manifest_keeps_all_code_batches(self, tmp_path: Path) -> None:
+        """同一日期/类型的多个代码批次必须同时保留在 manifest。"""
+        path = tmp_path / "m.sqlite3"
+        SQLiteRepository(path)
+        with sqlite3.connect(path) as connection:
+            pk_columns = [
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(generation_partitions)"
+                ).fetchall()
+                if row[5] > 0
+            ]
+        assert pk_columns == ["generation", "data_type", "partition_key", "batch_id"]
 
     def test_legacy_db_migrates(self, tmp_path: Path) -> None:
         # Simulate a real pre-P5 v0 database: the full old schema created by
@@ -429,17 +443,31 @@ class TestMigration:
             SQLiteRepository(path)
 
     def test_failed_migration_rolls_back(self, tmp_path: Path) -> None:
-        # A step that fails mid-transaction must leave user_version unchanged.
+        # A real migration step that fails mid-transaction must roll back both
+        # its DDL and user_version.
+        import stock_manager.storage.migrations as migrations
+
         path = tmp_path / "fail.sqlite3"
         with sqlite3.connect(path) as connection:
-            connection.execute("PRAGMA user_version = 0")
-        with sqlite3.connect(path) as connection:
-            with pytest.raises(sqlite3.Error):
-                connection.execute("ALTER TABLE nonexistent ADD COLUMN x TEXT")
-                connection.execute("PRAGMA user_version = 1")
-                raise sqlite3.OperationalError("boom")
-            connection.rollback()
-            assert schema_version(connection) == 0
+            connection.execute("PRAGMA user_version = 1")
+
+        def failing_step(connection: sqlite3.Connection) -> None:
+            connection.execute("CREATE TABLE migration_probe (id INTEGER)")
+            raise sqlite3.OperationalError("boom")
+
+        original = migrations._MIGRATIONS[2]
+        migrations._MIGRATIONS[2] = failing_step
+        try:
+            with sqlite3.connect(path) as connection:
+                with pytest.raises(sqlite3.OperationalError, match="boom"):
+                    migrations.migrate_database(connection)
+                assert schema_version(connection) == 1
+                probe = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name = 'migration_probe'"
+                ).fetchone()
+                assert probe is None
+        finally:
+            migrations._MIGRATIONS[2] = original
 
     def test_real_repo_protocol_conformance(self, repo: SQLiteRepository) -> None:
         assert isinstance(repo, DataSyncAdminRepositoryProtocol)

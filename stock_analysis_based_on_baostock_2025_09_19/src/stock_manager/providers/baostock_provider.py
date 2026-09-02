@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import socket
 import time
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from types import ModuleType
-from typing import Any
+from typing import Any, Protocol
 
 from stock_manager.domain import (
     AdjustmentMethod,
@@ -52,6 +53,18 @@ class BaostockProviderError(RuntimeError):
     """Raised when Baostock rejects a request or returns malformed data."""
 
 
+class BaostockBlacklistedError(BaostockProviderError):
+    """Raised immediately for Baostock blacklist response 10001011."""
+
+
+class ProviderRequestBudget(Protocol):
+    """Minimal persistent request-budget surface used by this adapter."""
+
+    def before_request(self, operation: str) -> None: ...
+
+    def trip_blacklist(self, error_code: str, message: str) -> None: ...
+
+
 class BaostockProvider:
     """Thin, replaceable adapter around the Baostock SDK."""
 
@@ -66,6 +79,7 @@ class BaostockProvider:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
+        request_budget: ProviderRequestBudget | None = None,
     ) -> None:
         if request_interval_seconds < 0:
             raise ValueError("request_interval_seconds must be non-negative")
@@ -88,6 +102,11 @@ class BaostockProvider:
         self._sleep = sleep
         self._last_request_at: float | None = None
         self._progress_callback = progress_callback
+        self._request_budget = request_budget
+
+    def set_request_budget(self, request_budget: ProviderRequestBudget) -> None:
+        """Attach the persistent budget owned by DataSyncService."""
+        self._request_budget = request_budget
 
     def _emit_progress(
         self, phase: str, index: int, total: int, code: str
@@ -128,6 +147,7 @@ class BaostockProvider:
         operation: Callable[[], Any],
         *,
         relogin: Callable[[], None] | None = None,
+        operation_name: str = "baostock_request",
     ) -> Any:
         """Run a baostock SDK call, retrying transient failures with backoff.
 
@@ -146,6 +166,8 @@ class BaostockProvider:
         last_result: Any = None
         last_network_error: OSError | None = None
         for attempt in range(self._max_retries):
+            if self._request_budget is not None:
+                self._request_budget.before_request(operation_name)
             try:
                 result = self._call_with_timeout(operation)
             except OSError as error:
@@ -154,8 +176,16 @@ class BaostockProvider:
             else:
                 last_result = result
                 last_network_error = None
-                if getattr(result, "error_code", "0") == "0":
+                error_code = str(getattr(result, "error_code", "0"))
+                if error_code == "0":
                     return result
+                if error_code == "10001011":
+                    message = str(getattr(result, "error_msg", "blacklisted"))
+                    if self._request_budget is not None:
+                        self._request_budget.trip_blacklist(error_code, message)
+                    raise BaostockBlacklistedError(
+                        f"Baostock blacklist {error_code}: {message}"
+                    )
                 if relogin is not None and self._is_session_expired(result):
                     relogin()
                     continue
@@ -179,32 +209,63 @@ class BaostockProvider:
         operation: Callable[[], Any],
         *,
         relogin: Callable[[], None] | None = None,
+        operation_name: str = "baostock_query",
     ) -> Any:
         now = self._monotonic()
         if self._last_request_at is not None:
             remaining = self._request_interval - (now - self._last_request_at)
             if remaining > 0:
                 self._sleep(remaining)
-        result = self._retry(operation, relogin=relogin)
+        result = self._retry(
+            operation, relogin=relogin, operation_name=operation_name
+        )
         self._last_request_at = self._monotonic()
         return result
 
     @contextmanager
     def _session(self) -> Iterator[Callable[[], None]]:
         def relogin() -> None:
-            login_result = self._retry(lambda: self._client.login())
+            login_result = self._retry(
+                lambda: self._client.login(), operation_name="login"
+            )
             if login_result.error_code != "0":
                 raise BaostockProviderError(
                     f"Baostock relogin failed: {login_result.error_msg}"
                 )
+            self._set_session_socket_timeout()
 
-        login_result = self._retry(lambda: self._client.login())
+        login_result = self._retry(
+            lambda: self._client.login(), operation_name="login"
+        )
         if login_result.error_code != "0":
             raise BaostockProviderError(f"Baostock login failed: {login_result.error_msg}")
+        self._set_session_socket_timeout()
         try:
             yield relogin
         finally:
-            self._client.logout()
+            try:
+                self._call_with_timeout(lambda: self._client.logout())
+            except OSError as error:
+                warnings.warn(
+                    f"Baostock logout failed after session use: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+    def _set_session_socket_timeout(self) -> None:
+        """Apply timeout to Baostock's already-connected global socket."""
+        try:
+            from baostock.common import context as baostock_context
+
+            active_socket = getattr(baostock_context, "default_socket", None)
+            if active_socket is not None:
+                active_socket.settimeout(self._socket_timeout)
+        except (ImportError, AttributeError, OSError) as error:
+            warnings.warn(
+                f"unable to apply timeout to Baostock session socket: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     @staticmethod
     def _rows(result: Any, operation: str) -> tuple[dict[str, str], ...]:
@@ -234,7 +295,9 @@ class BaostockProvider:
         page = 1
         while True:
             result = self._query(
-                lambda page=page: query(page), relogin=relogin
+                lambda page=page: query(page),
+                relogin=relogin,
+                operation_name=operation,
             )
             if result.error_code != "0":
                 raise BaostockProviderError(f"{operation} failed: {result.error_msg}")
@@ -280,6 +343,7 @@ class BaostockProvider:
                         start_date=start.isoformat(), end_date=end.isoformat()
                     ),
                     relogin=relogin,
+                    operation_name="query_trade_dates",
                 ),
                 "query_trade_dates",
             )
@@ -343,12 +407,18 @@ class BaostockProvider:
                 self._query(
                     lambda: self._client.query_all_stock(day=as_of.isoformat()),
                     relogin=relogin,
+                    operation_name="query_all_stock",
                 ),
                 "query_all_stock",
             )
             try:
                 basics = self.fetch_stock_basics(relogin=relogin, session=False)
-            except (BaostockProviderError, OSError, ValueError, AttributeError):
+            except (BaostockProviderError, OSError, ValueError, AttributeError) as error:
+                warnings.warn(
+                    f"stock listing dates unavailable; using conservative window: {error}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 basics = {}
         return tuple(
             StockIdentity(
@@ -374,7 +444,7 @@ class BaostockProvider:
     ) -> Sequence[DailyBar]:
         bars: list[DailyBar] = []
         fields = "date,code,open,high,low,close,preclose,volume,amount,tradestatus"
-        with self._session():
+        with self._session() as relogin:
             for index, code in enumerate(codes):
                 self._emit_progress("daily_bars", index + 1, len(codes), code)
                 rows = self._rows(
@@ -386,7 +456,9 @@ class BaostockProvider:
                             end_date=end.isoformat(),
                             frequency="d",
                             adjustflag=self._adjustflag(adjustment),
-                        )
+                        ),
+                        relogin=relogin,
+                        operation_name="query_history_k_data_plus",
                     ),
                     f"query_history_k_data_plus({code})",
                 )
@@ -428,7 +500,8 @@ class BaostockProvider:
     ) -> Sequence[FundamentalSnapshot]:
         snapshots: list[FundamentalSnapshot] = []
         fields = "date,code,peTTM,pbMRQ"
-        with self._session():
+        lookback_start = as_of - timedelta(days=60)
+        with self._session() as relogin:
             for index, code in enumerate(codes):
                 self._emit_progress("fundamentals", index + 1, len(codes), code)
                 rows = self._rows(
@@ -436,15 +509,18 @@ class BaostockProvider:
                         lambda code=code: self._client.query_history_k_data_plus(
                             code,
                             fields,
-                            start_date=as_of.isoformat(),
+                            start_date=lookback_start.isoformat(),
                             end_date=as_of.isoformat(),
                             frequency="d",
                             adjustflag="3",
-                        )
+                        ),
+                        relogin=relogin,
+                        operation_name="query_fundamentals",
                     ),
                     f"query_fundamentals({code})",
                 )
-                for row in rows:
+                latest_rows = sorted(rows, key=lambda item: item["date"])[-1:]
+                for row in latest_rows:
                     snapshots.append(
                         FundamentalSnapshot(
                             row["code"],

@@ -15,6 +15,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from datetime import date, datetime
 
 from stock_manager.domain import (
@@ -69,7 +70,7 @@ class LegacyImporter:
             created_at=now,
             updated_at=now,
         )
-        with self._connection_factory() as connection:
+        with closing(self._connection_factory()) as connection:
             connection.execute(
                 """INSERT INTO candidate_generations
                    (candidate_generation_id, plan_id, parent_generation,
@@ -112,8 +113,24 @@ class LegacyImporter:
             raise LegacyImportError(f"unsupported legacy data type {data_type}")
         day = date.fromisoformat(partition_key)
         now = self._now()
-        with self._connection_factory() as connection:
+        connection = self._connection_factory()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
             try:
+                current = connection.execute(
+                    """SELECT status FROM candidate_generations
+                       WHERE candidate_generation_id = ?""",
+                    (candidate.candidate_generation_id,),
+                ).fetchone()
+                current_status = None if current is None else str(current[0])
+                if current_status != (
+                    CandidateGenerationStatus.WRITING.value
+                ):
+                    actual = "missing" if current is None else current_status
+                    raise LegacyImportError(
+                        f"candidate {candidate.candidate_generation_id} is "
+                        f"{actual}, not WRITING"
+                    )
                 count = self._copy_rows(
                     connection, data_type, batch_id, day, adjustment
                 )
@@ -121,68 +138,70 @@ class LegacyImporter:
                     connection, data_type, day, adjustment
                 )
                 digest = self._batch_digest(connection, data_type, batch_id)
-            except sqlite3.Error as error:
+                if count == 0 or not codes:
+                    connection.execute(
+                        f"DELETE FROM {legacy_table} WHERE batch_id = ?",
+                        (batch_id,),
+                    )
+                    connection.commit()
+                    return None
+                batch = IngestBatch(
+                    batch_id=batch_id,
+                    candidate_generation_id=candidate.candidate_generation_id,
+                    data_type=data_type,
+                    partition_key=partition_key,
+                    codes=codes,
+                    range_start=day,
+                    range_end=day,
+                    row_count=count,
+                    source=source,
+                    batch_sha256=digest,
+                    created_at=now,
+                )
+                connection.execute(
+                    """INSERT OR REPLACE INTO ingest_batches
+                       (batch_id, candidate_generation_id, data_type, partition_key,
+                        codes, range_start, range_end, row_count, source,
+                        batch_sha256, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        batch.batch_id,
+                        batch.candidate_generation_id,
+                        batch.data_type,
+                        batch.partition_key,
+                        ",".join(batch.codes),
+                        batch.range_start.isoformat(),
+                        batch.range_end.isoformat(),
+                        batch.row_count,
+                        batch.source,
+                        batch.batch_sha256,
+                        batch.created_at.isoformat(),
+                    ),
+                )
+                connection.execute(
+                    """UPDATE candidate_generations
+                       SET write_revision = write_revision + 1, updated_at = ?
+                       WHERE candidate_generation_id = ?""",
+                    (now.isoformat(), candidate.candidate_generation_id),
+                )
+                connection.commit()
+                return batch
+            except (sqlite3.Error, LegacyImportError) as error:
                 connection.rollback()
+                if isinstance(error, LegacyImportError):
+                    raise
                 raise LegacyImportError(
                     f"legacy import failed for {data_type} {partition_key}: {error}"
                 ) from error
-        if count == 0 or not codes:
-            # 空分区:不创建批次,数据类型的可见性保持 UNAVAILABLE。
-            with self._connection_factory() as connection:
-                connection.execute(
-                    f"DELETE FROM {legacy_table} WHERE batch_id = ?", (batch_id,)
-                )
-                connection.commit()
-            return None
-        batch = IngestBatch(
-            batch_id=batch_id,
-            candidate_generation_id=candidate.candidate_generation_id,
-            data_type=data_type,
-            partition_key=partition_key,
-            codes=codes,
-            range_start=day,
-            range_end=day,
-            row_count=count,
-            source=source,
-            batch_sha256=digest,
-            created_at=now,
-        )
-        with self._connection_factory() as connection:
-            connection.execute(
-                """INSERT OR REPLACE INTO ingest_batches
-                   (batch_id, candidate_generation_id, data_type, partition_key,
-                    codes, range_start, range_end, row_count, source,
-                    batch_sha256, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    batch.batch_id,
-                    batch.candidate_generation_id,
-                    batch.data_type,
-                    batch.partition_key,
-                    ",".join(batch.codes),
-                    batch.range_start.isoformat(),
-                    batch.range_end.isoformat(),
-                    batch.row_count,
-                    batch.source,
-                    batch.batch_sha256,
-                    batch.created_at.isoformat(),
-                ),
-            )
-            connection.execute(
-                """UPDATE candidate_generations
-                   SET write_revision = write_revision + 1, updated_at = ?
-                   WHERE candidate_generation_id = ?""",
-                (now.isoformat(), candidate.candidate_generation_id),
-            )
-            connection.commit()
-        return batch
+        finally:
+            connection.close()
 
     def finish_candidate(
         self, candidate: CandidateGeneration
     ) -> CandidateGeneration:
         """Move the imported candidate into VERIFYING."""
         now = self._now()
-        with self._connection_factory() as connection:
+        with closing(self._connection_factory()) as connection:
             connection.execute(
                 """UPDATE candidate_generations SET status = ?, updated_at = ?
                    WHERE candidate_generation_id = ?""",
@@ -217,7 +236,7 @@ class LegacyImporter:
         generation: str,
     ) -> tuple[GenerationPartition, ...]:
         """Build the partition manifest from the candidate's batches."""
-        with self._connection_factory() as connection:
+        with closing(self._connection_factory()) as connection:
             rows = connection.execute(
                 """SELECT data_type, partition_key, batch_id
                    FROM ingest_batches
@@ -290,7 +309,6 @@ class LegacyImporter:
             )
         else:  # pragma: no cover - guarded by _LEGACY_TO_STAGING
             raise LegacyImportError(f"unsupported data type {data_type}")
-        connection.commit()
         return int(cursor.rowcount)
 
     @staticmethod

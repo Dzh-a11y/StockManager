@@ -4,4 +4,4 @@ from stock_manager import __version__
 
 
 def test_package_version() -> None:
-    assert __version__ == "1.12.0"
+    assert __version__ == "1.13.0"

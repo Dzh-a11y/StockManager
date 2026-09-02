@@ -1114,24 +1114,20 @@ class TestBootstrapEndpoint:
             sync_config_path=REPO / "config" / "sync.json",
             lock_directory=locks,
         )
-        app = WebApp(config)  # 无 provider_factory → 真实启动
+        app = WebApp(config)  # 无 provider_factory → 走 runner 启动路径
         # 防重复启动的锁检查可能被真实环境残留锁命中(该锁文件位于真实
         # repo data/locks,与临时库无关),此处模拟"锁空闲"专注验证 Popen。
+        process = mock.Mock(pid=12345)
         with mock.patch(
             "stock_manager.sync.locks.is_file_lock_held", return_value=False
-        ):
+        ), mock.patch("subprocess.Popen", return_value=process) as popen:
             status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
             assert status == 200, payload
-            assert isinstance(payload["runner_pid"], int)
-            assert payload["runner_pid"] > 0
-            # 清理:杀掉刚启动的子进程(避免测试残留)
-            import os
-            import signal as _signal
-
-            try:
-                os.kill(int(payload["runner_pid"]), _signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            assert payload["runner_pid"] == 12345
+        argv = popen.call_args.args[0]
+        assert argv[argv.index("--db") + 1] == str(db)
+        assert argv[argv.index("--lock-dir") + 1] == str(locks)
+        assert argv[argv.index("--adjustment") + 1] == "qfq"
 
     def test_bootstrap_rejected_when_runner_lock_held(self, tmp_path: Path) -> None:
         """防重复启动:backfill_runner.lock 被持有(有回补实例存活)→ 409。"""

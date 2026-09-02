@@ -1,5 +1,5 @@
 ---
-date: 2026-09-01
+date: 2026-09-02
 purpose: 定义 P5 DataSync 重构的数据库物理 schema、批次/分区 manifest、active generation 指针、迁移成本基准、磁盘峰值与回滚策略。
 project: StockManager
 status: accepted
@@ -9,7 +9,7 @@ status: accepted
 
 ## 状态
 
-**已接受（accepted）**：真实库基准（2026-09-01 实测）与 P5-RD-1 实现验收完成。`SQLiteRepository` 已集成 `storage/migrations.py` 版本化幂等迁移（`user_version` 0→1：数据表加 `batch_id` 列与索引、新增 8 张书签表、4 张 staging 镜像表）；领域契约、Planner、Worker、StagingWriter、Verifier、Committer、ReadinessGate、种子/迁移工具与 CLI 子命令全部离线测试通过（版本 1.12.0，新增 151 项测试）。
+**已接受（accepted）**：真实库基准（2026-09-01 实测）与 2026-09-02 稳定性复验完成。`SQLiteRepository` 已集成版本化幂等迁移；当前 `user_version=2`，同分区多 batch manifest 与 Provider 请求预算/熔断均已入库。版本 1.13.0，全量离线测试 602 passed。
 
 ## 背景
 
@@ -60,7 +60,7 @@ status: accepted
 
 ### 发布成本
 
-单日分区从 staging 复制到正式表（`INSERT ... SELECT`，约 2,600 行）实测 0.056 s。`GenerationCommitter` 的发布只写 manifest 与 active 指针（不复制数据），短事务目标成立；staging 侧按分区批写入，不用超大事务锁库。
+单日分区从 staging 复制到正式表（`INSERT ... SELECT`，约 2,600 行）实测 0.056 s。`GenerationCommitter` 在同一事务内复制本 candidate 的已验证分区、写 manifest 并切换 active 指针；parent 分区只继承 manifest，不重复复制。staging 侧按任务批写入，避免把整个八年下载过程放进一个事务。
 
 ## 决策
 
@@ -80,7 +80,7 @@ status: accepted
 3. 旧数据回填：`UPDATE <table> SET batch_id = '<legacy_batch_id>' WHERE batch_id IS NULL`，其中 `legacy_batch_id` 由 `LEGACY_IMPORT` 计划创建，禁止硬编码任意值。
 4. 旧行 `batch_id IS NULL` 视为未归属：新 verifier 与 reader 一律不可见，直到回填完成。
 
-`batch_id` 不进入主键；同一逻辑行（如 `(code, trading_day, adjustment)`）可能在不同批次出现，按 `generation_partitions` 的分区清单决定哪一批次对当前 generation 可见。**写入禁止用 `INSERT OR REPLACE` 覆盖已发布批次的行**；新数据必须写入新批次（新 `batch_id`），已发布批次保持物理不可变。
+`batch_id` 不进入正式数据表的逻辑主键；staging 使用 `(batch_id, 逻辑主键)` 隔离 candidate。当前发布实现会用 `INSERT OR REPLACE` 把已验证 batch 物化到共享正式表，因此保证的是「未发布 candidate 不可见」与「active 指针原子切换」，不保证 superseded generation 的正式行仍可历史重放。若未来要求任意旧 generation 可查询，必须另立 ADR 改为物理行版本化。
 
 ### 2. 新增书签表（bookkeeping tables）
 
@@ -90,10 +90,12 @@ status: accepted
 | `sync_tasks` | 串行任务、重试、冷却与 checkpoint | `task_id`、`plan_id`、`sequence_no`、`data_type`、`partition_key`、`codes`、`range_start/end`、`dependencies`、`status`、`attempt_count`、`not_before`、`row_count`、`error_code/message` |
 | `candidate_generations` | candidate 身份、父 generation、写入修订号与生命周期 | `candidate_generation_id`、`plan_id`、`parent_generation`、`write_revision`、`status` |
 | `ingest_batches` | 不可变数据批次、行数、来源与摘要 | `batch_id`、`candidate_generation_id`、`data_type`、`partition_key`、`codes`、`range_start/end`、`row_count`、`source`、`batch_sha256`、`created_at` |
-| `generation_partitions` | generation 对数据类型/分区/批次的不可变映射 | `generation`、`data_type`、`partition_key`、`batch_id` |
+| `generation_partitions` | generation 对数据类型/分区/批次的不可变映射 | 复合主键 `generation`、`data_type`、`partition_key`、`batch_id` |
 | `coverage_verifications` | 逐类型/逐分区验证证据 | `candidate_generation_id`、`data_type`、`partition_key`、`expected/actual/distinct/duplicate/invalid_count`、`coverage_ratio`、`status`、`verified_revision`、`manifest_sha256`、`verified_at`、`details_json` |
 | `active_generations` | 每个 dataset/adjustment 当前可读 generation | `dataset_id`、`adjustment`、`generation`、`activated_at` |
 | `seed_imports` | 种子文件、source SHA-256、manifest、导入与验证结果 | `import_id`、`filename`、`source_sha256`、`manifest_json`、`schema_version`、`status`、`imported_at` |
+| `provider_request_ledger` | Provider 每日跨进程请求计数 | `source`、`request_day`、`request_count`、`updated_at` |
+| `provider_circuit_breakers` | 黑名单/上游熔断状态 | `source`、`circuit_open_until`、`reason`、`occurrence_year/count` |
 
 `sync_plans.plan_id` 与 `plan_fingerprint` 由规范化计划输入确定性生成（计划 §4.2），相同输入必须产出相同计划身份；范围/复权/数据类型变化必须生成不同计划。
 
@@ -103,7 +105,7 @@ status: accepted
 - `StagingWriter` 每次成功写入增加 `write_revision`；`CoverageVerifier` 保存 `verified_revision` 与 candidate manifest 摘要；提交条件（计划 §6.3）逐项核对，任一变化使验证失效。
 - `GenerationCommitter` 在单个写事务内：重读 candidate/验证记录/parent generation → 确认全部必需分区 `COMPLETE` → 固化 generation manifest（`generation_partitions`）→ 写 published generation → 切换 `active_generations` 指针 → 写发布事件与成功终态。任一步失败整体回滚。
 - 增量 generation 复用 parent 未变化分区：新 generation 的 `generation_partitions` 显式引用 parent 已发布分区（不复制数据行），只为新增/修复分区创建新 batch。
-- 已发布 generation 永不因新 candidate 失败而失效；被替代后标记 `SUPERSEDED`，仍不可变可查。
+- 已发布 generation 永不因新 candidate 失败而失效；被替代后标记 `SUPERSEDED`，manifest 仍可查。当前 Reader 只允许 active generation，不能从 manifest 推断 superseded generation 的行级数据仍可重放。
 
 ### 4. 分区键（partition_key）
 
@@ -116,7 +118,7 @@ status: accepted
 
 ### 5. schema 版本机制
 
-- 新增 `PRAGMA user_version` 作为数据库 schema 版本号（当前为 0）。P5-RD-1 起每步迁移在事务内执行并递增 `user_version`。
+- 使用 `PRAGMA user_version` 作为数据库 schema 版本号（当前为 2）。v1 建立 P5 批次/验证表；v2 保留同分区全部 batch，并加入 Provider 请求账本和熔断表。每步迁移与 `user_version` 递增处于同一 `BEGIN IMMEDIATE` 事务。
 - `seed_imports.schema_version` 记录种子 schema 版本；种子外部 manifest 中的 `schema_version` 必须与 `PRAGMA user_version` 语义一致，禁止把计划示例值（3）当作现状。
 - 启动时校验 `user_version`：过低则执行增量迁移；过高或未知则拒绝打开并给出明确错误，禁止静默降级。
 
@@ -138,8 +140,10 @@ status: accepted
 | 旧行 `batch_id IS NULL` 被误读 | Reader 只读 active generation 分区清单指向的批次；NULL 行不可见 |
 | `INSERT OR REPLACE` 覆盖已发布批次 | 写入契约禁止；StagingWriter 只写新批次，测试覆盖重复写入场景 |
 | 迁移中断产生半状态 | 全部迁移步骤幂等 + 事务内执行 + `user_version` 记录；重启续跑 |
-| 发布事务过长锁库 | 发布只写 manifest/指针（短事务）；数据写入在 staging 批事务中完成 |
+| 发布事务过长锁库 | candidate 下载按 staging 批事务完成；发布事务只复制已验证 candidate 分区、继承 parent manifest 并切换指针 |
 | 回填期间新写入竞争 | 迁移在启动早期完成；迁移与同步互斥（进程锁 + 持久化锁） |
+| Baostock 日请求上限或黑名单 | SQLite 原子请求账本；45,000 软上限、50,000 硬上限；`10001011` 立即持久化熔断并停止自动重试 |
+| 共享正式表无法重放 superseded generation | Reader 只允许 active generation；若需要历史 generation 可查询，另立 ADR 改为物理不可变行版本 |
 
 ## 回滚策略
 
@@ -159,7 +163,7 @@ status: accepted
 ## 结果（实现状态）
 
 - 2026-09-01 完成真实库基准（见上），三种迁移方案成本对比与分区键已固化。
-- P5-RD-1 起实现：`storage/migrations.py` 版本化幂等迁移（v0→v1），`SQLiteRepository` 启动时自动迁移并在真实库副本上验证通过（0→1 幂等、不触碰线上库）；新增 `DataSyncAdminRepositoryProtocol` 与 8 张书签表、4 张 staging 镜像表的 CRUD。
+- P5-RD-1 起实现：`storage/migrations.py` 版本化幂等迁移（v0→v1→v2），`SQLiteRepository` 启动时自动迁移；2026-09-02 真实工作库在备份后迁移到 v2，`integrity_check=ok`。
 - 发布采用「事务内 staging→正式表 publish-copy + manifest + active 指针切换」模型：单日分区实测复制约 0.056 s，短事务成立；旧 generation 在构建期间通过 staging 隔离保持可读。
-- 版本 1.12.0（MINOR 递增），全量离线测试 544 passed（新增 151 项，覆盖 P5-RD-1..10）。
+- 版本 1.13.0（MINOR 递增），全量离线测试 602 passed；真实库恢复 11 个可信 ingest batch，并清理 3 个无 checkpoint 的孤儿 batch（117,865 行，备份仍保留）。
 - 第 17 章第 8 条（Mac→Windows 物理迁移人工验收）按用户 2026-09-01 确认不纳入完成定义，Windows 端实机验收由用户另行执行。

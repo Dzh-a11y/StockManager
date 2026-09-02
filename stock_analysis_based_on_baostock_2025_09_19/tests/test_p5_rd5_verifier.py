@@ -339,13 +339,34 @@ class TestCoverageVerifier:
                 tasks=(_task("daily_bars"),),
             )
 
-    def test_dedup_partitions(self, writer: StagingWriter, repo: SQLiteRepository, verifier: CoverageVerifier) -> None:
-        candidate = _stage_bars(writer, repo, [_bar(c) for c in CODES])
+    def test_same_range_code_batches_are_verified_individually(
+        self, writer: StagingWriter, repo: SQLiteRepository, verifier: CoverageVerifier
+    ) -> None:
+        writer.begin_candidate(
+            _candidate(status=CandidateGenerationStatus.PLANNED), "fake"
+        )
+        candidate = repo.get_candidate_generation("cand-1")
+        assert candidate is not None
+        first = _task("daily_bars", codes=CODES[:2], task_id="t1", sequence_no=0)
+        second = _task("daily_bars", codes=CODES[2:], task_id="t2", sequence_no=1)
+        writer.write_batch(
+            candidate, first, [_bar(c) for c in CODES[:2]],
+            source="fake", adjustment=AdjustmentMethod.QFQ,
+        )
+        writer.write_batch(
+            candidate, second, [_bar(c) for c in CODES[2:]],
+            source="fake", adjustment=AdjustmentMethod.QFQ,
+        )
+        writer.finish_candidate(candidate)
+        loaded = repo.get_candidate_generation("cand-1")
+        assert loaded is not None
         outcome = verifier.verify(
-            candidate,
+            loaded,
             adjustment=AdjustmentMethod.QFQ,
             target_start=DAY,
             target_end=DAY,
-            tasks=(_task("daily_bars"), _task("daily_bars", task_id="t2")),
+            tasks=(first, second),
         )
-        assert len(outcome.records) == 1  # 同分区去重
+        assert len(outcome.records) == 2
+        assert len({record.partition_key for record in outcome.records}) == 2
+        assert all(record.status is VerificationStatus.COMPLETE for record in outcome.records)

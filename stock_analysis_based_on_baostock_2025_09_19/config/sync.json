@@ -8,6 +8,8 @@
     "retry_cooldown_seconds": 300,
     "minimum_request_interval_seconds": 0.2,
     "backfill_request_interval_seconds": 1.5,
+    "daily_request_soft_limit": 45000,
+    "daily_request_hard_limit": 50000,
     "calendar_horizon_days": 45,
     "dividend_lookback_years": 3
   },
