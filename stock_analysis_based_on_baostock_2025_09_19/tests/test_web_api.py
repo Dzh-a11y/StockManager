@@ -219,6 +219,47 @@ def _app(tmp_path: Path) -> WebApp:
     return WebApp(config)
 
 
+def test_web_startup_marks_orphaned_backtest_runs_interrupted(
+    tmp_path: Path,
+) -> None:
+    """Web 启动时把上一进程遗留的 QUEUED/进行中回测标记为 INTERRUPTED。"""
+    from stock_manager.domain import HistoricalRunStatus, HistoricalScreeningRun
+    from stock_manager.services.historical_screening_run_store import (
+        HistoricalScreeningRunStore,
+    )
+
+    database_path = tmp_path / "market.sqlite3"
+    _seed_repository(database_path)
+    repo = SQLiteRepository(database_path)
+    store = HistoricalScreeningRunStore(repo)
+    store.create(
+        HistoricalScreeningRun(
+            run_id="rb-orphan-queued",
+            cache_key="ck",
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            generation="g",
+            template_id="t",
+            template_revision=1,
+            plan_fingerprint="fp",
+            rule_implementation_version="builtin-v1",
+            universe_policy="pit_as_of",
+            evaluation_start=date(2020, 1, 1),
+            evaluation_end=date(2020, 1, 31),
+            status=HistoricalRunStatus.QUEUED,
+            progress_completed=0,
+            progress_total=4,
+            started_at=datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+            finished_at=None,
+            error_message=None,
+        )
+    )
+    # WebApp.__init__ 调用 recover_interrupted_runs
+    _app(tmp_path)
+    queued = repo.get_historical_run("rb-orphan-queued")
+    assert queued is not None and queued.status is HistoricalRunStatus.INTERRUPTED
+
+
 def _default_template() -> dict:
     root = SYSTEM_TEMPLATES / "system-default.json"
     return json.loads(root.read_text(encoding="utf-8"))

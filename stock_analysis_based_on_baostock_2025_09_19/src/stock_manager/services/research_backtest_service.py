@@ -80,6 +80,15 @@ class ResearchBacktestService:
         self._runner = BoundedJobRunner(max_concurrent=1)
         self._engine = BacktraderBacktestEngine()
 
+    def recover_interrupted_runs(self) -> int:
+        """Mark runs left QUEUED/active by a previous process as INTERRUPTED.
+
+        Called once on web startup: the in-process job runner dies with the
+        process, so without this, orphaned QUEUED/BUILDING_SIGNALS runs would
+        linger in the UI queue forever after a restart.
+        """
+        return self._store.recover_interrupted("market", AdjustmentMethod.QFQ)
+
     # ------------------------------------------------------------------
     # submission
     # ------------------------------------------------------------------

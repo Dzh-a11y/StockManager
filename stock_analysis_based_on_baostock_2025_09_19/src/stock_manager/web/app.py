@@ -124,6 +124,9 @@ class WebApp:
                 compiler=self._services.compiler,
                 max_workers=2,
             )
+            # 进程内回测 runner 随进程消亡:启动时把上一次进程遗留的
+            # QUEUED/进行中任务标记为 INTERRUPTED,避免孤儿任务堵住 UI 队列。
+            self._research.recover_interrupted_runs()
         self._start_backfill_if_needed()
 
     def _start_backfill_if_needed(self) -> None:

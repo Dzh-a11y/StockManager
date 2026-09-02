@@ -295,6 +295,14 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 
 **修复**：当无 `as_of <= day` 快照时，回退到**最早快照**，用 `listed_on / delisted_on` **向后重建**该日股票池存在性（`SQLitePointInTimeReader.universe_as_of` 与 `historical_screening_executor._universe_for` 两处一致）。存在性 PIT 正确（上市/退市日为事实）；ST 仍取快照值，属 P5A-2 §约定「最近快照近似」——不回填历史逐日 ST、不宣称八年完整支持 ST。真实库验证：`universe_as_of(2021-09-01)` 由 0 → **4,268 只**。新增回归测试 `test_universe_reconstructed_before_earliest_snapshot` 与 `test_universe_for_reconstructs_before_earliest_snapshot`。全量离线测试 **597 passed**。版本 1.13.5 → 1.13.6（修复 PATCH）。
 
+### 12.8 Web 启动清理孤儿回测任务（1.13.7）
+
+**现象**：服务重启后，上一进程提交的回测仍显示 `QUEUED(0/4)`/`BUILDING_SIGNALS` 且永不推进——进程内 `BoundedJobRunner` 随进程消亡，遗留任务成孤儿堵住 UI 队列。
+
+**根因**：`HistoricalScreeningRunStore.recover_interrupted`（重启后把 QUEUED/进行中任务标记 INTERRUPTED）只被测试调用，Web 启动未接线。
+
+**修复**：`ResearchBacktestService` 新增公开方法 `recover_interrupted_runs()`，Web `WebApp.__init__` 构造回测服务后调用一次。新增测试 `test_web_startup_marks_orphaned_backtest_runs_interrupted`。全量离线测试 **598 passed**。版本 1.13.6 → 1.13.7（修复 PATCH）。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。
