@@ -208,21 +208,8 @@ def test_query_gives_up_after_max_retries() -> None:
     assert sleeps == [0.5, 1.0]
 
 
-def test_blacklist_error_opens_circuit_without_retry() -> None:
+def test_blacklist_error_fails_current_request_without_retry() -> None:
     attempts = {"count": 0}
-
-    class Budget:
-        def __init__(self) -> None:
-            self.requests: list[str] = []
-            self.trips: list[tuple[str, str]] = []
-
-        def before_request(self, operation: str) -> None:
-            self.requests.append(operation)
-
-        def trip_blacklist(self, error_code: str, message: str) -> None:
-            self.trips.append((error_code, message))
-
-    budget = Budget()
 
     def operation() -> _ErrorResult:
         attempts["count"] += 1
@@ -233,44 +220,10 @@ def test_blacklist_error_opens_circuit_without_retry() -> None:
         max_retries=5,
         retry_backoff_seconds=0,
         request_interval_seconds=0,
-        request_budget=budget,
     )
     with pytest.raises(BaostockBlacklistedError, match="10001011"):
-        provider._query(operation, operation_name="query_test")
+        provider._query(operation)
     assert attempts["count"] == 1
-    assert budget.requests == ["query_test"]
-    assert budget.trips == [("10001011", "黑名单用户，请与管理员联系")]
-
-
-def test_request_budget_counts_every_retry_attempt() -> None:
-    class Budget:
-        def __init__(self) -> None:
-            self.requests: list[str] = []
-
-        def before_request(self, operation: str) -> None:
-            self.requests.append(operation)
-
-        def trip_blacklist(self, error_code: str, message: str) -> None:
-            raise AssertionError("not blacklisted")
-
-    budget = Budget()
-    attempts = {"count": 0}
-
-    def operation() -> object:
-        attempts["count"] += 1
-        if attempts["count"] < 3:
-            return _ErrorResult("10001", "server busy")
-        return "ok"
-
-    provider = BaostockProvider(
-        client=object(),
-        max_retries=3,
-        retry_backoff_seconds=0,
-        request_interval_seconds=0,
-        request_budget=budget,
-    )
-    assert provider._query(operation, operation_name="query_test") == "ok"
-    assert budget.requests == ["query_test", "query_test", "query_test"]
 
 
 def test_query_retries_network_errors() -> None:

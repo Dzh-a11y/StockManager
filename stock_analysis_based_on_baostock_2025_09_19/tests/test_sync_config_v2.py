@@ -66,31 +66,6 @@ def test_v2_config_loads_history(tmp_path: Path) -> None:
     assert config.history.target_years == 8
     assert config.history.coverage_policy == "latest_completed_trading_day"
     assert config.retention_days == 360  # default when omitted
-    assert config.daily_request_soft_limit == 45_000
-    assert config.daily_request_hard_limit == 50_000
-
-
-def test_v2_config_loads_request_budget(tmp_path: Path) -> None:
-    config = json.loads(json.dumps(V2_CONFIG))
-    config["policy"]["daily_request_soft_limit"] = 12_000
-    config["policy"]["daily_request_hard_limit"] = 20_000
-    loaded = load_sync_config(_write(tmp_path, config))
-    assert loaded.daily_request_soft_limit == 12_000
-    assert loaded.daily_request_hard_limit == 20_000
-
-
-@pytest.mark.parametrize(
-    ("soft", "hard"),
-    ((20_001, 20_000), (1, 50_001), (0, 20_000)),
-)
-def test_request_budget_rejects_unsafe_limits(
-    tmp_path: Path, soft: int, hard: int
-) -> None:
-    config = json.loads(json.dumps(V2_CONFIG))
-    config["policy"]["daily_request_soft_limit"] = soft
-    config["policy"]["daily_request_hard_limit"] = hard
-    with pytest.raises(ValueError):
-        load_sync_config(_write(tmp_path, config))
 
 
 def test_v1_config_with_history_block_is_rejected(tmp_path: Path) -> None:

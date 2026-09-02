@@ -532,7 +532,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 13. 实施任务包
 
-> **状态注记（2026-09-02）**：P5-RD-0..P5-RD-10 已实现；本轮由用户明确改派 Codex 完成稳定性修复、schema v2 迁移与真实工作库恢复。当前版本 1.13.0，全量离线测试 602 passed，DataSyncService/SyncPipeline 已用于 Web 在线 Bootstrap runner。真实 Baostock 八年回补尚未完成，所以计划保持 `active`，不能把未发布 candidate 写成已完成数据集；详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 第 11 节。
+> **状态注记（2026-09-02）**：P5-RD-0..P5-RD-10 已实现；本轮由用户明确改派 Codex 完成稳定性修复、schema v3 迁移与真实工作库恢复。用户已取消本地每日请求额度和持久化黑名单熔断；`10001011` 仅使当前请求立即失败。当前版本 1.13.0，全量离线测试 594 passed，DataSyncService/SyncPipeline 已用于 Web 在线 Bootstrap runner。真实 Baostock 八年回补尚未完成，所以计划保持 `active`，不能把未发布 candidate 写成已完成数据集；详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 第 11 节。
 
 ### P5-RD-0：架构 ADR 与真实库基准门禁 —— 已完成（2026-09-01 验收）
 

@@ -85,8 +85,6 @@ class SyncConfig:
     history: SyncHistoryConfig | None = None
     backfill_request_interval_seconds: float | None = None
     pipeline_default: bool = False
-    daily_request_soft_limit: int = 45_000
-    daily_request_hard_limit: int = 50_000
 
     def __post_init__(self) -> None:
         if self.cutoff_time.tzinfo is not None:
@@ -106,16 +104,6 @@ class SyncConfig:
             raise ValueError("dividend_lookback_years must be positive")
         if self.retention_days <= 0:
             raise ValueError("retention_days must be positive")
-        if self.daily_request_soft_limit <= 0:
-            raise ValueError("daily_request_soft_limit must be positive")
-        if not 0 < self.daily_request_hard_limit <= 50_000:
-            raise ValueError(
-                "daily_request_hard_limit must be within 1..50000"
-            )
-        if self.daily_request_soft_limit > self.daily_request_hard_limit:
-            raise ValueError(
-                "daily_request_soft_limit must not exceed daily_request_hard_limit"
-            )
 
 
 def latest_completed_trading_day(
@@ -170,20 +158,6 @@ class DataSyncService:
                 RuntimeWarning,
                 stacklevel=2,
             )
-        self._request_budget = None
-        budget_setter = getattr(provider, "set_request_budget", None)
-        database_path = getattr(repository, "database_path", None)
-        if callable(budget_setter) and isinstance(database_path, Path):
-            from stock_manager.sync.request_budget import SQLiteProviderRequestBudget
-
-            self._request_budget = SQLiteProviderRequestBudget(
-                database_path,
-                source=provider.source_name,
-                soft_limit=config.daily_request_soft_limit,
-                hard_limit=config.daily_request_hard_limit,
-                now=self._now,
-            )
-            budget_setter(self._request_budget)
         provider_key = f"{lock_directory.resolve()}:{provider.source_name}:provider"
         self._provider_process_lock = process_lock(provider_key)
         self._provider_file_lock = lock_directory / f"{provider.source_name}.provider.lock"

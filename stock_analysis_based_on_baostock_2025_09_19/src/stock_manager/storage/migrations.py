@@ -14,7 +14,7 @@ import sqlite3
 from typing import Any
 
 #: Current schema version after all migrations.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 #: Data tables that gain an immutable-batch binding column.
 _BATCH_TABLES: tuple[tuple[str, str], ...] = (
@@ -244,7 +244,7 @@ def _migrate_to_v1(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v2(connection: sqlite3.Connection) -> None:
-    """Preserve every code batch in manifests and add provider safety state."""
+    """Preserve every code batch in generation manifests."""
     primary_key = [
         str(row[1])
         for row in connection.execute(
@@ -273,30 +273,18 @@ def _migrate_to_v2(connection: sqlite3.Connection) -> None:
                FROM generation_partitions_v1"""
         )
         connection.execute("DROP TABLE generation_partitions_v1")
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS provider_request_ledger (
-            source TEXT NOT NULL,
-            request_day TEXT NOT NULL,
-            request_count INTEGER NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (source, request_day)
-        )"""
-    )
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS provider_circuit_breakers (
-            source TEXT PRIMARY KEY,
-            circuit_open_until TEXT,
-            reason TEXT,
-            occurrence_year INTEGER NOT NULL,
-            occurrence_count INTEGER NOT NULL,
-            updated_at TEXT NOT NULL
-        )"""
-    )
+
+
+def _migrate_to_v3(connection: sqlite3.Connection) -> None:
+    """Remove the rejected provider request quota and persistent circuit."""
+    connection.execute("DROP TABLE IF EXISTS provider_request_ledger")
+    connection.execute("DROP TABLE IF EXISTS provider_circuit_breakers")
 
 
 _MIGRATIONS: dict[int, Any] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
+    3: _migrate_to_v3,
 }
 
 

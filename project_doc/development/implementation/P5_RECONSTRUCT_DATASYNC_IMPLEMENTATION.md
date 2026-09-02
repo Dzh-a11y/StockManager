@@ -14,7 +14,7 @@ status: active
 | 任务包 | 交付 | 测试 |
 |---|---|---|
 | P5-RD-0 | 真实库基准、数据库 ADR（`ADR_P5_DATASYNC_DATABASE.md`，accepted） | 基准脚本见 ADR 第 2 节 |
-| P5-RD-1 | 领域契约、版本化迁移骨架、Repository Protocol | `tests/test_p5_rd1_contracts.py`（45） |
+| P5-RD-1 | 领域契约、版本化迁移骨架、Repository Protocol | `tests/test_p5_rd1_contracts.py`（46） |
 | P5-RD-2 | 确定性 SyncPlanner | `tests/test_p5_rd2_planner.py`（22） |
 | P5-RD-3 | SerialFetchWorker 与 Provider 安全边界 | `tests/test_p5_rd3_worker.py`（12） |
 | P5-RD-4 | StagingWriter、批次与 checkpoint | `tests/test_p5_rd4_staging.py`（14） |
@@ -25,7 +25,7 @@ status: active
 | P5-RD-9 | 旧库 LEGACY_IMPORT 迁移 | `tests/test_p5_rd9_legacy.py`（9） |
 | P5-RD-10 | 端到端流水线验收、版本与文档同步 | `tests/test_p5_rd10_e2e.py`（2） |
 
-P5-RD-1..10 当前合计 **160 项**离线测试；2026-09-02 稳定性修复验收时全量 **602 passed**。版本 **1.12.0 → 1.13.0**（MINOR，新增持久化请求预算与 schema v2）。
+P5-RD-1..10 当前合计 **161 项**离线测试；2026-09-02 稳定性修复验收时全量 **594 passed**。版本 **1.12.0 → 1.13.0**（MINOR，包含 generation manifest 完整性与同步稳定性增强）。
 
 ## 2. 新增模块与导入路径
 
@@ -39,7 +39,6 @@ P5-RD-1..10 当前合计 **160 项**离线测试；2026-09-02 稳定性修复验
 | `stock_manager.sync.seed` | `SeedManifest`、`SeedPackageVerifier`、`TransferPreparer`、`stream_sha256`；种子校验、跨平台迁移 manifest |
 | `stock_manager.sync.legacy` | `LegacyImporter`、`LegacyImportError`；旧共享表 → staging candidate，失败保留旧库 |
 | `stock_manager.storage.migrations` | `migrate_database`、`schema_version`、`CURRENT_SCHEMA_VERSION`；版本化幂等迁移 |
-| `stock_manager.sync.request_budget` | `SQLiteProviderRequestBudget`；跨进程、跨重启保存每日请求数与 Baostock 黑名单熔断状态 |
 
 领域契约（P5-RD-1）追加在 `stock_manager.domain`：`SyncPlan`、`SyncTask`、`CandidateGeneration`、`IngestBatch`、`CoverageVerification`、`GenerationPartition`、`PublishedGeneration`、`ActiveGeneration`、`VerificationIssue`、`VerificationReport`、`ReadinessResult` 及配套枚举（`SyncPlanMode`、`SyncSource`、`SyncPlanStatus`、`SyncTaskStatus`、`CandidateGenerationStatus`、`VerificationStatus`、`IssueType`、`Repairability`、`ReadinessStatus`）。
 
@@ -47,9 +46,10 @@ Repository 侧：`stock_manager.protocols.DataSyncAdminRepositoryProtocol`（书
 
 ## 3. 数据库迁移（P5-RD-1）
 
-- `PRAGMA user_version` 作为 schema 版本；v0 = 旧 schema，v1 = P5 初版，**v2 = 当前**。
+- `PRAGMA user_version` 作为 schema 版本；v0 = 旧 schema，v1 = P5 初版，v2 = 多批次 manifest，**v3 = 当前**。
 - v1 迁移：`daily_bars`/`stocks`/`fundamentals`/`dividends` 增加 `batch_id TEXT` 列 + `(batch_id, <时间列>)` 索引；`dataset_versions` 增加 `manifest_sha256`/`parent_generation`；新建 `sync_plans`、`sync_tasks`、`candidate_generations`、`ingest_batches`、`generation_partitions`、`coverage_verifications`、`active_generations`、`seed_imports` 与 `*_staging` 镜像表。
-- v2 迁移：`generation_partitions` 主键扩展为 `(generation, data_type, partition_key, batch_id)`，同一区间的多个股票批次不再互相覆盖；新增 `provider_request_ledger` 与 `provider_circuit_breakers`。
+- v2 迁移：`generation_partitions` 主键扩展为 `(generation, data_type, partition_key, batch_id)`，同一区间的多个股票批次不再互相覆盖。
+- v3 迁移：删除已经取消的 Provider 每日请求额度与持久化熔断表；不改动行情、staging、generation 或 coverage 数据。
 - 迁移幂等、逐版本事务提交；`user_version` 高于代码支持版本时拒绝打开。
 - 真实库副本（850 MB）验证：0→1 迁移、重复执行幂等、线上库未被修改。
 
@@ -65,7 +65,7 @@ Repository 侧：`stock_manager.protocols.DataSyncAdminRepositoryProtocol`（书
 ## 5. 种子与跨平台迁移（P5-RD-7）
 
 - 权威 SHA-256 只放外部 sidecar manifest（写回库内会自引用）；`stream_sha256` 分块流式计算并报告进度。
-- `SeedPackageVerifier`：文件名/SHA-256/`PRAGMA integrity_check`/当前 `user_version=2` 逐项校验，任一失败抛 `SeedVerificationError`（REJECTED）。
+- `SeedPackageVerifier`：文件名/SHA-256/`PRAGMA integrity_check`/当前 `user_version=3` 逐项校验，任一失败抛 `SeedVerificationError`（REJECTED）。
 - `TransferPreparer.prepare`：`wal_checkpoint(TRUNCATE)` + integrity + 生成 `*.transfer.json`；`verify_transfer` 重算 SHA 比对并检查 schema 与绝对路径。
 - 实测：单日分区 publish-copy 0.056 s；ALTER ADD COLUMN 元数据级瞬间完成。
 
@@ -215,19 +215,19 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - runner 默认一次显式尝试；单请求瞬时失败仍由 Provider 有界重试。FAILED task/candidate 只能由显式 retry 解锁，并继续受 cooldown 约束。
 - staging 行、批次摘要、ingest checkpoint、revision 在同一事务提交；LegacyImporter 使用同一原子契约。
 - `CoverageVerifier` 不再按 `(data_type, partition_key)` 丢弃批次；每个 task 产生唯一证据。`GenerationCommitter` 要求每个 candidate batch 恰有一条唯一 COMPLETE 证据，并继承 parent generation 的 manifest。
-- Baostock session 对已连接 socket 设置超时；日线与基本面查询均可在会话失效后重登录；错误码 `10001011` 立即打开持久化熔断，不再自动重试。
-- 每次 SDK 请求（包括重试与登录）先在 SQLite 原子记账。默认软上限 45,000、硬上限不允许超过 50,000；黑名单按当年出现次数执行 `6h × 次数` 的持久化冷却。
+- Baostock session 对已连接 socket 设置超时；日线与基本面查询均可在会话失效后重登录；错误码 `10001011` 只让当前请求立即失败且不自动重试，不记录跨进程/跨重启熔断状态。
+- 不设置本地每日请求次数软上限或硬上限，也不维护 Provider 请求计数账本；串行访问、请求间隔、socket 超时和单次请求内的有界重试仍保留。
 - 基本面查询回看最近 60 个自然日并取 `as_of` 以前最新一行，避免停牌日精确日期无行造成不必要缺失。
 - 全新数据库在 Planner 前先获取并本地保存股票池；已有 generation 的增量从本地 `daily_bars` 实际 coverage_end 后一个交易日开始。
 
 ### 11.3 真实库处置与验收证据
 
 - 迁移前 SQLite 一致性备份：`data/market.pre-stability-v1.sqlite3.bak`（Git ignored，约 215 MB，`integrity_check=ok`，schema v1）。
-- 工作库迁移到 schema v2 后：`integrity_check=ok`。
-- 从 SUCCESS task 与精确 row_count 恢复登记 11 个可信批次（stocks 1、daily_bars 10）；清理 3 个无 checkpoint、无成功任务证明的孤儿 daily-bar batch，共 117,865 行。清理内容仍可从上述备份恢复。
-- 修复后工作库保留 394,505 行可信 daily-bar staging；计划仍为 `PLANNED`、candidate 仍为 `FAILED`，因此不会自动联网或误发布。用户下一次点击同步才触发显式 retry。
-- 本地 Web 服务已重启并加载新代码；没有自动启动 runner。
-- 正常系统权限下全量离线测试：**602 passed，5 warnings**。warning 为测试 fake client 缺少 `query_stock_basic` 的显式降级告警，以及既有幂等跳过提示；无失败。
+- 工作库迁移到 schema v3 后：`integrity_check=ok`；已取消的两张空表完成删除。
+- 从 SUCCESS task 与精确 row_count 恢复登记可信批次；最终状态为 12 个 SUCCESS checkpoint（stocks 1、daily_bars 11）。清理 3 个无成功任务证明的孤儿 daily-bar batch，共 117,865 行；清理内容仍可从上述备份恢复。
+- 工作库最终保留 434,025 行可信 daily-bar staging；计划为 `PLANNED`、candidate 为可续传的 `WRITING`，任务为 12 SUCCESS / 511 PENDING。未发布 candidate 对筛选和回测仍不可见。
+- 本地 Web 服务已重启并加载新代码；收尾时意外启动的 runner 已终止，残留 RUNNING 任务已安全重置为 PENDING，当前无同步锁持有。
+- 正常系统权限下全量离线测试：**594 passed，5 warnings**。warning 为测试 fake client 缺少 `query_stock_basic` 的显式降级告警，以及既有幂等跳过提示；无失败。
 
 ### 11.4 当前能力边界
 

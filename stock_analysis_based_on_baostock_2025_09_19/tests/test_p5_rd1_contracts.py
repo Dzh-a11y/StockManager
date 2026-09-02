@@ -353,7 +353,7 @@ class TestMigration:
         repo = SQLiteRepository(path)
         with sqlite3.connect(path) as connection:
             assert schema_version(connection) == CURRENT_SCHEMA_VERSION
-            assert schema_version(connection) == 2
+            assert schema_version(connection) == 3
         repo = None  # noqa: F841
 
     def test_batch_columns_added(self, tmp_path: Path) -> None:
@@ -404,6 +404,27 @@ class TestMigration:
                 if row[5] > 0
             ]
         assert pk_columns == ["generation", "data_type", "partition_key", "batch_id"]
+
+    def test_v2_provider_budget_tables_are_removed(self, tmp_path: Path) -> None:
+        path = tmp_path / "v2.sqlite3"
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "CREATE TABLE provider_request_ledger (source TEXT PRIMARY KEY)"
+            )
+            connection.execute(
+                "CREATE TABLE provider_circuit_breakers (source TEXT PRIMARY KEY)"
+            )
+            connection.execute("PRAGMA user_version = 2")
+        SQLiteRepository(path)
+        with sqlite3.connect(path) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            assert "provider_request_ledger" not in tables
+            assert "provider_circuit_breakers" not in tables
 
     def test_legacy_db_migrates(self, tmp_path: Path) -> None:
         # Simulate a real pre-P5 v0 database: the full old schema created by

@@ -9,7 +9,7 @@ status: accepted
 
 ## 状态
 
-**已接受（accepted）**：真实库基准（2026-09-01 实测）与 2026-09-02 稳定性复验完成。`SQLiteRepository` 已集成版本化幂等迁移；当前 `user_version=2`，同分区多 batch manifest 与 Provider 请求预算/熔断均已入库。版本 1.13.0，全量离线测试 602 passed。
+**已接受（accepted）**：真实库基准（2026-09-01 实测）与 2026-09-02 稳定性复验完成。`SQLiteRepository` 已集成版本化幂等迁移；当前 `user_version=3`，同分区多 batch manifest 已入库，已取消的 Provider 请求额度/持久化熔断结构已移除。版本 1.13.0，全量离线测试 594 passed。
 
 ## 背景
 
@@ -94,8 +94,6 @@ status: accepted
 | `coverage_verifications` | 逐类型/逐分区验证证据 | `candidate_generation_id`、`data_type`、`partition_key`、`expected/actual/distinct/duplicate/invalid_count`、`coverage_ratio`、`status`、`verified_revision`、`manifest_sha256`、`verified_at`、`details_json` |
 | `active_generations` | 每个 dataset/adjustment 当前可读 generation | `dataset_id`、`adjustment`、`generation`、`activated_at` |
 | `seed_imports` | 种子文件、source SHA-256、manifest、导入与验证结果 | `import_id`、`filename`、`source_sha256`、`manifest_json`、`schema_version`、`status`、`imported_at` |
-| `provider_request_ledger` | Provider 每日跨进程请求计数 | `source`、`request_day`、`request_count`、`updated_at` |
-| `provider_circuit_breakers` | 黑名单/上游熔断状态 | `source`、`circuit_open_until`、`reason`、`occurrence_year/count` |
 
 `sync_plans.plan_id` 与 `plan_fingerprint` 由规范化计划输入确定性生成（计划 §4.2），相同输入必须产出相同计划身份；范围/复权/数据类型变化必须生成不同计划。
 
@@ -118,7 +116,7 @@ status: accepted
 
 ### 5. schema 版本机制
 
-- 使用 `PRAGMA user_version` 作为数据库 schema 版本号（当前为 2）。v1 建立 P5 批次/验证表；v2 保留同分区全部 batch，并加入 Provider 请求账本和熔断表。每步迁移与 `user_version` 递增处于同一 `BEGIN IMMEDIATE` 事务。
+- 使用 `PRAGMA user_version` 作为数据库 schema 版本号（当前为 3）。v1 建立 P5 批次/验证表；v2 保留同分区全部 batch；v3 删除已经取消的 Provider 请求额度与持久化熔断表。每步迁移与 `user_version` 递增处于同一 `BEGIN IMMEDIATE` 事务。
 - `seed_imports.schema_version` 记录种子 schema 版本；种子外部 manifest 中的 `schema_version` 必须与 `PRAGMA user_version` 语义一致，禁止把计划示例值（3）当作现状。
 - 启动时校验 `user_version`：过低则执行增量迁移；过高或未知则拒绝打开并给出明确错误，禁止静默降级。
 
@@ -142,7 +140,7 @@ status: accepted
 | 迁移中断产生半状态 | 全部迁移步骤幂等 + 事务内执行 + `user_version` 记录；重启续跑 |
 | 发布事务过长锁库 | candidate 下载按 staging 批事务完成；发布事务只复制已验证 candidate 分区、继承 parent manifest 并切换指针 |
 | 回填期间新写入竞争 | 迁移在启动早期完成；迁移与同步互斥（进程锁 + 持久化锁） |
-| Baostock 日请求上限或黑名单 | SQLite 原子请求账本；45,000 软上限、50,000 硬上限；`10001011` 立即持久化熔断并停止自动重试 |
+| Baostock 返回黑名单错误 | `10001011` 令当前请求立即失败且不自动重试；不保存跨进程或跨重启熔断状态 |
 | 共享正式表无法重放 superseded generation | Reader 只允许 active generation；若需要历史 generation 可查询，另立 ADR 改为物理不可变行版本 |
 
 ## 回滚策略
@@ -163,7 +161,7 @@ status: accepted
 ## 结果（实现状态）
 
 - 2026-09-01 完成真实库基准（见上），三种迁移方案成本对比与分区键已固化。
-- P5-RD-1 起实现：`storage/migrations.py` 版本化幂等迁移（v0→v1→v2），`SQLiteRepository` 启动时自动迁移；2026-09-02 真实工作库在备份后迁移到 v2，`integrity_check=ok`。
+- P5-RD-1 起实现：`storage/migrations.py` 版本化幂等迁移（v0→v1→v2→v3），`SQLiteRepository` 启动时自动迁移；2026-09-02 真实工作库在备份后迁移到 v3，`integrity_check=ok`。
 - 发布采用「事务内 staging→正式表 publish-copy + manifest + active 指针切换」模型：单日分区实测复制约 0.056 s，短事务成立；旧 generation 在构建期间通过 staging 隔离保持可读。
-- 版本 1.13.0（MINOR 递增），全量离线测试 602 passed；真实库恢复 11 个可信 ingest batch，并清理 3 个无 checkpoint 的孤儿 batch（117,865 行，备份仍保留）。
+- 版本 1.13.0（MINOR 递增），全量离线测试 594 passed；真实库最终登记 12 个可信 SUCCESS checkpoint，并清理 3 个无成功任务证明的孤儿 batch（117,865 行，备份仍保留）。
 - 第 17 章第 8 条（Mac→Windows 物理迁移人工验收）按用户 2026-09-01 确认不纳入完成定义，Windows 端实机验收由用户另行执行。
