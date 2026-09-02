@@ -36,9 +36,9 @@
           <label class="field">
             <span class="field__label">初始化方式</span>
             <select id="bootstrap-source" class="select">
+              <option value="incremental" selected>增量同步（已有数据，仅补齐尾部）</option>
               <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
               <option value="seed">导入种子数据库（需外部 manifest）</option>
-              <option value="incremental">增量同步（已有数据，仅补齐尾部）</option>
             </select>
           </label>
           <label class="field">
@@ -270,6 +270,7 @@
             <p class="panel__hint" id="bootstrap-readiness"></p>
             <label class="panel__label" for="bootstrap-source">初始化方式</label>
             <select id="bootstrap-source" class="input">
+              <option value="incremental" selected>增量同步（已有数据，仅补齐尾部）</option>
               <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
               <option value="seed">导入种子数据库（需外部 manifest）</option>
             </select>
@@ -291,8 +292,10 @@
             <span class="btn__label">停止服务（结束本进程）</span>
           </button>
           <p id="shutdown-status" class="panel__hint" hidden></p>
-          <p id="instances-label" class="panel__hint" hidden></p>
-          <ul id="instances-list" class="panel__hint"></ul>
+          <div class="section-divider"></div>
+          <p class="panel__label">进程管理</p>
+          <p id="proc-main" class="panel__hint" hidden></p>
+          <p id="proc-download" class="panel__hint" hidden></p>
           <p id="instances-note" class="panel__hint" hidden></p>
         </div>
       </section>

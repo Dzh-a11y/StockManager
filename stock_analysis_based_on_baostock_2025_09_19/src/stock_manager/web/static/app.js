@@ -1017,6 +1017,11 @@ function renderDbVersions(s, canEnter) {
 async function loadSyncStatus() {
   try {
     const s = await api('GET', '/api/sync/status');
+    // 记录当前进行中/待运行计划的模式(增量/Bootstrap),用于 runner 状态行文案
+    state.activePlanMode = null;
+    for (const p of (s.p5_plans || [])) {
+      if (p.status === 'RUNNING' || p.status === 'PLANNED') { state.activePlanMode = String(p.mode || ''); break; }
+    }
     const title = $('#sync-status-title');
     title.hidden = false;
     title.textContent = s.latest_synced_trading_day
@@ -1203,16 +1208,22 @@ async function loadInstances() {
   try {
     const data = await api('GET', '/api/instances');
     const list = data.instances || [];
-    const label = $('#instances-label');
-    const ul = $('#instances-list');
-    const note = $('#instances-note');
-    // 数据 UI(门禁页):回补 runner 状态行 + 停止按键
+    // 区分主进程(本服务 web)与下载进程(回补/增量 runner)
+    const isDownload = (i) => String(i.command || '').indexOf('run_backfill') !== -1;
+    const mainProcs = list.filter((i) => !isDownload(i));
+    const downProcs = list.filter(isDownload);
+    const modeLabel = state.activePlanMode === 'INCREMENTAL' ? '增量'
+      : state.activePlanMode === 'BOOTSTRAP' ? '回补'
+      : state.activePlanMode === 'PLANNED' ? '待运行'
+      : '数据';
+
+    // 数据 UI(门禁页):下载 runner 状态行 + 停止按钮
     const runnerEl = $('#gate-runner-status');
-    const runner = list.find((i) => String(i.command || '').indexOf('run_backfill') !== -1);
+    const runner = downProcs[0];
     if (runnerEl) {
       if (runner) {
         runnerEl.hidden = false;
-        runnerEl.innerHTML = '回补进程运行中 · pid ' + runner.pid +
+        runnerEl.innerHTML = modeLabel + '进程运行中 · pid ' + runner.pid +
           ' <button class="btn btn--danger" data-runner-pid="' + runner.pid + '" type="button">停止同步</button>';
         const b = runnerEl.querySelector('button[data-runner-pid]');
         if (b) b.addEventListener('click', () => killInstance(runner.pid));
@@ -1221,27 +1232,39 @@ async function loadInstances() {
         runnerEl.innerHTML = '';
       }
     }
-    if (!list.length) {
-      label.hidden = true;
-      ul.hidden = true;
-      ul.innerHTML = '';
-      note.hidden = true;
-      return;
+
+    // 主 UI 底部「进程管理」
+    const procMain = $('#proc-main');
+    const procDownload = $('#proc-download');
+    const note = $('#instances-note');
+    if (procMain) {
+      if (mainProcs.length) {
+        procMain.hidden = false;
+        procMain.innerHTML = '<b>主进程</b>' + mainProcs.map((i) => {
+          const self = i.is_self ? '（当前服务）' : '';
+          return ' · pid ' + i.pid + self + '<br><code>' + esc(i.command || '') + '</code>';
+        }).join('');
+      } else { procMain.hidden = true; procMain.innerHTML = ''; }
     }
-    label.hidden = false;
-    label.textContent = '当前 ' + list.length + ' 个相同实例在运行';
-    ul.hidden = false;
-    ul.innerHTML = list.map((item) => {
-      const self = item.is_self ? '（当前服务）' : '';
-      return '<li>' + esc('pid ' + item.pid) + ' ' + self +
-        ' <button class="btn btn--danger" data-pid="' + item.pid + '">停止</button>' +
-        '<code>' + esc(item.command || '') + '</code></li>';
-    }).join('');
-    ul.querySelectorAll('button[data-pid]').forEach((btn) => {
-      btn.addEventListener('click', () => killInstance(Number(btn.dataset.pid)));
-    });
-    note.hidden = false;
-    note.textContent = '「停止」会结束该实例进程；若停止的是当前服务，页面会断开，需重新启动。';
+    if (procDownload) {
+      if (downProcs.length) {
+        procDownload.hidden = false;
+        procDownload.innerHTML = '<b>下载进程（' + modeLabel + '）</b>' + downProcs.map((i) => {
+          return ' · pid ' + i.pid +
+            ' <button class="btn btn--danger" data-dl-pid="' + i.pid + '" type="button">停止同步</button>' +
+            '<br><code>' + esc(i.command || '') + '</code>';
+        }).join('');
+        procDownload.querySelectorAll('button[data-dl-pid]').forEach((btn) => {
+          btn.addEventListener('click', () => killInstance(Number(btn.dataset.dlPid)));
+        });
+      } else { procDownload.hidden = true; procDownload.innerHTML = ''; }
+    }
+    if (note) {
+      if (list.length) {
+        note.hidden = false;
+        note.textContent = '「停止同步」只结束下载进程；主进程由上方「停止服务」按钮结束。';
+      } else { note.hidden = true; note.textContent = ''; }
+    }
   } catch (e) { /* ignore */ }
 }
 

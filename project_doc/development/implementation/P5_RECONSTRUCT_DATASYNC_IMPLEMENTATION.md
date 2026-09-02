@@ -280,6 +280,8 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - **底部全宽「数据同步与维护」**：同步进度条、覆盖示意图、bootstrap 面板、停止服务、实例列表。
 - 样式：`styles.css` 新增 `#workbench-view` 网格（300px / 1fr / 400px，≤1180px 两栏、≤860px 单栏）、`.db-bar`、`.wb-col`；`#gate-view` 与 `#workbench-view` 各占满网格全宽。所有元素 id 不变，`app.js` 无需改动。
 - 版本：1.13.1 → 1.13.2（新 UI 内容，PATCH）。
+- 1.13.4：数据 UI 与工作台「数据同步与维护」面板的初始化方式默认选为「增量同步」（非 Bootstrap/回补）。
+- 1.13.5：主 UI 底部新增「进程管理」，区分**主进程**（本服务 web）与**下载进程**（回补/增量 runner）；runner 状态文案按实际计划模式显示（增量/回补），不再一概称「回补进程」。
 
 ### 12.6 年度覆盖按当年股票池计算（1.13.3）
 
