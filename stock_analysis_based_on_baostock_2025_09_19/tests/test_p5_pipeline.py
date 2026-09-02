@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -249,6 +250,55 @@ class TestPipeline:
         # 但 retry 在冷却后重置。这里验证 mark_interrupted 对 RUNNING 有效。
         running = repo.tasks_by_status(output.plan.plan_id, (SyncTaskStatus.RUNNING,))
         assert not running
+
+    def test_recover_interrupted_resets_failed_states(self, repo: SQLiteRepository) -> None:
+        """runner 被杀后的残留(FAILED/RUNNING 任务 + FAILED candidate)
+        recover_interrupted 必须全部重置,使 execute 能断点续传并发布。"""
+        provider = DeterministicProvider()
+        pipeline = _pipeline(repo, provider)
+        output = pipeline.plan(
+            mode=SyncPlanMode.BOOTSTRAP,
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=DAYS[0],
+            target_end=DAYS[-1],
+            required_data_types=("daily_bars",),
+        )
+        plan_id = output.plan.plan_id
+        candidate_id = output.plan.candidate_generation_id
+        # 模拟上一实例被杀的残留状态
+        repo.update_sync_plan_status(plan_id, SyncPlanStatus.RUNNING, NOW)
+        repo.update_candidate_status(
+            candidate_id, CandidateGenerationStatus.FAILED, NOW
+        )
+        tasks = repo.list_sync_tasks(plan_id)
+        repo.update_sync_task_status(
+            replace(
+                tasks[0], status=SyncTaskStatus.FAILED,
+                error_message="boom", finished_at=NOW,
+            )
+        )
+        if len(tasks) > 1:
+            repo.update_sync_task_status(
+                replace(
+                    tasks[1], status=SyncTaskStatus.RUNNING, started_at=NOW
+                )
+            )
+
+        n = pipeline.recover_interrupted(plan_id)
+        assert n >= 1
+        # 计划回 PLANNED、任务全 PENDING、candidate 回 PLANNED
+        assert repo.get_sync_plan(plan_id).status is SyncPlanStatus.PLANNED
+        assert repo.get_candidate_generation(candidate_id).status is \
+            CandidateGenerationStatus.PLANNED
+        remaining = repo.tasks_by_status(
+            plan_id, (SyncTaskStatus.FAILED, SyncTaskStatus.RUNNING)
+        )
+        assert not remaining
+        # 恢复后 execute 能正常完成并发布
+        run = pipeline.execute(plan_id)
+        assert run.published is True
+        assert run.plan_status is SyncPlanStatus.SUCCEEDED
 
     def test_plan_incremental_requires_active(self, repo: SQLiteRepository) -> None:
         pipeline = _pipeline(repo, DeterministicProvider())

@@ -276,6 +276,49 @@ class SyncPipeline:
                 count += 1
         return count
 
+    def recover_interrupted(self, plan_id: str) -> int:
+        """Reset a plan whose runner died so the next execute can resume.
+
+        A killed runner (the only case, since the runner lock guarantees a
+        single live instance) can leave FAILED/RUNNING tasks and a FAILED
+        candidate behind. ``_run_tasks`` skips FAILED tasks and
+        ``write_batch`` rejects a FAILED candidate ("not writable"), which
+        would make the retry loop spin forever. This method resets those
+        states: FAILED/RUNNING tasks -> PENDING and a FAILED candidate ->
+        PLANNED (so ``execute`` re-begins it), plus a RUNNING plan -> PLANNED.
+        Returns the number of tasks reset.
+        """
+        plan = self._repository.get_sync_plan(plan_id)
+        if plan is None:
+            return 0
+        now = self._now()
+        if plan.status is SyncPlanStatus.RUNNING:
+            self._repository.update_sync_plan_status(
+                plan_id, SyncPlanStatus.PLANNED, now
+            )
+        reset = 0
+        for task in self._repository.tasks_by_status(
+            plan_id, (SyncTaskStatus.FAILED, SyncTaskStatus.RUNNING)
+        ):
+            self._repository.update_sync_task_status(
+                replace(task, status=SyncTaskStatus.PENDING, error_message=None)
+            )
+            reset += 1
+        if plan.candidate_generation_id is not None:
+            candidate = self._repository.get_candidate_generation(
+                plan.candidate_generation_id
+            )
+            if (
+                candidate is not None
+                and candidate.status is CandidateGenerationStatus.FAILED
+            ):
+                self._repository.update_candidate_status(
+                    candidate.candidate_generation_id,
+                    CandidateGenerationStatus.PLANNED,
+                    now,
+                )
+        return reset
+
     # -- internals ------------------------------------------------------------
 
     def _on_fetch_progress(

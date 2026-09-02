@@ -1090,10 +1090,13 @@ class TestBootstrapEndpoint:
         # 首次启动状态
         _status, progress = _get(app, "/api/sync/progress")
         assert progress["status"] == "first_run"
-        # 触发在线 Bootstrap
-        status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
-        assert status == 200, payload
-        assert payload["source"] == "online"
+        # 触发在线 Bootstrap(锁检查 mock 掉:真实环境可能有 runner 持有锁)
+        with mock.patch(
+            "stock_manager.sync.locks.is_file_lock_held", return_value=False
+        ):
+            status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
+            assert status == 200, payload
+            assert payload["source"] == "online"
         # 测试模式(provider_factory 注入):不启动真实子进程,返回占位。
         assert payload["runner_pid"] is None
 

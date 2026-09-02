@@ -85,25 +85,21 @@ def main() -> int:
 
 def _run_with_lock(args, config, repository, provider, progress) -> int:
     """在持有 backfill_runner.lock 期间执行回补(重试循环)。"""
-    from dataclasses import replace
-
-    from stock_manager.domain import SyncTaskStatus
     from stock_manager.sync import DataSyncService
 
-    # 上一实例(已被杀,否则拿不到锁)可能残留 FAILED/RUNNING 任务:
-    # 重置为 PENDING,使断点续传能重跑这些块,避免 _run_tasks 跳过
-    # FAILED 块导致验证缺数据而无法发布。
+    service = DataSyncService(provider, repository, Path("data/locks"), config, progress=progress)
+    pipeline = service.build_pipeline()
+
+    # 上一实例(已被杀,否则拿不到锁)可能残留 FAILED/RUNNING 任务和 FAILED
+    # candidate:统一重置(任务→PENDING,FAILED candidate→PLANNED),使断点
+    # 续传能重跑这些块——否则 _run_tasks 跳过 FAILED 块、write_batch 拒绝
+    # FAILED candidate,重试循环会一直空转。
     for plan in repository.list_sync_plans("market", AdjustmentMethod.QFQ):
         if plan.status.value == "SUCCEEDED":
             continue
-        for task in repository.tasks_by_status(
-            plan.plan_id, (SyncTaskStatus.FAILED, SyncTaskStatus.RUNNING)
-        ):
-            repository.update_sync_task_status(
-                replace(task, status=SyncTaskStatus.PENDING, error_message=None)
-            )
-
-    service = DataSyncService(provider, repository, Path("data/locks"), config, progress=progress)
+        reset = pipeline.recover_interrupted(plan.plan_id)
+        if reset:
+            print(f"清理上一实例残留: 重置 {reset} 个任务为 PENDING", flush=True)
 
     # 瞬时网络故障会抛 SyncFailedError;为让八年回补能完成,
     # 在 runner 层做有界重启(断点续传,复用已完成块),避免整批任务因单次抖动报废。
