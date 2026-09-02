@@ -23,6 +23,27 @@
   </header>
 
   <main class="workspace">
+    <section id="startup-view" class="startup" aria-labelledby="startup-title" aria-busy="true">
+      <div class="startup__mark" aria-hidden="true">S</div>
+      <p class="startup__eyebrow">StockManager · 本地工作台</p>
+      <h2 id="startup-title">正在准备工作台</h2>
+      <p id="startup-message" class="startup__message" role="status" aria-live="polite">正在连接本地服务…</p>
+      <div class="startup__summary">
+        <span id="startup-count">已完成 0/5 项</span>
+        <span id="startup-elapsed">已等待 0 秒</span>
+      </div>
+      <progress id="startup-progress" max="5" value="0" aria-label="工作台加载进度" aria-describedby="startup-count"></progress>
+      <ol class="startup__steps" aria-label="加载步骤">
+        <li id="startup-step-0" data-status="waiting">加载规则 · 等待中</li>
+        <li id="startup-step-1" data-status="waiting">读取模板 · 等待中</li>
+        <li id="startup-step-2" data-status="waiting">加载策略 · 等待中</li>
+        <li id="startup-step-3" data-status="waiting">检查本地数据 · 等待中</li>
+        <li id="startup-step-4" data-status="waiting">准备工作台 · 等待中</li>
+      </ol>
+      <p id="startup-hint" class="startup__hint" role="status" hidden></p>
+      <button id="startup-retry" class="btn btn--primary" type="button" hidden>重新加载</button>
+      <noscript><p class="startup__hint">请启用浏览器 JavaScript 后重新加载页面。</p></noscript>
+    </section>
     <!-- 前置初始化门禁页(P5 §5.1):数据未就绪时只显示同步/回补,就绪后进入工作台 -->
     <div id="gate-view" class="gate" hidden>
       <section class="panel panel--conditions" aria-label="数据初始化">

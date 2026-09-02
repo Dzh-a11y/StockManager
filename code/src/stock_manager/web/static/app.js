@@ -337,7 +337,12 @@ function clearDirty() {
 }
 
 /* ---------- template lifecycle ---------- */
-async function loadTemplate(id) {
+/**
+ * @param {string} id
+ * @param {{propagateError?: boolean}} options
+ * @returns {Promise<void>}
+ */
+async function loadTemplate(id, { propagateError = false } = {}) {
   if (state.currentId && state.dirty && state.currentId !== id) {
     if (!confirm('当前模板有未保存的改动，切换将丢失这些改动。继续？')) return;
   }
@@ -358,6 +363,7 @@ async function loadTemplate(id) {
     renderGroups();
     syncComposeSegments();
   } catch (err) {
+    if (propagateError) throw err;
     toast(err.message, 'error');
   }
 }
@@ -447,12 +453,11 @@ let btRunId = null;
 /* ---------- research strategy editor (P5A-8c) ---------- */
 let btPolicyCatalog = null;
 
+/** @returns {Promise<void>} */
 async function loadResearchPolicies() {
-  try {
-    const data = await api('GET', '/api/research/policies');
-    btPolicyCatalog = data.policies;
-    renderStrategyPolicies();
-  } catch (e) { /* ignore */ }
+  const data = await api('GET', '/api/research/policies');
+  btPolicyCatalog = data.policies;
+  renderStrategyPolicies();
 }
 
 const BT_KIND_LABELS = {
@@ -675,13 +680,6 @@ function renderBacktestResult(data, container) {
     container.querySelector('#bt-back').addEventListener('click', (e2) => { e2.preventDefault(); renderBacktestResult(data, container); });
   });
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-  const btn = $('#run-backtest');
-  if (btn) btn.addEventListener('click', submitBacktest);
-  loadResearchPolicies();
-});
-
 
 function runtimeConditions() {
   const dataset = $('#dataset').value.trim();
@@ -1015,126 +1013,133 @@ function renderDbVersions(s, canEnter) {
   }
 }
 
+/** @returns {Promise<void>} */
 async function loadSyncStatus() {
   try {
-    const s = await api('GET', '/api/sync/status');
-    // 记录当前进行中/待运行计划的模式(增量/Bootstrap),用于 runner 状态行文案
-    state.activePlanMode = null;
-    for (const p of (s.p5_plans || [])) {
-      if (p.status === 'RUNNING' || p.status === 'PLANNED') { state.activePlanMode = String(p.mode || ''); break; }
+    renderSyncStatus(await api('GET', '/api/sync/status'));
+  } catch (err) {
+    toast('数据状态更新失败：' + err.message, 'error');
+  }
+}
+
+/** @param {Object<string, any>} s @returns {void} */
+function renderSyncStatus(s) {
+  // 记录当前进行中/待运行计划的模式(增量/Bootstrap),用于 runner 状态行文案
+  state.activePlanMode = null;
+  for (const p of (s.p5_plans || [])) {
+    if (p.status === 'RUNNING' || p.status === 'PLANNED') { state.activePlanMode = String(p.mode || ''); break; }
+  }
+  const title = $('#sync-status-title');
+  title.hidden = false;
+  title.textContent = s.latest_synced_trading_day
+    ? '数据状态：最近同步 ' + s.latest_synced_trading_day +
+      ' · 覆盖 ' + (s.coverage_start || '-') + ' ~ ' + (s.coverage_end || '-') +
+      ' · ' + (s.stocks_count || 0) + ' 只'
+    : '数据状态：尚未同步本地数据';
+  // 最近 30 日:每格一个色块
+  const daily = $('#sync-status-daily');
+  daily.hidden = false;
+  daily.innerHTML = (s.recent_days || []).map((d) => {
+    const color = STATUS_COLORS[d.status] || '#95a5a6';
+    return '<span title="' + esc(d.day + ' ' + d.status) + '" style="display:inline-block;width:12px;height:18px;margin:1px;background:' + color + '"></span>';
+  }).join('');
+  $('#sync-status-daily-legend').hidden = false;
+  // 更早 11 段:每段一条色带(按覆盖率着色,深=覆盖高)
+  const bands = $('#sync-status-bands');
+  bands.hidden = false;
+  bands.style.display = 'flex';
+  bands.style.gap = '2px';
+  bands.innerHTML = (s.older_bands || []).map((b) => {
+    const pct = Math.max(0, Math.min(1, b.coverage || 0));
+    // 段内含未完全同步的天 → 整段橙色,表示还需补拉。
+    let color;
+    if (b.incomplete) {
+      color = '#f39c12';
+    } else if (pct === 0) {
+      color = '#95a5a6';
+    } else {
+      const g = Math.round(150 + (pct * 105)); // 0%→浅绿灰,100%→深绿
+      const r = Math.round(140 - (pct * 115));
+      color = 'rgb(' + r + ',' + g + ',120)';
     }
-    const title = $('#sync-status-title');
-    title.hidden = false;
-    title.textContent = s.latest_synced_trading_day
-      ? '数据状态：最近同步 ' + s.latest_synced_trading_day +
-        ' · 覆盖 ' + (s.coverage_start || '-') + ' ~ ' + (s.coverage_end || '-') +
-        ' · ' + (s.stocks_count || 0) + ' 只'
-      : '数据状态：尚未同步本地数据';
-    // 最近 30 日:每格一个色块
-    const daily = $('#sync-status-daily');
-    daily.hidden = false;
+    const note = b.incomplete ? '（部分未同步）' : '';
+    const title = b.start + ' ~ ' + b.end + ' 覆盖率 ' + Math.round(pct * 100) + '%' + note;
+    return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
+  }).join('');
+  $('#sync-status-bands-legend').hidden = false;
+  // 年度覆盖:每块 1 年(八年回补后按年聚合展示)
+  const years = $('#sync-status-years');
+  if (years && (s.year_bands || []).length) {
+    years.hidden = false;
+    years.style.display = 'flex';
+    years.style.gap = '2px';
+    years.innerHTML = (s.year_bands || []).map((b) => {
+      const pct = Math.max(0, Math.min(1, b.coverage || 0));
+      let color;
+      if (!b.has_data) {
+        color = '#ecf0f1'; // 该年无数据:浅灰
+      } else if (b.incomplete) {
+        color = '#f39c12'; // 含未完全同步天:橙
+      } else if (pct === 0) {
+        color = '#95a5a6'; // 有数据但无完整天:灰
+      } else {
+        const g = Math.round(150 + (pct * 105));
+        const rr = Math.round(140 - (pct * 115));
+        color = 'rgb(' + rr + ',' + g + ',120)';
+      }
+      const note = b.incomplete ? '（部分未同步）' : '';
+      const title = b.year + ' 年 · ' + (b.trading_days || 0) + ' 个交易日 · 覆盖率 '
+        + Math.round(pct * 100) + '%' + note;
+      return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
+    }).join('');
+    $('#sync-status-years-legend').hidden = false;
+  }
+
+  // 门禁页/工作台切换:READY 才自动进工作台;有已激活库时允许在数据页
+  // 点选本地库后手动进入(数据截止日/覆盖见版本区提示)。
+  const gate = $('#gate-view');
+  const workbench = $('#workbench-view');
+  const readiness = s.readiness || {};
+  const ready = readiness.status === 'READY';
+  const canEnter = !!(s.can_enter && s.active_generation);
+  // 主 UI 顶栏:当前库与数据截止日
+  const wbGen = $('#wb-active-gen');
+  if (wbGen) {
+    wbGen.textContent = s.latest_synced_trading_day
+      ? '当前库：' + esc((s.active_generation && s.active_generation.generation) || '-') +
+        ' · 数据截至 ' + s.latest_synced_trading_day
+      : '';
+  }
+  if (state.uiView === 'workbench') {
+    if (gate) gate.hidden = true;
+    if (workbench) workbench.hidden = false;
+  } else if (state.uiView === 'gate') {
+    if (gate) gate.hidden = false;
+    if (workbench) workbench.hidden = true;
+  } else if (gate && workbench) {
+    gate.hidden = ready;
+    workbench.hidden = !ready;
+  }
+  if (gate && !ready) {
+    const reason = readiness.reason || '数据未就绪';
+    $('#gate-title').textContent = s.latest_synced_trading_day
+      ? '数据部分就绪：最近同步 ' + s.latest_synced_trading_day
+      : '首次启动：本地尚无数据';
+    $('#gate-readiness').textContent = '当前状态：' + (readiness.status || 'UNKNOWN') + ' — ' + reason;
+    const daily = $('#gate-status-daily');
     daily.innerHTML = (s.recent_days || []).map((d) => {
       const color = STATUS_COLORS[d.status] || '#95a5a6';
       return '<span title="' + esc(d.day + ' ' + d.status) + '" style="display:inline-block;width:12px;height:18px;margin:1px;background:' + color + '"></span>';
     }).join('');
-    $('#sync-status-daily-legend').hidden = false;
-    // 更早 11 段:每段一条色带(按覆盖率着色,深=覆盖高)
-    const bands = $('#sync-status-bands');
-    bands.hidden = false;
-    bands.style.display = 'flex';
-    bands.style.gap = '2px';
-    bands.innerHTML = (s.older_bands || []).map((b) => {
-      const pct = Math.max(0, Math.min(1, b.coverage || 0));
-      // 段内含未完全同步的天 → 整段橙色,表示还需补拉。
-      let color;
-      if (b.incomplete) {
-        color = '#f39c12';
-      } else if (pct === 0) {
-        color = '#95a5a6';
-      } else {
-        const g = Math.round(150 + (pct * 105)); // 0%→浅绿灰,100%→深绿
-        const r = Math.round(140 - (pct * 115));
-        color = 'rgb(' + r + ',' + g + ',120)';
-      }
-      const note = b.incomplete ? '（部分未同步）' : '';
-      const title = b.start + ' ~ ' + b.end + ' 覆盖率 ' + Math.round(pct * 100) + '%' + note;
-      return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
-    }).join('');
-    $('#sync-status-bands-legend').hidden = false;
-    // 年度覆盖:每块 1 年(八年回补后按年聚合展示)
-    const years = $('#sync-status-years');
-    if (years && (s.year_bands || []).length) {
-      years.hidden = false;
-      years.style.display = 'flex';
-      years.style.gap = '2px';
-      years.innerHTML = (s.year_bands || []).map((b) => {
-        const pct = Math.max(0, Math.min(1, b.coverage || 0));
-        let color;
-        if (!b.has_data) {
-          color = '#ecf0f1'; // 该年无数据:浅灰
-        } else if (b.incomplete) {
-          color = '#f39c12'; // 含未完全同步天:橙
-        } else if (pct === 0) {
-          color = '#95a5a6'; // 有数据但无完整天:灰
-        } else {
-          const g = Math.round(150 + (pct * 105));
-          const rr = Math.round(140 - (pct * 115));
-          color = 'rgb(' + rr + ',' + g + ',120)';
-        }
-        const note = b.incomplete ? '（部分未同步）' : '';
-        const title = b.year + ' 年 · ' + (b.trading_days || 0) + ' 个交易日 · 覆盖率 '
-          + Math.round(pct * 100) + '%' + note;
-        return '<span title="' + esc(title) + '" style="flex:1;height:18px;background:' + color + '"></span>';
-      }).join('');
-      $('#sync-status-years-legend').hidden = false;
-    }
-
-    // 门禁页/工作台切换:READY 才自动进工作台;有已激活库时允许在数据页
-    // 点选本地库后手动进入(数据截止日/覆盖见版本区提示)。
-    const gate = $('#gate-view');
-    const workbench = $('#workbench-view');
-    const readiness = s.readiness || {};
-    const ready = readiness.status === 'READY';
-    const canEnter = !!(s.can_enter && s.active_generation);
-    // 主 UI 顶栏:当前库与数据截止日
-    const wbGen = $('#wb-active-gen');
-    if (wbGen) {
-      wbGen.textContent = s.latest_synced_trading_day
-        ? '当前库：' + esc((s.active_generation && s.active_generation.generation) || '-') +
-          ' · 数据截至 ' + s.latest_synced_trading_day
-        : '';
-    }
-    if (state.uiView === 'workbench') {
-      if (gate) gate.hidden = true;
-      if (workbench) workbench.hidden = false;
-    } else if (state.uiView === 'gate') {
-      if (gate) gate.hidden = false;
-      if (workbench) workbench.hidden = true;
-    } else if (gate && workbench) {
-      gate.hidden = ready;
-      workbench.hidden = !ready;
-    }
-    if (gate && !ready) {
-      const reason = readiness.reason || '数据未就绪';
-      $('#gate-title').textContent = s.latest_synced_trading_day
-        ? '数据部分就绪：最近同步 ' + s.latest_synced_trading_day
-        : '首次启动：本地尚无数据';
-      $('#gate-readiness').textContent = '当前状态：' + (readiness.status || 'UNKNOWN') + ' — ' + reason;
-      const daily = $('#gate-status-daily');
-      daily.innerHTML = (s.recent_days || []).map((d) => {
-        const color = STATUS_COLORS[d.status] || '#95a5a6';
-        return '<span title="' + esc(d.day + ' ' + d.status) + '" style="display:inline-block;width:12px;height:18px;margin:1px;background:' + color + '"></span>';
-      }).join('');
-      $('#gate-status-title').hidden = false;
-      $('#gate-status-title').textContent = '本地覆盖近况（绿=完整 橙=未完全同步 灰=缺失）';
-    } else if (gate && state.uiView === 'gate') {
-      $('#gate-title').textContent = s.latest_synced_trading_day
-        ? '数据已就绪：最近同步 ' + s.latest_synced_trading_day
-        : '数据已就绪';
-      $('#gate-readiness').textContent = '';
-    }
-    renderDbVersions(s, canEnter);
-  } catch (e) { /* ignore */ }
+    $('#gate-status-title').hidden = false;
+    $('#gate-status-title').textContent = '本地覆盖近况（绿=完整 橙=未完全同步 灰=缺失）';
+  } else if (gate && state.uiView === 'gate') {
+    $('#gate-title').textContent = s.latest_synced_trading_day
+      ? '数据已就绪：最近同步 ' + s.latest_synced_trading_day
+      : '数据已就绪';
+    $('#gate-readiness').textContent = '';
+  }
+  renderDbVersions(s, canEnter);
 }
 
 function toggleSeedField() {
@@ -1700,7 +1705,9 @@ window.addEventListener('resize', () => {
 });
 
 /* ---------- event wiring ---------- */
+/** @returns {void} */
 function bindEvents() {
+  $('#run-backtest').addEventListener('click', submitBacktest);
   $('#run-screen').addEventListener('click', runScreen);
   $('#shutdown-server').addEventListener('click', shutdownServer);
   const gateShutdown = $('#gate-shutdown');
@@ -1779,32 +1786,135 @@ function bindEvents() {
 }
 
 /* ---------- init ---------- */
+/**
+ * Real completed tasks, independent of elapsed time. The first error is terminal;
+ * manual retry reloads the document, so old requests cannot affect a new attempt.
+ * @returns {{run: <T>(index: number, task: () => Promise<T>) => Promise<T>, finish: () => void, fail: (label: string, error: unknown) => void}}
+ */
+function createStartupProgress() {
+  const labels = ['加载规则', '读取模板', '加载策略', '检查本地数据', '准备工作台'];
+  const steps = labels.map(() => 'waiting');
+  const names = { waiting: '等待中', running: '进行中', done: '已完成', error: '失败', stopped: '未完成' };
+  const started = performance.now();
+  let terminal = false;
+
+  /** @returns {void} */
+  function render() {
+    const done = steps.filter((s) => s === 'done').length;
+    $('#startup-progress').value = done;
+    $('#startup-count').textContent = '已完成 ' + done + '/' + labels.length + ' 项';
+    labels.forEach((label, i) => {
+      const item = $('#startup-step-' + i);
+      item.dataset.status = steps[i];
+      item.textContent = label + ' · ' + names[steps[i]];
+    });
+    const active = labels.filter((_, i) => steps[i] === 'running');
+    $('#startup-message').textContent = active.length ? '正在' + active.join('、') + '…' : '正在准备下一步…';
+    tick();
+  }
+
+  /** @returns {void} */
+  function tick() {
+    if (terminal) return;
+    const seconds = Math.floor((performance.now() - started) / 1000);
+    $('#startup-elapsed').textContent = '已等待 ' + seconds + ' 秒';
+    const hint = $('#startup-hint');
+    hint.hidden = seconds < 10;
+    hint.textContent = steps[3] === 'running'
+      ? '检查本地数据耗时较长，仍在处理中，请稍候。'
+      : '加载比平时稍慢，仍在处理中，请稍候。';
+    if (seconds >= 60) {
+      hint.textContent += ' 你可以继续等待，或点击“重新加载”重试。';
+      $('#startup-retry').hidden = false;
+    }
+  }
+
+  const timer = setInterval(tick, 1000);
+  $('#startup-retry').addEventListener('click', () => window.location.reload());
+  render();
+
+  /** @param {string} label @param {unknown} error @returns {void} */
+  function fail(label, error) {
+    if (terminal) return;
+    steps.forEach((status, i) => { if (status === 'running') steps[i] = 'stopped'; });
+    render();
+    terminal = true;
+    clearInterval(timer);
+    $('#startup-view').dataset.status = 'error';
+    $('#startup-view').setAttribute('aria-busy', 'false');
+    $('#startup-title').textContent = '工作台加载失败';
+    const reason = error instanceof Error ? error.message : String(error);
+    $('#startup-message').textContent = label + '失败：' + reason;
+    $('#startup-hint').hidden = false;
+    $('#startup-hint').textContent = '请确认本地服务正在运行，再点击“重新加载”重试。';
+    $('#startup-retry').hidden = false;
+    $('#gate-view').hidden = true;
+    $('#workbench-view').hidden = true;
+  }
+
+  /** @template T @param {number} index @param {() => Promise<T>} task @returns {Promise<T>} */
+  async function run(index, task) {
+    steps[index] = 'running';
+    render();
+    try {
+      const result = await task();
+      if (!terminal) { steps[index] = 'done'; render(); }
+      return result;
+    } catch (error) {
+      if (!terminal) {
+        steps[index] = 'error';
+        render();
+        fail(labels[index], error);
+      }
+      throw error;
+    }
+  }
+
+  /** @returns {void} */
+  function finish() {
+    if (terminal) return;
+    terminal = true;
+    clearInterval(timer);
+    $('#startup-view').setAttribute('aria-busy', 'false');
+    $('#startup-view').hidden = true;
+  }
+  return { run, finish, fail };
+}
+
+/** @returns {Promise<void>} */
 async function init() {
-  bindEvents();
-  startSyncPolling();
-  loadInstances();
-  loadSyncStatus();
-  const today = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
-  $('#server-status').textContent = '本机离线';
+  const progress = createStartupProgress();
   try {
-    const [rulesData, templatesData] = await Promise.all([
-      api('GET', '/api/rules'),
-      api('GET', '/api/templates'),
+    bindEvents();
+    const today = new Date();
+    /** @param {number} n @returns {string} */
+    const pad = (n) => String(n).padStart(2, '0');
+    $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
+    const [rulesData, templatesData, , syncStatus] = await Promise.all([
+      progress.run(0, () => api('GET', '/api/rules')),
+      progress.run(1, () => api('GET', '/api/templates')),
+      progress.run(2, loadResearchPolicies),
+      progress.run(3, () => api('GET', '/api/sync/status')),
     ]);
-    state.rules = rulesData.rules;
-    state.templates = templatesData.templates;
+    await progress.run(4, async () => {
+      state.rules = rulesData.rules;
+      state.templates = templatesData.templates;
+      const preferred = state.templates.find((t) => t.is_system) || state.templates[0];
+      if (preferred) await loadTemplate(preferred.template_id, { propagateError: true });
+      else { renderTemplateSelect(); toast('未发现任何模板。', 'warn'); }
+      renderSyncStatus(syncStatus);
+    });
     $('#server-status').className = 'badge badge--ok';
     $('#server-status').textContent = '服务正常';
-    const preferred = state.templates.find((t) => t.is_system) || state.templates[0];
-    if (preferred) await loadTemplate(preferred.template_id);
-    else toast('未发现任何模板。', 'warn');
+    progress.finish();
   } catch (err) {
+    progress.fail('准备工作台', err);
     $('#server-status').className = 'badge badge--err';
-    $('#server-status').textContent = '连接失败';
-    toast('初始化失败：' + err.message, 'error');
+    $('#server-status').textContent = '加载失败';
+    return;
   }
+  startSyncPolling();
+  loadInstances();
   loadVersion();
 }
 

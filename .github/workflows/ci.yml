@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Offline startup UI tests (no npm dependencies)
+        run: node --test code/tests/frontend/startup.test.cjs
+
   # 1) 三平台自动测试:每次推送都验证 Windows/macOS/Linux 都能安装依赖并跑通测试。
   test:
     strategy:
