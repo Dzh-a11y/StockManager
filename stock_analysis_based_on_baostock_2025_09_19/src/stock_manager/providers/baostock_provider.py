@@ -64,7 +64,7 @@ class BaostockProvider:
         self,
         client: ModuleType | Any | None = None,
         *,
-        request_interval_seconds: float = 1.0,
+        request_interval_seconds: float = 0.5,
         max_retries: int = 5,
         retry_backoff_seconds: float = 2.0,
         socket_timeout_seconds: float = 30.0,
