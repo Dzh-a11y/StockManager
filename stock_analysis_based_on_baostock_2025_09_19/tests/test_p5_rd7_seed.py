@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from stock_manager.storage import SQLiteRepository
+from stock_manager.storage.migrations import CURRENT_SCHEMA_VERSION
 from stock_manager.sync.seed import (
     REQUIRED_MANIFEST_FIELDS,
     SeedManifest,
@@ -34,7 +35,7 @@ def _manifest_for(
     *,
     filename: str | None = None,
     sha: str | None = None,
-    schema_version: int = 1,
+    schema_version: int = CURRENT_SCHEMA_VERSION,
     **overrides: object,
 ) -> dict[str, object]:
     manifest: dict[str, object] = {
@@ -78,7 +79,7 @@ class TestSeedManifest:
         )
         manifest = SeedManifest.load(manifest_path)
         assert manifest.filename == path.name
-        assert manifest.schema_version == 1
+        assert manifest.schema_version == CURRENT_SCHEMA_VERSION
 
     def test_missing_fields_rejected(self, tmp_path: Path) -> None:
         manifest_path = tmp_path / "m.json"
@@ -107,7 +108,7 @@ class TestSeedPackageVerifier:
         verifier.verify(
             path,
             SeedManifest.load(_write_manifest(tmp_path, path)),
-            expected_schema_version=1,
+            expected_schema_version=CURRENT_SCHEMA_VERSION,
         )
 
     def test_sha_mismatch_rejected(self, tmp_path: Path) -> None:
@@ -118,7 +119,7 @@ class TestSeedPackageVerifier:
             verifier.verify(
                 path,
                 SeedManifest.load(_write_manifest(tmp_path, path, sha="0" * 64)),
-                expected_schema_version=1,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
         assert "SHA-256 mismatch" in str(exc.value)
 
@@ -132,7 +133,7 @@ class TestSeedPackageVerifier:
                 SeedManifest.load(
                     _write_manifest(tmp_path, path, filename="other.sqlite3")
                 ),
-                expected_schema_version=1,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
 
     def test_missing_file_rejected(self, tmp_path: Path) -> None:
@@ -144,7 +145,7 @@ class TestSeedPackageVerifier:
                 {
                     "filename": path.name,
                     "sha256": "0" * 64,
-                    "schema_version": 1,
+                    "schema_version": CURRENT_SCHEMA_VERSION,
                     "source": "baostock",
                     "source_generation": "seed-2026-08-31",
                     "adjustment": "qfq",
@@ -157,7 +158,7 @@ class TestSeedPackageVerifier:
             SeedPackageVerifier().verify(
                 path,
                 SeedManifest.load(manifest_path),
-                expected_schema_version=1,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
 
     def test_corrupt_sqlite_rejected(self, tmp_path: Path) -> None:
@@ -168,7 +169,7 @@ class TestSeedPackageVerifier:
             verifier.verify(
                 path,
                 SeedManifest.load(_write_manifest(tmp_path, path)),
-                expected_schema_version=1,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
 
     def test_schema_version_mismatch_rejected(self, tmp_path: Path) -> None:
@@ -194,7 +195,7 @@ class TestSeedPackageVerifier:
             verifier.verify(
                 truncated,
                 SeedManifest.load(_write_manifest(tmp_path, truncated)),
-                expected_schema_version=1,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
 
 
@@ -202,7 +203,7 @@ class TestTransferPreparer:
     def test_prepare_and_verify_roundtrip(self, tmp_path: Path) -> None:
         source = tmp_path / "market.sqlite3"
         _seed_db(source)
-        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=1)
+        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=CURRENT_SCHEMA_VERSION)
         out = tmp_path / "transfer"
         sidecar = preparer.prepare(source, out)
         assert sidecar.is_file()
@@ -217,7 +218,7 @@ class TestTransferPreparer:
     def test_verify_after_modification_fails(self, tmp_path: Path) -> None:
         source = tmp_path / "market.sqlite3"
         _seed_db(source)
-        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=1)
+        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=CURRENT_SCHEMA_VERSION)
         sidecar = preparer.prepare(source, tmp_path / "out")
         # 复制后修改一个字节 → SHA 变化 → 校验失败
         copied = tmp_path / "modified.sqlite3"
@@ -230,7 +231,7 @@ class TestTransferPreparer:
     def test_missing_transferred_file_fails(self, tmp_path: Path) -> None:
         source = tmp_path / "market.sqlite3"
         _seed_db(source)
-        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=1)
+        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=CURRENT_SCHEMA_VERSION)
         sidecar = preparer.prepare(source, tmp_path / "out")
         with pytest.raises(TransferError):
             preparer.verify_transfer(tmp_path / "nope.sqlite3", sidecar)
@@ -238,7 +239,7 @@ class TestTransferPreparer:
     def test_missing_manifest_field_fails(self, tmp_path: Path) -> None:
         source = tmp_path / "market.sqlite3"
         _seed_db(source)
-        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=1)
+        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=CURRENT_SCHEMA_VERSION)
         sidecar = preparer.prepare(source, tmp_path / "out")
         bad = tmp_path / "bad.transfer.json"
         manifest = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -254,7 +255,7 @@ class TestTransferPreparer:
         _seed_db(source)
         with sqlite3.connect(source) as connection:
             connection.execute("PRAGMA user_version = 5")
-        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=1)
+        preparer = TransferPreparer(now=lambda: NOW, expected_schema_version=CURRENT_SCHEMA_VERSION)
         sidecar = preparer.prepare(source, tmp_path / "out")
         copied = tmp_path / "copied.sqlite3"
         copied.write_bytes(source.read_bytes())

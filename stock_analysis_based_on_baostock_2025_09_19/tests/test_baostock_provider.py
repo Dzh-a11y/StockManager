@@ -10,7 +10,11 @@ from typing import Any
 import pytest
 
 from stock_manager.domain import AdjustmentMethod
-from stock_manager.providers.baostock_provider import BaostockProvider, BaostockProviderError
+from stock_manager.providers.baostock_provider import (
+    BaostockBlacklistedError,
+    BaostockProvider,
+    BaostockProviderError,
+)
 
 
 class _FakeLoginResult:
@@ -202,6 +206,24 @@ def test_query_gives_up_after_max_retries() -> None:
     assert result.error_code == "10001"
     assert attempts["count"] == 3
     assert sleeps == [0.5, 1.0]
+
+
+def test_blacklist_error_fails_current_request_without_retry() -> None:
+    attempts = {"count": 0}
+
+    def operation() -> _ErrorResult:
+        attempts["count"] += 1
+        return _ErrorResult("10001011", "黑名单用户，请与管理员联系")
+
+    provider = BaostockProvider(
+        client=object(),
+        max_retries=5,
+        retry_backoff_seconds=0,
+        request_interval_seconds=0,
+    )
+    with pytest.raises(BaostockBlacklistedError, match="10001011"):
+        provider._query(operation)
+    assert attempts["count"] == 1
 
 
 def test_query_retries_network_errors() -> None:

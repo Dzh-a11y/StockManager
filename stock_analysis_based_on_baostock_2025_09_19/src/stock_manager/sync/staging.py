@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable, Sequence
+from contextlib import closing
 from datetime import date, datetime
 
 from stock_manager.domain import (
@@ -67,6 +68,7 @@ class StagingWriter:
         self._update_status(
             candidate.candidate_generation_id,
             CandidateGenerationStatus.WRITING,
+            CandidateGenerationStatus.PLANNED,
             candidate.plan_id,
             candidate.parent_generation,
             candidate.write_revision,
@@ -100,37 +102,125 @@ class StagingWriter:
             raise StagingWriteError(
                 f"no staging table for data type {task.data_type}"
             )
-        batch_id = self._batch_id(candidate, task)
+        batch_id = self.batch_id(candidate, task)
         now = self._now()
-        with self._connection_factory() as connection:
+        connection = self._connection_factory()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
             try:
+                self._assert_writable(
+                    connection, candidate.candidate_generation_id
+                )
                 self._delete_batch_rows(connection, table, batch_id)
                 count = self._insert_rows(
                     connection, table, batch_id, task, rows, adjustment
                 )
                 digest = self._batch_digest(connection, table, batch_id)
-            except sqlite3.Error as error:
+                batch = IngestBatch(
+                    batch_id=batch_id,
+                    candidate_generation_id=candidate.candidate_generation_id,
+                    data_type=task.data_type,
+                    partition_key=task.partition_key,
+                    codes=task.codes,
+                    range_start=task.range_start,
+                    range_end=task.range_end,
+                    row_count=count,
+                    source=source,
+                    batch_sha256=digest,
+                    created_at=now,
+                )
+                self._save_batch_record(connection, batch)
+                self._bump_revision(
+                    connection, candidate.candidate_generation_id, now
+                )
+                connection.commit()
+                return batch
+            except (
+                sqlite3.Error,
+                StagingWriteError,
+                CandidateNotWritableError,
+            ) as error:
                 connection.rollback()
+                if isinstance(
+                    error, (StagingWriteError, CandidateNotWritableError)
+                ):
+                    raise
                 raise StagingWriteError(
                     f"staging write failed for batch {batch_id}: {error}"
                 ) from error
-        batch = IngestBatch(
-            batch_id=batch_id,
-            candidate_generation_id=candidate.candidate_generation_id,
-            data_type=task.data_type,
-            partition_key=task.partition_key,
-            codes=task.codes,
-            range_start=task.range_start,
-            range_end=task.range_end,
-            row_count=count,
-            source=source,
-            batch_sha256=digest,
-            created_at=now,
-        )
-        with self._connection_factory() as connection:
+        finally:
+            connection.close()
+
+    def recover_batch(
+        self,
+        candidate: CandidateGeneration,
+        task: SyncTask,
+        *,
+        source: str,
+    ) -> IngestBatch | None:
+        """Register a fully written orphan batch without calling Provider again.
+
+        Older builds committed staging rows before the ingest checkpoint. A
+        SUCCESS task is recoverable only when the actual staged row count
+        exactly matches its persisted ``row_count``; otherwise the caller must
+        reset the task and refetch it.
+        """
+        table = _STAGING_TABLE.get(task.data_type)
+        if table is None or task.row_count is None:
+            return None
+        batch_id = self.batch_id(candidate, task)
+        now = self._now()
+        connection = self._connection_factory()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_writable(
+                connection, candidate.candidate_generation_id
+            )
+            existing = connection.execute(
+                "SELECT batch_id FROM ingest_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            if existing is not None:
+                connection.rollback()
+                return self._batch_from_database(connection, batch_id)
+            actual_count = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchone()[0]
+            )
+            if actual_count != task.row_count:
+                connection.rollback()
+                return None
+            batch = IngestBatch(
+                batch_id=batch_id,
+                candidate_generation_id=candidate.candidate_generation_id,
+                data_type=task.data_type,
+                partition_key=task.partition_key,
+                codes=task.codes,
+                range_start=task.range_start,
+                range_end=task.range_end,
+                row_count=actual_count,
+                source=source,
+                batch_sha256=self._batch_digest(connection, table, batch_id),
+                created_at=now,
+            )
             self._save_batch_record(connection, batch)
-            self._bump_revision(connection, candidate.candidate_generation_id, now)
-        return batch
+            self._bump_revision(
+                connection, candidate.candidate_generation_id, now
+            )
+            connection.commit()
+            return batch
+        except CandidateNotWritableError:
+            connection.rollback()
+            raise
+        except sqlite3.Error as error:
+            connection.rollback()
+            raise StagingWriteError(
+                f"orphan batch recovery failed for {batch_id}: {error}"
+            ) from error
+        finally:
+            connection.close()
 
     def finish_candidate(self, candidate: CandidateGeneration) -> None:
         """Move a fully-written candidate into VERIFYING."""
@@ -142,6 +232,7 @@ class StagingWriter:
         self._update_status(
             candidate.candidate_generation_id,
             CandidateGenerationStatus.VERIFYING,
+            CandidateGenerationStatus.WRITING,
             candidate.plan_id,
             candidate.parent_generation,
             candidate.write_revision,
@@ -150,7 +241,8 @@ class StagingWriter:
 
     # -- internals ------------------------------------------------------------
 
-    def _batch_id(self, candidate: CandidateGeneration, task: SyncTask) -> str:
+    def batch_id(self, candidate: CandidateGeneration, task: SyncTask) -> str:
+        """Return the deterministic batch identity for one candidate task."""
         digest = hashlib.sha256()
         digest.update(
             "|".join(
@@ -170,32 +262,78 @@ class StagingWriter:
         self,
         candidate_generation_id: str,
         status: CandidateGenerationStatus,
+        expected_status: CandidateGenerationStatus,
         plan_id: str,
         parent_generation: str | None,
         write_revision: int,
         source: str | None,
     ) -> None:
         now = self._now()
-        with self._connection_factory() as connection:
-            connection.execute(
-                """INSERT INTO candidate_generations
-                   (candidate_generation_id, plan_id, parent_generation,
-                    write_revision, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(candidate_generation_id) DO UPDATE SET
-                     status = excluded.status,
-                     updated_at = excluded.updated_at""",
-                (
-                    candidate_generation_id,
-                    plan_id,
-                    parent_generation,
-                    write_revision,
-                    status.value,
-                    now.isoformat(),
-                    now.isoformat(),
-                ),
+        with closing(self._connection_factory()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    """SELECT status FROM candidate_generations
+                       WHERE candidate_generation_id = ?""",
+                    (candidate_generation_id,),
+                ).fetchone()
+                if existing is None:
+                    if expected_status is not CandidateGenerationStatus.PLANNED:
+                        raise CandidateNotWritableError(
+                            f"candidate {candidate_generation_id} is missing"
+                        )
+                    connection.execute(
+                        """INSERT INTO candidate_generations
+                           (candidate_generation_id, plan_id, parent_generation,
+                            write_revision, status, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            candidate_generation_id,
+                            plan_id,
+                            parent_generation,
+                            write_revision,
+                            status.value,
+                            now.isoformat(),
+                            now.isoformat(),
+                        ),
+                    )
+                else:
+                    existing_status = str(existing[0])
+                if existing is not None and existing_status != expected_status.value:
+                    raise CandidateNotWritableError(
+                        f"candidate {candidate_generation_id} changed to "
+                        f"{existing_status} before transition"
+                    )
+                if existing is not None:
+                    connection.execute(
+                        """UPDATE candidate_generations
+                           SET status = ?, updated_at = ?
+                           WHERE candidate_generation_id = ?""",
+                        (status.value, now.isoformat(), candidate_generation_id),
+                    )
+                connection.commit()
+            except (sqlite3.Error, CandidateNotWritableError):
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _assert_writable(
+        connection: sqlite3.Connection, candidate_generation_id: str
+    ) -> None:
+        row = connection.execute(
+            """SELECT status FROM candidate_generations
+               WHERE candidate_generation_id = ?""",
+            (candidate_generation_id,),
+        ).fetchone()
+        actual_status = None if row is None else str(row[0])
+        if actual_status not in (
+            CandidateGenerationStatus.WRITING.value,
+            CandidateGenerationStatus.NEEDS_REPAIR.value,
+        ):
+            actual = "missing" if row is None else actual_status
+            raise CandidateNotWritableError(
+                f"candidate {candidate_generation_id} is {actual}, not writable"
             )
-            connection.commit()
 
     @staticmethod
     def _delete_batch_rows(
@@ -217,6 +355,7 @@ class StagingWriter:
         if not rows:
             return 0
         if table == "stocks_staging":
+            self._require_row_type(rows, StockIdentity, table)
             connection.executemany(
                 """INSERT OR REPLACE INTO stocks_staging
                    (batch_id, code, as_of, name, exchange, is_st,
@@ -234,7 +373,6 @@ class StagingWriter:
                         None if row.delisted_on is None else row.delisted_on.isoformat(),
                     )
                     for row in rows
-                    if isinstance(row, StockIdentity)
                 ],
             )
         elif table == "daily_bars_staging":
@@ -242,6 +380,7 @@ class StagingWriter:
                 raise StagingWriteError(
                     "daily_bars batch requires an explicit adjustment"
                 )
+            self._require_row_type(rows, DailyBar, table)
             connection.executemany(
                 """INSERT OR REPLACE INTO daily_bars_staging
                    (batch_id, code, trading_day, adjustment, open, high, low,
@@ -263,10 +402,10 @@ class StagingWriter:
                         int(row.is_trading),
                     )
                     for row in rows
-                    if isinstance(row, DailyBar)
                 ],
             )
         elif table == "fundamentals_staging":
+            self._require_row_type(rows, FundamentalSnapshot, table)
             connection.executemany(
                 """INSERT OR REPLACE INTO fundamentals_staging
                    (batch_id, code, report_date, published_on, pe_ttm, pb, source)
@@ -282,10 +421,10 @@ class StagingWriter:
                         row.source,
                     )
                     for row in rows
-                    if isinstance(row, FundamentalSnapshot)
                 ],
             )
         elif table == "dividends_staging":
+            self._require_row_type(rows, DividendRecord, table)
             connection.executemany(
                 """INSERT OR REPLACE INTO dividends_staging
                    (batch_id, code, ex_date, cash_dividend_per_share, source)
@@ -299,13 +438,20 @@ class StagingWriter:
                         row.source,
                     )
                     for row in rows
-                    if isinstance(row, DividendRecord)
                 ],
             )
         else:  # pragma: no cover - guarded by _STAGING_TABLE lookup
             raise StagingWriteError(f"unsupported staging table {table}")
-        connection.commit()
         return len(rows)
+
+    @staticmethod
+    def _require_row_type(
+        rows: Sequence[object], expected_type: type[object], table: str
+    ) -> None:
+        if any(not isinstance(row, expected_type) for row in rows):
+            raise StagingWriteError(
+                f"batch for {table} contains an unexpected row type"
+            )
 
     @staticmethod
     def _batch_digest(
@@ -344,7 +490,6 @@ class StagingWriter:
                 batch.created_at.isoformat(),
             ),
         )
-        connection.commit()
 
     @staticmethod
     def _bump_revision(
@@ -352,10 +497,37 @@ class StagingWriter:
         candidate_generation_id: str,
         now: datetime,
     ) -> None:
-        connection.execute(
+        cursor = connection.execute(
             """UPDATE candidate_generations
                SET write_revision = write_revision + 1, updated_at = ?
                WHERE candidate_generation_id = ?""",
             (now.isoformat(), candidate_generation_id),
         )
-        connection.commit()
+        if cursor.rowcount != 1:
+            raise StagingWriteError(
+                f"candidate disappeared before revision bump: "
+                f"{candidate_generation_id}"
+            )
+
+    @staticmethod
+    def _batch_from_database(
+        connection: sqlite3.Connection, batch_id: str
+    ) -> IngestBatch:
+        row = connection.execute(
+            "SELECT * FROM ingest_batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if row is None:
+            raise StagingWriteError(f"ingest batch disappeared: {batch_id}")
+        return IngestBatch(
+            batch_id=row["batch_id"],
+            candidate_generation_id=row["candidate_generation_id"],
+            data_type=row["data_type"],
+            partition_key=row["partition_key"],
+            codes=tuple(row["codes"].split(",")),
+            range_start=date.fromisoformat(row["range_start"]),
+            range_end=date.fromisoformat(row["range_end"]),
+            row_count=int(row["row_count"]),
+            source=row["source"],
+            batch_sha256=row["batch_sha256"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )

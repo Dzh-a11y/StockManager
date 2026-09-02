@@ -141,6 +141,103 @@ class TestStagingWriter:
         assert bars == 0
         assert staging == 1
 
+    def test_batch_rows_checkpoint_and_revision_are_atomic(
+        self,
+        writer: StagingWriter,
+        repo: SQLiteRepository,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """批次登记失败时不得留下无 checkpoint 的孤儿 staging 行。"""
+        writer.begin_candidate(_candidate(), "fake")
+        candidate = repo.get_candidate_generation("cand-1")
+        assert candidate is not None
+
+        def fail_batch_record(connection: sqlite3.Connection, batch: object) -> None:
+            raise sqlite3.OperationalError("checkpoint write failed")
+
+        monkeypatch.setattr(
+            StagingWriter, "_save_batch_record", staticmethod(fail_batch_record)
+        )
+        with pytest.raises(StagingWriteError, match="checkpoint write failed"):
+            writer.write_batch(
+                candidate,
+                _task("daily_bars"),
+                [_bar()],
+                source="fake",
+                adjustment=AdjustmentMethod.QFQ,
+            )
+        with sqlite3.connect(repo.database_path) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM daily_bars_staging"
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM ingest_batches"
+            ).fetchone()[0] == 0
+        loaded = repo.get_candidate_generation("cand-1")
+        assert loaded is not None
+        assert loaded.write_revision == 0
+
+    def test_write_rechecks_persisted_candidate_status(
+        self, writer: StagingWriter, repo: SQLiteRepository
+    ) -> None:
+        """调用方持有旧 WRITING 对象时也不能写入已失败 candidate。"""
+        writer.begin_candidate(_candidate(), "fake")
+        stale = repo.get_candidate_generation("cand-1")
+        assert stale is not None
+        repo.update_candidate_status(
+            "cand-1", CandidateGenerationStatus.FAILED, NOW
+        )
+        with pytest.raises(CandidateNotWritableError, match="not writable"):
+            writer.write_batch(
+                stale,
+                _task("daily_bars"),
+                [_bar()],
+                source="fake",
+                adjustment=AdjustmentMethod.QFQ,
+            )
+        with sqlite3.connect(repo.database_path) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM daily_bars_staging"
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM ingest_batches"
+            ).fetchone()[0] == 0
+
+    def test_recover_batch_registers_matching_orphan_without_refetch(
+        self, writer: StagingWriter, repo: SQLiteRepository
+    ) -> None:
+        writer.begin_candidate(_candidate(), "fake")
+        candidate = repo.get_candidate_generation("cand-1")
+        assert candidate is not None
+        task = _task(
+            "daily_bars",
+            status=SyncTaskStatus.SUCCESS,
+            attempt_count=1,
+            row_count=1,
+            started_at=NOW,
+            finished_at=NOW,
+        )
+        batch_id = writer.batch_id(candidate, task)
+        with sqlite3.connect(repo.database_path) as connection:
+            connection.execute(
+                """INSERT INTO daily_bars_staging
+                   (batch_id, code, trading_day, adjustment, open, high, low,
+                    close, preclose, volume, amount, is_trading)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    batch_id, "sh.600000", DAY.isoformat(), "qfq", "10", "11",
+                    "9", "10.5", "10", "1000", "10500", 1,
+                ),
+            )
+        recovered = writer.recover_batch(
+            candidate,
+            task,
+            source="fake",
+        )
+        assert recovered is not None
+        assert recovered.row_count == 1
+        assert repo.get_ingest_batch(batch_id) == recovered
+
     def test_write_revision_bumps_per_batch(self, writer: StagingWriter, repo: SQLiteRepository) -> None:
         writer.begin_candidate(_candidate(), "fake")
         candidate = repo.get_candidate_generation("cand-1")

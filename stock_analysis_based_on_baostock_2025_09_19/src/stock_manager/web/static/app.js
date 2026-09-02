@@ -14,6 +14,7 @@ const state = {
   result: null,
   resultFilter: 'all',
   selectedCode: null,
+  uiView: 'auto',   // 'auto' | 'gate' | 'workbench' — 手动停留的数据页/工作台视图
 };
 
 let _klineBars = null;      // last full dataset drawn (for hover / zoom / resize)
@@ -599,6 +600,7 @@ async function submitBacktest() {
     window_years: windowYears,
     initial_cash: $('#bt-cash').value.trim() || '1000000',
     max_positions: Math.min(500, Math.max(1, Math.floor(Number($('#bt-positions').value) || 20))),
+    max_workers: Math.min(16, Math.max(1, Math.floor(Number($('#bt-workers').value) || 2))),
   };
   btn.disabled = true;
   result.hidden = true;
@@ -950,9 +952,77 @@ const STATUS_COLORS = {
   nontrading: '#ecf0f1',
 };
 
+/* ---------- 视图切换(数据 UI ↔ 工作台)与本地库选择 ---------- */
+function applyView() {
+  const gate = $('#gate-view');
+  const workbench = $('#workbench-view');
+  if (!gate || !workbench) return;
+  if (state.uiView === 'workbench') {
+    gate.hidden = true;
+    workbench.hidden = false;
+  } else if (state.uiView === 'gate') {
+    gate.hidden = false;
+    workbench.hidden = true;
+  }
+}
+
+function setView(view) {
+  state.uiView = view;
+  applyView();
+  if (view === 'gate') {
+    loadInstances();   // 刷新 runner 状态
+    loadSyncStatus();  // 刷新数据状态与版本区
+  }
+}
+
+/* 渲染门禁页的"本地数据库"选择区;canEnter=false(无已激活库)时不放行 */
+function renderDbVersions(s, canEnter) {
+  const box = $('#db-versions');
+  const title = $('#db-select-title');
+  const hint = $('#db-cutoff-hint');
+  const enter = $('#gate-enter');
+  if (!box) return;
+  if (!canEnter || !s.active_generation || !s.active_generation.generation) {
+    box.innerHTML = '';
+    if (title) title.hidden = true;
+    if (hint) hint.hidden = true;
+    if (enter) enter.hidden = true;
+    return;
+  }
+  if (title) title.hidden = false;
+  const gen = String(s.active_generation.generation);
+  const activated = s.active_generation.activated_at || '';
+  box.innerHTML =
+    '<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;cursor:pointer">' +
+      '<input type="radio" name="db-version" value="' + esc(gen) + '">' +
+      '<span>generation：' + esc(gen) +
+        (activated ? '<br><span style="opacity:.7">激活于 ' + esc(activated) + '</span>' : '') +
+      '</span>' +
+    '</label>';
+  box.querySelector('input[name="db-version"]').addEventListener('change', () => {
+    if (enter) enter.disabled = false;
+  });
+  if (hint) {
+    hint.hidden = false;
+    hint.textContent = '数据截至 ' + (s.latest_synced_trading_day || '-') +
+      ' · ' + (s.stocks_count || 0) + ' 只股票 · 覆盖 ' +
+      (s.coverage_start || '-') + ' ~ ' + (s.coverage_end || '-') +
+      '。本地仅保留最新一代数据；未覆盖的交易日做筛选会被拒绝。';
+  }
+  if (enter) {
+    enter.hidden = false;
+    enter.disabled = true;   // 需先点选上面的版本(即使只有一项)
+  }
+}
+
 async function loadSyncStatus() {
   try {
     const s = await api('GET', '/api/sync/status');
+    // 记录当前进行中/待运行计划的模式(增量/Bootstrap),用于 runner 状态行文案
+    state.activePlanMode = null;
+    for (const p of (s.p5_plans || [])) {
+      if (p.status === 'RUNNING' || p.status === 'PLANNED') { state.activePlanMode = String(p.mode || ''); break; }
+    }
     const title = $('#sync-status-title');
     title.hidden = false;
     title.textContent = s.latest_synced_trading_day
@@ -1019,16 +1089,32 @@ async function loadSyncStatus() {
       $('#sync-status-years-legend').hidden = false;
     }
 
-    // 门禁页/工作台切换(P5 §5.1):数据就绪(READY)才进入工作台
+    // 门禁页/工作台切换:READY 才自动进工作台;有已激活库时允许在数据页
+    // 点选本地库后手动进入(数据截止日/覆盖见版本区提示)。
     const gate = $('#gate-view');
     const workbench = $('#workbench-view');
     const readiness = s.readiness || {};
     const ready = readiness.status === 'READY';
-    if (gate && workbench) {
+    const canEnter = !!(s.can_enter && s.active_generation);
+    // 主 UI 顶栏:当前库与数据截止日
+    const wbGen = $('#wb-active-gen');
+    if (wbGen) {
+      wbGen.textContent = s.latest_synced_trading_day
+        ? '当前库：' + esc((s.active_generation && s.active_generation.generation) || '-') +
+          ' · 数据截至 ' + s.latest_synced_trading_day
+        : '';
+    }
+    if (state.uiView === 'workbench') {
+      if (gate) gate.hidden = true;
+      if (workbench) workbench.hidden = false;
+    } else if (state.uiView === 'gate') {
+      if (gate) gate.hidden = false;
+      if (workbench) workbench.hidden = true;
+    } else if (gate && workbench) {
       gate.hidden = ready;
       workbench.hidden = !ready;
     }
-    if (!ready && gate) {
+    if (gate && !ready) {
       const reason = readiness.reason || '数据未就绪';
       $('#gate-title').textContent = s.latest_synced_trading_day
         ? '数据部分就绪：最近同步 ' + s.latest_synced_trading_day
@@ -1041,9 +1127,13 @@ async function loadSyncStatus() {
       }).join('');
       $('#gate-status-title').hidden = false;
       $('#gate-status-title').textContent = '本地覆盖近况（绿=完整 橙=未完全同步 灰=缺失）';
-      $('#gate-enter').hidden = true;
+    } else if (gate && state.uiView === 'gate') {
+      $('#gate-title').textContent = s.latest_synced_trading_day
+        ? '数据已就绪：最近同步 ' + s.latest_synced_trading_day
+        : '数据已就绪';
+      $('#gate-readiness').textContent = '';
     }
-
+    renderDbVersions(s, canEnter);
   } catch (e) { /* ignore */ }
 }
 
@@ -1082,6 +1172,7 @@ async function startBootstrap() {
       setBootstrapButtonsDisabled(true, '回补进行中…');
     }
     await loadSyncStatus();
+    loadInstances();  // 刷新数据页 runner 状态行
   } catch (err) {
     status.textContent = '失败：' + (err.message || err);
     // 失败(含 409 已在运行):恢复按钮,由轮询按真实运行状态接管。
@@ -1118,30 +1209,63 @@ async function loadInstances() {
   try {
     const data = await api('GET', '/api/instances');
     const list = data.instances || [];
-    const label = $('#instances-label');
-    const ul = $('#instances-list');
-    const note = $('#instances-note');
-    if (!list.length) {
-      label.hidden = true;
-      ul.hidden = true;
-      ul.innerHTML = '';
-      note.hidden = true;
-      return;
+    // 区分主进程(本服务 web)与下载进程(回补/增量 runner)
+    const isDownload = (i) => String(i.command || '').indexOf('run_backfill') !== -1;
+    const mainProcs = list.filter((i) => !isDownload(i));
+    const downProcs = list.filter(isDownload);
+    const modeLabel = state.activePlanMode === 'INCREMENTAL' ? '增量'
+      : state.activePlanMode === 'BOOTSTRAP' ? '回补'
+      : state.activePlanMode === 'PLANNED' ? '待运行'
+      : '数据';
+
+    // 数据 UI(门禁页):下载 runner 状态行 + 停止按钮
+    const runnerEl = $('#gate-runner-status');
+    const runner = downProcs[0];
+    if (runnerEl) {
+      if (runner) {
+        runnerEl.hidden = false;
+        runnerEl.innerHTML = modeLabel + '进程运行中 · pid ' + runner.pid +
+          ' <button class="btn btn--danger" data-runner-pid="' + runner.pid + '" type="button">停止同步</button>';
+        const b = runnerEl.querySelector('button[data-runner-pid]');
+        if (b) b.addEventListener('click', () => killInstance(runner.pid));
+      } else {
+        runnerEl.hidden = true;
+        runnerEl.innerHTML = '';
+      }
     }
-    label.hidden = false;
-    label.textContent = '当前 ' + list.length + ' 个相同实例在运行';
-    ul.hidden = false;
-    ul.innerHTML = list.map((item) => {
-      const self = item.is_self ? '（当前服务）' : '';
-      return '<li>' + esc('pid ' + item.pid) + ' ' + self +
-        ' <button class="btn btn--danger" data-pid="' + item.pid + '">停止</button>' +
-        '<code>' + esc(item.command || '') + '</code></li>';
-    }).join('');
-    ul.querySelectorAll('button[data-pid]').forEach((btn) => {
-      btn.addEventListener('click', () => killInstance(Number(btn.dataset.pid)));
-    });
-    note.hidden = false;
-    note.textContent = '「停止」会结束该实例进程；若停止的是当前服务，页面会断开，需重新启动。';
+
+    // 主 UI 底部「进程管理」
+    const procMain = $('#proc-main');
+    const procDownload = $('#proc-download');
+    const note = $('#instances-note');
+    if (procMain) {
+      if (mainProcs.length) {
+        procMain.hidden = false;
+        procMain.innerHTML = '<b>主进程</b>' + mainProcs.map((i) => {
+          const self = i.is_self ? '（当前服务）' : '';
+          return ' · pid ' + i.pid + self + '<br><code>' + esc(i.command || '') + '</code>';
+        }).join('');
+      } else { procMain.hidden = true; procMain.innerHTML = ''; }
+    }
+    if (procDownload) {
+      if (downProcs.length) {
+        procDownload.hidden = false;
+        procDownload.innerHTML = '<b>下载进程（' + modeLabel + '）</b>' + downProcs.map((i) => {
+          return ' · pid ' + i.pid +
+            ' <button class="btn btn--danger" data-dl-pid="' + i.pid + '" type="button">停止同步</button>' +
+            '<br><code>' + esc(i.command || '') + '</code>';
+        }).join('');
+        procDownload.querySelectorAll('button[data-dl-pid]').forEach((btn) => {
+          btn.addEventListener('click', () => killInstance(Number(btn.dataset.dlPid)));
+        });
+      } else { procDownload.hidden = true; procDownload.innerHTML = ''; }
+    }
+    if (note) {
+      if (list.length) {
+        note.hidden = false;
+        note.textContent = '「停止同步」只结束下载进程；主进程由上方「停止服务」按钮结束。';
+      } else { note.hidden = true; note.textContent = ''; }
+    }
   } catch (e) { /* ignore */ }
 }
 
@@ -1591,7 +1715,9 @@ function bindEvents() {
   const sourceSel = $('#bootstrap-source');
   if (sourceSel) sourceSel.addEventListener('change', toggleSeedField);
   const enterBtn = $('#gate-enter');
-  if (enterBtn) enterBtn.addEventListener('click', () => loadSyncStatus());
+  if (enterBtn) enterBtn.addEventListener('click', () => setView('workbench'));
+  const openDataBtn = $('#open-data-ui');
+  if (openDataBtn) openDataBtn.addEventListener('click', () => setView('gate'));
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
   });

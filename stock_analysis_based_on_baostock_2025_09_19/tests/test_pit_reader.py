@@ -144,6 +144,30 @@ def test_delisted_stock_visible_before_but_not_after_delisting(
         assert "000003.SZ" not in codes_after
 
 
+def test_universe_reconstructed_before_earliest_snapshot(tmp_path: Path) -> None:
+    """单一较晚快照:无 as_of<=day 时用 listed_on 向后重建存在性(P5A-2 近似)。"""
+    db = tmp_path / "market.sqlite3"
+    repo = SQLiteRepository(db)
+    a = StockIdentity("000001.SZ", "A", "SZSE", False, date(2019, 1, 2), None)
+    b = StockIdentity("000002.SZ", "B", "SZSE", False, date(2021, 3, 1), None)
+    repo.save_stocks((a, b), _metadata(date(2026, 9, 1)))  # 仅最新快照
+    with _reader(db, date(2020, 1, 1), date(2021, 6, 30)) as reader:
+        codes = {stock.code for stock in reader.universe_as_of(date(2021, 1, 1))}
+        assert "000001.SZ" in codes       # 2019 已上市,现存快照中包含
+        assert "000002.SZ" not in codes   # 2021-03-01 才上市,2021-01-01 尚不可见
+
+
+def test_universe_for_reconstructs_before_earliest_snapshot() -> None:
+    """_universe_for 同样在后向重建:单快照下,早于快照的日仍可得股票池。"""
+    from stock_manager.services.historical_screening_executor import _universe_for
+
+    a = StockIdentity("000001.SZ", "A", "SZSE", False, date(2019, 1, 2), None)
+    b = StockIdentity("000002.SZ", "B", "SZSE", False, date(2021, 3, 1), None)
+    snapshots = ((date(2026, 9, 1), (a, b)),)
+    at = _universe_for(date(2021, 1, 1), snapshots)
+    assert {stock.code for stock in at} == {"000001.SZ"}
+
+
 def test_late_published_fundamentals_invisible_before_publish(
     tmp_path: Path,
 ) -> None:

@@ -79,6 +79,17 @@ class ResearchBacktestService:
         self._store = HistoricalScreeningRunStore(repository, clock=clock)
         self._runner = BoundedJobRunner(max_concurrent=1)
         self._engine = BacktraderBacktestEngine()
+        # 每次提交可带 max_workers(UI 可配);执行时按 run_id 取用,默认 self._max_workers
+        self._run_max_workers: dict[str, int] = {}
+
+    def recover_interrupted_runs(self) -> int:
+        """Mark runs left QUEUED/active by a previous process as INTERRUPTED.
+
+        Called once on web startup: the in-process job runner dies with the
+        process, so without this, orphaned QUEUED/BUILDING_SIGNALS runs would
+        linger in the UI queue forever after a restart.
+        """
+        return self._store.recover_interrupted("market", AdjustmentMethod.QFQ)
 
     # ------------------------------------------------------------------
     # submission
@@ -96,11 +107,14 @@ class ResearchBacktestService:
         policies: dict[str, dict[str, object]] | None = None,
         initial_cash: Decimal,
         max_positions: int = 20,
+        max_workers: int | None = None,
         dataset_id: str = "market",
         adjustment: AdjustmentMethod = AdjustmentMethod.QFQ,
     ) -> str:
         if initial_cash <= 0:
             raise ResearchBacktestError("initial_cash must be positive")
+        if max_workers is not None and not 1 <= max_workers <= 16:
+            raise ResearchBacktestError("max_workers must be between 1 and 16")
         if strategy_spec_id is None and policies is None:
             raise ResearchBacktestError("strategy_spec_id or policies is required")
         if window_years is not None:
@@ -158,6 +172,9 @@ class ResearchBacktestService:
         )
         now = self._store._now()
         run_id = f"rb-{uuid.uuid4().hex[:12]}"
+        self._run_max_workers[run_id] = (
+            max_workers if max_workers is not None else self._max_workers
+        )
         cache_key = historical_cache_key(
             dataset_id=dataset_id,
             generation=self._committed_generation(dataset_id, adjustment),
@@ -375,7 +392,7 @@ class ResearchBacktestService:
         executor = HistoricalScreeningExecutor(
             self._registry,
             database_path=str(self._repository.database_path),
-            max_workers=self._max_workers,
+            max_workers=self._run_max_workers.pop(run_id, self._max_workers),
         )
         from stock_manager.read.plan_view import PicklableScreeningPlan
 

@@ -124,6 +124,9 @@ class WebApp:
                 compiler=self._services.compiler,
                 max_workers=2,
             )
+            # 进程内回测 runner 随进程消亡:启动时把上一次进程遗留的
+            # QUEUED/进行中任务标记为 INTERRUPTED,避免孤儿任务堵住 UI 队列。
+            self._research.recover_interrupted_runs()
         self._start_backfill_if_needed()
 
     def _start_backfill_if_needed(self) -> None:
@@ -374,8 +377,14 @@ class WebApp:
             policies = data.get("policies")
             initial_cash = Decimal(str(data["initial_cash"]))
             max_positions = int(data.get("max_positions", 20))
+            raw_workers = data.get("max_workers")
+            max_workers = None if raw_workers is None else int(raw_workers)
         except (KeyError, ValueError, TypeError) as error:
             return self._error(BadRequestError("invalid research request: " + str(error)))
+        if max_workers is not None and not 1 <= max_workers <= 16:
+            return self._error(
+                BadRequestError("max_workers must be between 1 and 16")
+            )
         try:
             run_id = self._research.submit(
                 template_id=template_id,
@@ -387,6 +396,7 @@ class WebApp:
                 policies=policies,
                 initial_cash=initial_cash,
                 max_positions=max_positions,
+                max_workers=max_workers,
             )
         except Exception as error:
             return self._error(BadRequestError(str(error)))
@@ -547,22 +557,19 @@ class WebApp:
         import sys as _sys
         from pathlib import Path as _Path
 
-        try:
-            plans = self._services.repository.list_sync_plans(
-                "market", adjustment
+        plans = self._services.repository.list_sync_plans(
+            "market", adjustment
+        )
+        if any(p.status.value == "RUNNING" for p in plans):
+            return self._json(
+                409,
+                {
+                    "error": {
+                        "code": "ALREADY_RUNNING",
+                        "message": "回补已在运行中,请勿重复启动",
+                    }
+                },
             )
-            if any(p.status.value == "RUNNING" for p in plans):
-                return self._json(
-                    409,
-                    {
-                        "error": {
-                            "code": "ALREADY_RUNNING",
-                            "message": "回补已在运行中,请勿重复启动",
-                        }
-                    },
-                )
-        except Exception:
-            pass
         if self._config.sync_config_path is None:
             return self._error(BadRequestError("sync config is required"))
         repo_root = _Path(self._config.sync_config_path).resolve().parent.parent
@@ -571,7 +578,9 @@ class WebApp:
         # 防线,优先于测试占位分支:任何模式只要锁被持有都不允许再启动。
         from stock_manager.sync.locks import is_file_lock_held as _lock_held
 
-        runner_lock = repo_root / "data" / "locks" / "backfill_runner.lock"
+        runner_lock = (
+            _Path(self._config.lock_directory) / "backfill_runner.lock"
+        )
         if _lock_held(runner_lock):
             return self._json(
                 409,
@@ -599,19 +608,22 @@ class WebApp:
         python = _sys.executable
         log_dir = repo_root / "data" / "backfill_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_handle = open(  # noqa: SIM115 - held for child lifetime
+        with open(
             log_dir / "runner_web.log", "a", encoding="utf-8"
-        )
-        proc = _subprocess.Popen(
-            [
-                python, "-u", str(runner),
-                "--config", str(self._config.sync_config_path),
-            ],
-            cwd=str(repo_root),
-            stdout=log_handle,
-            stderr=_subprocess.STDOUT,
-            start_new_session=True,
-        )
+        ) as log_handle:
+            proc = _subprocess.Popen(
+                [
+                    python, "-u", str(runner),
+                    "--config", str(self._config.sync_config_path),
+                    "--db", str(self._config.database_path),
+                    "--lock-dir", str(self._config.lock_directory),
+                    "--adjustment", adjustment.value,
+                ],
+                cwd=str(repo_root),
+                stdout=log_handle,
+                stderr=_subprocess.STDOUT,
+                start_new_session=True,
+            )
         self._sync_progress.update(
             {
                 "status": "running",
@@ -655,9 +667,13 @@ class WebApp:
         except Exception as error:
             raise BadRequestError(f"invalid seed manifest: {error}") from error
         verifier = SeedPackageVerifier()
+        from stock_manager.storage.migrations import CURRENT_SCHEMA_VERSION
+
         try:
             verifier.verify(
-                seed_path, manifest, expected_schema_version=1
+                seed_path,
+                manifest,
+                expected_schema_version=CURRENT_SCHEMA_VERSION,
             )
             verifier.check_no_absolute_paths(seed_path)
         except Exception as error:
@@ -812,6 +828,7 @@ class WebApp:
                 "p5_plans": self._p5_plan_state(),
                 "active_generation": self._active_generation_state(),
                 "readiness": self._readiness_state(),
+                "can_enter": self._active_generation_state() is not None,
             }
         anchor = latest_meta.trading_day
         start = anchor - timedelta(days=359)
@@ -877,10 +894,15 @@ class WebApp:
                 cal = set(repo.get_trading_days(y_start, y_end))
                 year_bar_days = repo.daily_bar_days(y_start, y_end, qfq)
                 year_counts = repo.daily_bar_stock_counts(y_start, y_end, qfq)
-                complete = {
-                    day for day, n in year_counts.items()
-                    if n >= complete_threshold
-                }
+                # 按该年实际股票池判定完整性:以截至该日在当已出现过的
+                # distinct 股票数峰值(年内累计)作为该日参考——当年新股上市使
+                # 股票池只增不减,避免把市场增长误判为"数据缺失"。
+                running_ref = 0
+                complete: set[date] = set()
+                for day, n in sorted(year_counts.items()):
+                    running_ref = max(running_ref, n)
+                    if n >= max(1, int(running_ref * 0.95)):
+                        complete.add(day)
                 seg = [d for d in cal]
                 coverage = (
                     sum(1 for d in seg if d in complete) / len(seg)
@@ -910,6 +932,7 @@ class WebApp:
             "p5_plans": self._p5_plan_state(),
             "active_generation": self._active_generation_state(),
             "readiness": self._readiness_state(),
+            "can_enter": self._active_generation_state() is not None,
         }
 
     def _p5_plan_state(self) -> list[dict[str, object]]:
@@ -1242,7 +1265,7 @@ class WebApp:
             if os.name == "nt":
                 ps = (
                     "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.CommandLine -match 'stock_manager' } | "
+                    "Where-Object { $_.CommandLine -match 'stock_manager|run_backfill' } | "
                     "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
                 )
                 result = subprocess.run(
@@ -1274,7 +1297,9 @@ class WebApp:
                 )
                 for line in result.stdout.splitlines():
                     parts = line.strip().split(None, 1)
-                    if len(parts) == 2 and "stock_manager" in parts[1]:
+                    if len(parts) == 2 and (
+                        "stock_manager" in parts[1] or "run_backfill" in parts[1]
+                    ):
                         pid = int(parts[0])
                         items.append(
                             {"pid": pid, "command": parts[1], "is_self": pid == os.getpid()}

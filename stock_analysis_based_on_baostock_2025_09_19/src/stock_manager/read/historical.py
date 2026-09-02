@@ -139,13 +139,22 @@ class SQLitePointInTimeReader:
                 (day_text,),
             ).fetchone()
             if row["latest"] is None:
-                return ()
+                # 无 as_of<=day 的快照:回退到最早快照,用 listed_on/delisted_on
+                # 向后重建该日股票池存在性(ST 仍取快照值,按 P5A-2 约定为近似)。
+                row = self._connection.execute(
+                    """SELECT MIN(as_of) AS earliest FROM stocks"""
+                ).fetchone()
+                if row["earliest"] is None:
+                    return ()
+                snapshot = row["earliest"]
+            else:
+                snapshot = row["latest"]
             rows = self._connection.execute(
                 """SELECT * FROM stocks WHERE as_of = ?
                    AND (listed_on IS NULL OR listed_on <= ?)
                    AND (delisted_on IS NULL OR delisted_on > ?)
                    ORDER BY code""",
-                (row["latest"], day_text, day_text),
+                (snapshot, day_text, day_text),
             ).fetchall()
         return tuple(
             StockIdentity(

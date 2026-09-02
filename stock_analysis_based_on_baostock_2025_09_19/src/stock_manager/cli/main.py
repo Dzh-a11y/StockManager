@@ -532,24 +532,30 @@ def _sync_import_legacy_command(args: argparse.Namespace, stdout: TextIO) -> int
 
 
 def _db_prepare_transfer_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.storage.migrations import CURRENT_SCHEMA_VERSION
     from stock_manager.sync.seed import TransferPreparer
 
     def now() -> datetime:
         return datetime.now().astimezone()
 
-    preparer = TransferPreparer(now=now, expected_schema_version=1)
+    preparer = TransferPreparer(
+        now=now, expected_schema_version=CURRENT_SCHEMA_VERSION
+    )
     manifest_path = preparer.prepare(args.db, args.out)
     _print_json({"manifest": str(manifest_path)}, stdout)
     return 0
 
 
 def _db_verify_transfer_command(args: argparse.Namespace, stdout: TextIO) -> int:
+    from stock_manager.storage.migrations import CURRENT_SCHEMA_VERSION
     from stock_manager.sync.seed import TransferPreparer
 
     def now() -> datetime:
         return datetime.now().astimezone()
 
-    preparer = TransferPreparer(now=now, expected_schema_version=1)
+    preparer = TransferPreparer(
+        now=now, expected_schema_version=CURRENT_SCHEMA_VERSION
+    )
     preparer.verify_transfer(args.db, args.manifest)
     _print_json({"verified": True, "database": str(args.db)}, stdout)
     return 0

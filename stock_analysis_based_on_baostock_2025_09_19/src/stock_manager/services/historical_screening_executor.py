@@ -120,12 +120,20 @@ def _synthetic_metadata(
 def _universe_for(
     day: date, snapshots: tuple[tuple[date, tuple[StockIdentity, ...]], ...]
 ) -> tuple[StockIdentity, ...]:
-    """Latest snapshot on/before day, filtered by listing/delisting boundaries."""
+    """Latest snapshot on/before day, filtered by listing/delisting boundaries.
+
+    When no snapshot has as_of <= day, fall back to the earliest snapshot and
+    reconstruct existence via listed_on/delisted_on (ST stays the snapshot's
+    value, a documented P5A-2 approximation). Without this, a single later
+    snapshot would yield an empty universe for every earlier backtest day.
+    """
     latest: tuple[StockIdentity, ...] = ()
     for as_of, stocks in snapshots:
         if as_of > day:
             break
         latest = stocks
+    if not latest and snapshots:
+        latest = snapshots[0][1]
     if not latest:
         return ()
     return tuple(
@@ -247,7 +255,7 @@ class HistoricalScreeningExecutor:
         registry: RuleRegistry,
         *,
         database_path: str,
-        max_workers: int = 4,
+        max_workers: int = 16,
         batch_size: int = 100,
         small_serial_threshold: int = 50,
         reader_factory: Callable[[], PointInTimeReaderProtocol] | None = None,

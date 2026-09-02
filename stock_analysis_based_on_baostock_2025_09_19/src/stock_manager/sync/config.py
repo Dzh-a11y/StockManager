@@ -105,4 +105,3 @@ def load_sync_config(path: Path) -> SyncConfig:
         return SyncConfig(**_parse_policy(root))
     history = _parse_history(root)
     return SyncConfig(**_parse_policy(root), history=history)
-

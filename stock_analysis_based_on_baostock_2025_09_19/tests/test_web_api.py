@@ -219,6 +219,47 @@ def _app(tmp_path: Path) -> WebApp:
     return WebApp(config)
 
 
+def test_web_startup_marks_orphaned_backtest_runs_interrupted(
+    tmp_path: Path,
+) -> None:
+    """Web 启动时把上一进程遗留的 QUEUED/进行中回测标记为 INTERRUPTED。"""
+    from stock_manager.domain import HistoricalRunStatus, HistoricalScreeningRun
+    from stock_manager.services.historical_screening_run_store import (
+        HistoricalScreeningRunStore,
+    )
+
+    database_path = tmp_path / "market.sqlite3"
+    _seed_repository(database_path)
+    repo = SQLiteRepository(database_path)
+    store = HistoricalScreeningRunStore(repo)
+    store.create(
+        HistoricalScreeningRun(
+            run_id="rb-orphan-queued",
+            cache_key="ck",
+            dataset_id="market",
+            adjustment=AdjustmentMethod.QFQ,
+            generation="g",
+            template_id="t",
+            template_revision=1,
+            plan_fingerprint="fp",
+            rule_implementation_version="builtin-v1",
+            universe_policy="pit_as_of",
+            evaluation_start=date(2020, 1, 1),
+            evaluation_end=date(2020, 1, 31),
+            status=HistoricalRunStatus.QUEUED,
+            progress_completed=0,
+            progress_total=4,
+            started_at=datetime(2026, 8, 25, 18, tzinfo=SHANGHAI),
+            finished_at=None,
+            error_message=None,
+        )
+    )
+    # WebApp.__init__ 调用 recover_interrupted_runs
+    _app(tmp_path)
+    queued = repo.get_historical_run("rb-orphan-queued")
+    assert queued is not None and queued.status is HistoricalRunStatus.INTERRUPTED
+
+
 def _default_template() -> dict:
     root = SYSTEM_TEMPLATES / "system-default.json"
     return json.loads(root.read_text(encoding="utf-8"))
@@ -347,6 +388,8 @@ def test_sync_status_exposes_p5_plan_state(tmp_path: Path) -> None:
     assert body["p5_plans"][0]["candidate_status"] == "PUBLISHED"
     assert body["active_generation"] is not None
     assert body["active_generation"]["generation"] == "cand-test"
+    # UI 门禁放行依据:有已激活库 → can_enter 为 True
+    assert body["can_enter"] is True
 
 
 # ---------- P3-1: rule catalog ----------
@@ -418,6 +461,8 @@ def test_app_starts_on_first_run_without_database(tmp_path: Path) -> None:
     assert body["active_generation"] is None
     assert body["readiness"]["status"] == "NO_GENERATION"
     assert body["readiness"]["reason"] is not None
+    # 无已激活库 → 门禁不放行(界面只提供初始化/种子导入)
+    assert body["can_enter"] is False
 
 
 # ---------- P3-3: template APIs ----------
@@ -883,6 +928,29 @@ def test_instances_endpoint_reports_local_processes(tmp_path: Path) -> None:
     assert "instances" in payload
 
 
+def test_instances_endpoint_lists_backfill_runner(tmp_path: Path) -> None:
+    """数据 UI 停止按钮依赖 /api/instances 能识别回补 runner 进程。"""
+    app = _app(tmp_path)
+
+    class _FakeResult:
+        stdout = (
+            "  4242 python3 /repo/scripts/run_backfill_v2.py "
+            "--config config/sync.json\n"
+            "  5151 python3 -m stock_manager.web.httpd\n"
+        )
+        stderr = ""
+
+    with mock.patch(
+        "stock_manager.web.app.subprocess.run",
+        return_value=_FakeResult(),
+    ):
+        status, payload = _get(app, "/api/instances")
+    assert status == 200
+    commands = [str(item["command"]) for item in payload["instances"]]
+    assert any("run_backfill" in command for command in commands)
+    assert any("stock_manager" in command for command in commands)
+
+
 def test_kill_instance_rejects_unknown_pid(tmp_path: Path) -> None:
     app = _app(tmp_path)
     status, payload = _post(app, "/api/instances/kill", {"pid": 99999999})
@@ -1029,6 +1097,54 @@ def test_sync_status_marks_partial_bar_day_as_incomplete(tmp_path: Path) -> None
 
 
 
+# ---------- research submit max_workers(回测并发,UI 可配) ----------
+def _research_body(**overrides: object) -> dict:
+    body: dict[str, object] = {
+        "template_id": "system-default",
+        "template_revision": 1,
+        "strategy_spec_id": "x",
+        "backtest_start": "2021-01-01",
+        "backtest_end": "2026-01-01",
+        "initial_cash": "1000000",
+        "max_positions": 20,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_research_accepts_max_workers(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    submit = mock.MagicMock(return_value="rb-x")
+    app._research = mock.MagicMock()
+    app._research.submit = submit
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=4)
+    )
+    assert status == 202
+    assert data["run_id"] == "rb-x"
+    kwargs = submit.call_args.kwargs
+    assert kwargs["max_workers"] == 4
+
+
+def test_research_max_workers_upper_bound_is_16(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=17)
+    )
+    assert status == 400
+    assert "max_workers" in data["error"]["message"]
+
+
+def test_research_max_workers_lower_bound_is_1(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    status, data = _post(
+        app, "/api/research/backtests", _research_body(max_workers=0)
+    )
+    assert status == 400
+    assert "max_workers" in data["error"]["message"]
+
+
+
 # ---------- max_workers & elapsed (worker 配置) ----------
 def test_screen_accepts_max_workers_and_reports_elapsed(tmp_path: Path) -> None:
     app = _app(tmp_path)
@@ -1114,24 +1230,20 @@ class TestBootstrapEndpoint:
             sync_config_path=REPO / "config" / "sync.json",
             lock_directory=locks,
         )
-        app = WebApp(config)  # 无 provider_factory → 真实启动
+        app = WebApp(config)  # 无 provider_factory → 走 runner 启动路径
         # 防重复启动的锁检查可能被真实环境残留锁命中(该锁文件位于真实
         # repo data/locks,与临时库无关),此处模拟"锁空闲"专注验证 Popen。
+        process = mock.Mock(pid=12345)
         with mock.patch(
             "stock_manager.sync.locks.is_file_lock_held", return_value=False
-        ):
+        ), mock.patch("subprocess.Popen", return_value=process) as popen:
             status, payload = _post(app, "/api/sync/bootstrap", {"source": "online", "adjustment": "qfq"})
             assert status == 200, payload
-            assert isinstance(payload["runner_pid"], int)
-            assert payload["runner_pid"] > 0
-            # 清理:杀掉刚启动的子进程(避免测试残留)
-            import os
-            import signal as _signal
-
-            try:
-                os.kill(int(payload["runner_pid"]), _signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            assert payload["runner_pid"] == 12345
+        argv = popen.call_args.args[0]
+        assert argv[argv.index("--db") + 1] == str(db)
+        assert argv[argv.index("--lock-dir") + 1] == str(locks)
+        assert argv[argv.index("--adjustment") + 1] == "qfq"
 
     def test_bootstrap_rejected_when_runner_lock_held(self, tmp_path: Path) -> None:
         """防重复启动:backfill_runner.lock 被持有(有回补实例存活)→ 409。"""

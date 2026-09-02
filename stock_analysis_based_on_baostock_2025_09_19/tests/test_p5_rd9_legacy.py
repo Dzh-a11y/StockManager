@@ -129,6 +129,45 @@ class TestLegacyImporter:
                 source="legacy",
             )
 
+    def test_import_checkpoint_is_atomic(
+        self,
+        repo: SQLiteRepository,
+        importer: LegacyImporter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _populate_legacy(repo)
+        candidate = importer.build_candidate(
+            dataset_id="market", adjustment=AdjustmentMethod.QFQ,
+            plan_id="plan-legacy", candidate_id="cand-legacy",
+        )
+
+        def fail_digest(
+            connection: sqlite3.Connection, data_type: str, batch_id: str
+        ) -> str:
+            raise sqlite3.OperationalError("digest checkpoint failed")
+
+        monkeypatch.setattr(
+            LegacyImporter, "_batch_digest", staticmethod(fail_digest)
+        )
+        with pytest.raises(LegacyImportError, match="digest checkpoint failed"):
+            importer.import_partition(
+                candidate,
+                data_type="daily_bars",
+                partition_key=DAY.isoformat(),
+                batch_id="b-atomic",
+                source="legacy",
+                adjustment=AdjustmentMethod.QFQ,
+            )
+        with sqlite3.connect(repo.database_path) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM daily_bars_staging WHERE batch_id = ?",
+                ("b-atomic",),
+            ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM ingest_batches WHERE batch_id = ?",
+                ("b-atomic",),
+            ).fetchone()[0] == 0
+
     def test_unsupported_type_rejected(self, repo: SQLiteRepository, importer: LegacyImporter) -> None:
         candidate = importer.build_candidate(
             dataset_id="market", adjustment=AdjustmentMethod.QFQ,
