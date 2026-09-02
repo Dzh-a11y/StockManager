@@ -1,5 +1,5 @@
 ---
-date: 2026-09-01
+date: 2026-09-02
 purpose: StockManager 项目文档中心索引：说明 project_doc 的目录组织与各文档归属。
 project: StockManager
 status: active
@@ -19,6 +19,12 @@ project_doc/
 │   └── implementation/      #   实现手册：各阶段设计、验收与接口明细
 └── usage/                   # 使用手册：安装、启动、规则与操作说明
 ```
+
+## 开始讨论或开发前
+
+先阅读本索引，再按任务查阅相关计划、ADR 和使用手册。协作遵循 [AGENTS.md](AGENTS.md) 第 7 节：用户提出需求，Agent 按主题提出大量具体问题并持续追问，不设每轮问题数量上限，逐步形成尽量精确、可执行、可验收的项目计划（plan），确认后实施；职责以当前提示词为准，不绑定模型。已确认授权的工作和范围明确的小修改直接执行。
+
+项目功能与启动说明见 [使用手册](usage/README.md)；计划中的目标与已验收的功能应分别记录。
 
 ## development/plan（计划手册）
 
