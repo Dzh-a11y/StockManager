@@ -61,7 +61,7 @@ def test_preplan_failure_and_stopped_runner_are_visible_not_generic_500(tmp_path
 
 
 def test_two_unique_data_buttons_and_separate_progress_channels() -> None:
-    html = (STATIC_ROOT / "index.html").read_text()
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     ids = re.findall(r'\s+id="([^"]+)"', html)
     assert len(ids) == len(set(ids))
     gate = html.split('id="gate-view"')[1].split('id="workbench-view"')[0]
@@ -70,7 +70,7 @@ def test_two_unique_data_buttons_and_separate_progress_channels() -> None:
     assert "股票筛选池回补和同步" in gate
     assert "CAPM 回补和同步" in gate
     assert "与股票池共用限速通道" not in html
-    script = (STATIC_ROOT / "app.js").read_text()
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
     assert "/api/sync/pipeline/progress?dataset_id=capm" in script
     assert "capm-progress-fill" in script
     assert "缺口已披露，未伪造数据" not in script

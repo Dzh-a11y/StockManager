@@ -282,6 +282,7 @@ $$\alpha_{\mathrm{annualized}} = \alpha_{\mathrm{daily}} \times \mathrm{periods\
 - 修复在短期分支整合远端历史与既有补齐提交，纳入 `capm/{__init__,math,returns,service}.py`、`read/capm.py`、`sync/capm.py` 及相应回归测试。沿用已确认的 1.15.2 接口、数据口径与文档。
 - `tests/test_package_structure.py` 新增五个导入回归用例，覆盖 CAPM、只读输入、同步以及 Web/CLI 入口。在 `git archive origin/main` 导出的干净副本中先复现 **5 failed、1 passed**，补齐后通过。CI 前端步骤改为运行 `tests/frontend/*.test.cjs`，使个股研究测试也进入持续集成。
 - 本地验证：Python 3.14 全量 `pytest -q` **695 passed、11 warnings**（既有 fixture/成功跳过提示）；Node 前端 **25 passed**；JavaScript 语法与变更空白检查通过。远端跨平台结果以修复提交对应的 GitHub Actions 运行记录为准。
+- 首次发布 `0e1cafc` 后，Ubuntu/macOS 的四组 Python 测试、前端测试和 Windows 构建通过；Windows 3.14 全量测试暴露一项独立的测试编码问题（**694 passed、1 failed**）：`test_capm_sync_web.py` 默认使用 CP1252 读取含中文的 UTF-8 静态资源。后续为 HTML 和 JavaScript 的两处 `read_text` 显式指定 `encoding="utf-8"`；本地将 `io.text_encoding(None)` 模拟为 CP1252，先复现相同 `UnicodeDecodeError`，修改后该文件的 **13 项测试全部通过**。没有通过修改全局编码或跳过测试掩盖问题。
 
 ## 10. 依据与说明
 
