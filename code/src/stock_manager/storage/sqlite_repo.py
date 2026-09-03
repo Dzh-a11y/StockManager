@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from stock_manager.read.capm import CapmInputs
 
 from stock_manager.domain import (
     ActiveGeneration,
@@ -20,6 +24,7 @@ from stock_manager.domain import (
     CandidateGeneration,
     CandidateGenerationStatus,
     CoverageVerification,
+    CapmResultRecord,
     DailyBar,
     DataCoverageStatus,
     DatasetCoverage,
@@ -30,6 +35,10 @@ from stock_manager.domain import (
     FundamentalSnapshot,
     GenerationPartition,
     IngestBatch,
+    IndexDailyBar,
+    IndexIdentity,
+    IndexReturnVersion,
+    DepositRate,
     PublishedGeneration,
     StockIdentity,
     SyncPlan,
@@ -417,6 +426,107 @@ class SQLiteRepository:
         with self._connect() as connection:
             self._save_bars(connection, bars, metadata)
             self._save_metadata(connection, metadata)
+
+    def save_indexes(self, indexes: Sequence[IndexIdentity]) -> None:
+        """Upsert the externally verified index directory without touching stocks."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO index_catalog
+                   (index_id, provider_code, name, category, return_version, source)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (item.index_id, item.provider_code, item.name, item.category,
+                     item.return_version.value, item.source)
+                    for item in indexes
+                ],
+            )
+
+    def save_index_daily_bars(self, bars: Sequence[IndexDailyBar]) -> None:
+        """Upsert local index levels with their non-stock return convention."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO index_daily_bars
+                   (index_id, trading_day, close, return_version) VALUES (?, ?, ?, ?)""",
+                [(item.index_id, item.trading_day.isoformat(), str(item.close),
+                  item.return_version.value) for item in bars],
+            )
+
+    def save_deposit_rates(self, rates: Sequence[DepositRate]) -> None:
+        """Upsert verified rate-change events; missing dates are never invented."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO deposit_rates
+                   (term, effective_on, annual_rate, source) VALUES (?, ?, ?, ?)""",
+                [(item.term, item.effective_on.isoformat(), str(item.annual_rate), item.source)
+                 for item in rates],
+            )
+
+    def get_index_daily_bars(
+        self, index_id: str, start: date, end: date
+    ) -> tuple[IndexDailyBar, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT index_id, trading_day, close, return_version FROM index_daily_bars
+                   WHERE index_id = ? AND trading_day BETWEEN ? AND ?
+                   ORDER BY trading_day""",
+                (index_id, start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return tuple(
+            IndexDailyBar(row["index_id"], date.fromisoformat(row["trading_day"]),
+                          Decimal(row["close"]), IndexReturnVersion(row["return_version"]))
+            for row in rows
+        )
+
+    def read_capm_inputs(self, stock_code: str, benchmark_id: str, rate_term: str,
+                         start: date, end: date) -> "CapmInputs":
+        from stock_manager.read.capm import SQLiteCapmReader
+        return SQLiteCapmReader(self.database_path).read(stock_code, benchmark_id, rate_term, start, end)
+
+    def get_index_return_version(self, index_id: str) -> IndexReturnVersion:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT return_version FROM index_catalog WHERE index_id = ?", (index_id,)
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown local index: {index_id}")
+        return IndexReturnVersion(row["return_version"])
+
+    def get_deposit_rates(
+        self, term: str, start: date, end: date
+    ) -> tuple[DepositRate, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT term, effective_on, annual_rate, source FROM deposit_rates
+                   WHERE term = ? AND effective_on <= ? ORDER BY effective_on, source""",
+                (term, end.isoformat()),
+            ).fetchall()
+        return tuple(
+            DepositRate(row["term"], date.fromisoformat(row["effective_on"]),
+                        Decimal(row["annual_rate"]), row["source"])
+            for row in rows
+        )
+
+    def save_capm_results(self, records: Sequence[CapmResultRecord]) -> None:
+        """Atomically persist all windows from a single explicit analysis request."""
+        with self._connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO capm_results
+                   (analysis_id, stock_code, as_of, window_days, benchmark_id,
+                    benchmark_return_version, rate_term, alpha_daily,
+                    alpha_annualized, beta, r_squared, observation_count,
+                    periods_per_year, status, reason, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (item.analysis_id, item.stock_code, item.as_of.isoformat(), item.window_days,
+                     item.benchmark_id, item.benchmark_return_version.value, item.rate_term,
+                     None if item.alpha_daily is None else str(item.alpha_daily),
+                     None if item.alpha_annualized is None else str(item.alpha_annualized),
+                     None if item.beta is None else str(item.beta),
+                     None if item.r_squared is None else str(item.r_squared), item.observation_count,
+                     item.periods_per_year, item.status, item.reason, item.created_at.isoformat())
+                    for item in records
+                ],
+            )
 
     def save_fundamentals(
         self, items: Sequence[FundamentalSnapshot], metadata: DatasetMetadata
@@ -1690,6 +1800,241 @@ class SQLiteRepository:
                     ),
                 ),
             )
+
+    def append_sync_tasks(self, plan_id: str, tasks: Sequence[SyncTask]) -> None:
+        """Atomically materialize discovered inputs without resetting checkpoints."""
+        if any(t.plan_id != plan_id or t.status is not SyncTaskStatus.PENDING for t in tasks):
+            raise ValueError("expansion requires pending tasks from the same plan")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.executemany(
+                """INSERT INTO sync_tasks (task_id, plan_id, sequence_no, data_type,
+                   partition_key, codes, range_start, range_end, dependencies, status,
+                   attempt_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(t.task_id, t.plan_id, t.sequence_no, t.data_type, t.partition_key,
+                  ",".join(t.codes), t.range_start.isoformat(), t.range_end.isoformat(),
+                  ",".join(t.dependencies), t.status.value, 0) for t in tasks],
+            )
+            connection.execute(
+                """UPDATE sync_plans SET task_count=(SELECT COUNT(*) FROM sync_tasks
+                   WHERE plan_id=?) WHERE plan_id=?""", (plan_id, plan_id),
+            )
+
+    def set_sync_runner(self, dataset_id: str, status: str, runner_pid: int | None,
+                        updated_at: datetime, message: str) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT OR REPLACE INTO sync_runners VALUES (?, ?, ?, ?, ?)",
+                               (dataset_id, status, runner_pid, updated_at.isoformat(), message))
+
+    def get_sync_runner(self, dataset_id: str) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM sync_runners WHERE dataset_id=?", (dataset_id,)).fetchone()
+        return dict(row) if row else None
+
+    def capm_data_status(self) -> dict[str, object]:
+        """Report actual coverage of one published reference generation."""
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            return self._capm_coverage_snapshot(connection)
+
+    def capm_options(self, as_of: date) -> dict[str, object]:
+        """List published choices and effective rates in one read-only snapshot.
+
+        Coverage ends on the requested analysis date. The displayed rate is an
+        as-of snapshot only; the analysis reader still loads historical events.
+        """
+        result: dict[str, object] = {
+            "as_of": as_of.isoformat(), "generation_id": None, "benchmarks": [], "rate_terms": [],
+            "defaults": {"benchmark_id": "hs300.price", "rate_term": "1_year", "periods_per_year": 252},
+        }
+        labels = {"current": "活期", "3_month": "三个月", "6_month": "六个月", "1_year": "一年期",
+                  "2_year": "二年期", "3_year": "三年期", "5_year": "五年期"}
+        uri = f"{self.database_path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            active = connection.execute(
+                """SELECT a.generation, p.target_start FROM active_generations a
+                   LEFT JOIN sync_plans p ON p.candidate_generation_id=a.generation
+                        AND p.dataset_id=a.dataset_id AND p.adjustment=a.adjustment
+                   WHERE a.dataset_id='capm' AND a.adjustment='unadjusted'""",
+            ).fetchone()
+            if active is None:
+                return result
+            if active["target_start"] is None:
+                raise ValueError("published CAPM generation has no target plan")
+            start = min(as_of, date.fromisoformat(active["target_start"]))
+            coverage = self._capm_coverage_snapshot(connection, start, as_of)
+            result["generation_id"] = coverage["generation"]
+            result["benchmarks"] = [{key: item[key] for key in (
+                "index_id", "provider_code", "name", "category", "return_version", "source",
+                "bar_count", "coverage_start", "coverage_end", "coverage_status",
+            )} for item in coverage["indexes"]]
+            rates = connection.execute(
+                """SELECT term, effective_on, annual_rate, source FROM deposit_rates r
+                   WHERE r.batch_id IN (SELECT g.batch_id FROM generation_partitions g
+                        WHERE g.generation=? AND g.data_type='deposit_rates')
+                   ORDER BY term, effective_on, source""", (active["generation"],),
+            ).fetchall()
+            terms: dict[str, dict[str, object]] = {}
+            for row in rates:
+                term = row["term"]
+                choice = terms.setdefault(term, {"term": term, "label": labels.get(term, term),
+                    "annual_rate": None, "effective_on": None, "source": None})
+                if row["effective_on"] <= as_of.isoformat():
+                    choice.update(annual_rate=row["annual_rate"], effective_on=row["effective_on"],
+                                  source=row["source"])
+            result["rate_terms"] = list(terms.values())
+        return result
+
+    def capm_unavailable_ranges(self, index_id: str) -> tuple[tuple[str, str], ...]:
+        """Return accepted gaps from exact batches in the active manifest."""
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            active = connection.execute(
+                """SELECT generation FROM active_generations
+                   WHERE dataset_id='capm' AND adjustment='unadjusted'""",
+            ).fetchone()
+            if active is None:
+                return ()
+            return self._capm_gap_evidence(connection, active["generation"], index_id).get(index_id, ())
+
+    def capm_coverage_intact(self, start: date, end: date) -> bool:
+        """Recognize accepted source gaps, but never excuse local row loss."""
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            status = self._capm_coverage_snapshot(connection, start, end)
+        if (not status["generation"] or not status["has_effective_one_year_rate"]
+                or not status["index_count"]):
+            return False
+        for item in status["indexes"]:
+            if not item["expected_count"]:
+                return False
+            if any(not any(first <= day <= last for first, last in item["unavailable_ranges"])
+                   for day in item["missing_dates"]):
+                return False
+        return True
+
+    @staticmethod
+    def _capm_gap_evidence(
+        connection: sqlite3.Connection, generation: str, index_id: str | None = None,
+    ) -> dict[str, tuple[tuple[str, str], ...]]:
+        """Resolve evidence keys through their tasks, including shared-range suffixes."""
+        import json
+
+        rows = connection.execute(
+            """SELECT DISTINCT b.codes, b.range_start, b.range_end, v.status, v.details_json
+               FROM generation_partitions g
+               JOIN ingest_batches b ON b.batch_id=g.batch_id
+                    AND b.data_type=g.data_type AND b.partition_key=g.partition_key
+               JOIN candidate_generations c ON c.candidate_generation_id=b.candidate_generation_id
+               JOIN sync_plans p ON p.plan_id=c.plan_id AND p.dataset_id='capm'
+                    AND p.adjustment='unadjusted'
+               JOIN sync_tasks t ON t.plan_id=p.plan_id AND t.data_type=b.data_type
+                    AND t.partition_key=b.partition_key AND t.codes=b.codes
+               JOIN coverage_verifications v ON v.candidate_generation_id=b.candidate_generation_id
+                    AND v.data_type=b.data_type AND v.verified_revision=c.write_revision
+                    AND v.partition_key=CASE WHEN (
+                        SELECT COUNT(*) FROM sync_tasks sibling WHERE sibling.plan_id=t.plan_id
+                        AND sibling.data_type=t.data_type AND sibling.partition_key=t.partition_key
+                    )=1 THEN t.partition_key ELSE t.partition_key || ':' || printf('%05d', t.sequence_no) END
+               WHERE g.generation=? AND g.data_type='index_daily_bars'
+                    AND v.status IN ('COMPLETE', 'ACCEPTED_WITH_GAPS')
+                    AND v.invalid_count=0 AND v.duplicate_count=0
+                    AND (? IS NULL OR b.codes=?)""",
+            (generation, index_id, index_id),
+        ).fetchall()
+        ranges: dict[str, set[tuple[str, str]]] = {}
+        for row in rows:
+            details = json.loads(row["details_json"])
+            if details.get("codes") != [row["codes"]]:
+                continue
+            if (row["status"] == "ACCEPTED_WITH_GAPS"
+                    and details.get("acceptance_policy") != "source_available_v1"):
+                continue
+            for first, last in details.get("unavailable_ranges", []):
+                first = date.fromisoformat(first).isoformat()
+                last = date.fromisoformat(last).isoformat()
+                if not row["range_start"] <= first <= last <= row["range_end"]:
+                    raise ValueError("CAPM gap evidence is outside its verified batch range")
+                ranges.setdefault(row["codes"], set()).add((first, last))
+        return {code: tuple(sorted(items)) for code, items in ranges.items()}
+
+    @classmethod
+    def _capm_coverage_snapshot(
+        cls, connection: sqlite3.Connection, start: date | None = None, end: date | None = None,
+    ) -> dict[str, object]:
+        """Keep active pointer, manifest rows, calendar and evidence in one snapshot."""
+        active = connection.execute(
+            """SELECT a.generation, p.target_start, p.target_end FROM active_generations a
+               LEFT JOIN sync_plans p ON p.candidate_generation_id=a.generation
+                    AND p.dataset_id=a.dataset_id AND p.adjustment=a.adjustment
+               WHERE a.dataset_id='capm' AND a.adjustment='unadjusted'""",
+        ).fetchone()
+        if active is None:
+            return {"dataset_id": "capm", "generation": None, "index_count": 0, "bar_count": 0,
+                    "rate_count": 0, "rate_start": None, "rate_end": None, "indexes": [],
+                    "has_effective_one_year_rate": False,
+                    "coverage_status": "NOT_SYNCED", "gap_index_count": 0, "missing_count": 0}
+        if active["target_start"] is None or active["target_end"] is None:
+            raise ValueError("published CAPM generation has no target plan")
+        first = start.isoformat() if start else active["target_start"]
+        last = end.isoformat() if end else active["target_end"]
+        if first > last:
+            raise ValueError("CAPM coverage start must not be after end")
+        generation = active["generation"]
+        expected = tuple(row[0] for row in connection.execute(
+            "SELECT trading_day FROM trading_days WHERE trading_day BETWEEN ? AND ? ORDER BY trading_day",
+            (first, last),
+        ))
+        indexes = connection.execute(
+            """SELECT i.index_id, i.provider_code, i.name, i.category, i.return_version, i.source
+               FROM index_catalog i WHERE i.batch_id IN (SELECT g.batch_id FROM generation_partitions g
+                   WHERE g.generation=? AND g.data_type='index_catalog')
+               ORDER BY i.index_id""", (generation,),
+        ).fetchall()
+        prices: dict[str, set[str]] = {}
+        for row in connection.execute(
+            """SELECT b.index_id, b.trading_day FROM index_daily_bars b
+               WHERE b.trading_day BETWEEN ? AND ? AND b.batch_id IN (
+                   SELECT g.batch_id FROM generation_partitions g WHERE g.generation=?
+                   AND g.data_type='index_daily_bars')""",
+            (first, last, generation),
+        ):
+            prices.setdefault(row["index_id"], set()).add(row["trading_day"])
+        rates = connection.execute(
+            """SELECT COUNT(*), MIN(effective_on), MAX(effective_on),
+                   SUM(CASE WHEN term='1_year' AND effective_on<=? THEN 1 ELSE 0 END)
+               FROM deposit_rates r
+               WHERE r.batch_id IN (SELECT g.batch_id FROM generation_partitions g WHERE g.generation=?
+                   AND g.data_type='deposit_rates')""", (first, generation),
+        ).fetchone()
+        evidence = cls._capm_gap_evidence(connection, generation)
+        coverage: list[dict[str, object]] = []
+        for row in indexes:
+            present = prices.get(row["index_id"], set())
+            missing = [day for day in expected if day not in present]
+            actual = len(expected) - len(missing)
+            ratio = Decimal(actual) / Decimal(len(expected)) if expected else Decimal(0)
+            coverage.append({
+                **dict(row), "coverage_start": min(present) if present else None,
+                "coverage_end": max(present) if present else None, "bar_count": len(present),
+                "expected_count": len(expected), "missing_count": len(missing),
+                "missing_dates": missing, "coverage_ratio": str(ratio),
+                "coverage_status": "UNAVAILABLE" if not actual else "PARTIAL" if missing else "COMPLETE",
+                "unavailable_ranges": tuple((max(a, first), min(b, last))
+                    for a, b in evidence.get(row["index_id"], ()) if a <= last and b >= first),
+            })
+        gap_count = sum(item["coverage_status"] != "COMPLETE" for item in coverage)
+        return {"dataset_id": "capm", "generation": generation, "index_count": len(coverage),
+                "bar_count": sum(item["bar_count"] for item in coverage),
+                "rate_count": rates[0], "rate_start": rates[1], "rate_end": rates[2],
+                "has_effective_one_year_rate": bool(rates[3]),
+                "indexes": coverage, "gap_index_count": gap_count,
+                "missing_count": sum(item["missing_count"] for item in coverage),
+                "coverage_status": "UNAVAILABLE" if not expected or not any(item["bar_count"] for item in coverage) else
+                                   "PARTIAL" if gap_count else "COMPLETE"}
 
     def get_sync_task(self, task_id: str) -> SyncTask | None:
         with self._connect() as connection:

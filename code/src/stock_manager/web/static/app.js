@@ -14,6 +14,16 @@ const state = {
   result: null,
   resultFilter: 'all',
   selectedCode: null,
+  capmByCode: new Map(),
+  screenEpoch: 0,
+  screenPending: false,
+  activeMarketGeneration: null,
+  screenMarketGeneration: null,
+  screenGenerationStale: false,
+  capmOptions: null,
+  capmOptionsLoading: false,
+  capmOptionsError: '',
+  capmSettings: { benchmark_id: null, rate_term: null, periods_per_year: 252 },
   uiView: 'auto',   // 'auto' | 'gate' | 'workbench' — 手动停留的数据页/工作台视图
 };
 
@@ -23,6 +33,16 @@ let _klineInfoDefault = ''; // default info text (restored on mouse leave)
 let _klineView = null;      // visible window {start, end} into _klineBars
 let _klineDrag = null;      // {startX, viewStart} while panning
 const _klineCache = new Map(); // code+adjustment+end -> bars
+let _klineRequest = 0;
+let _detailIdentity = null;
+let _capmOptionsRequest = 0;
+let _capmOptionsPromise = null;
+let _capmRequest = 0;
+let _stockSelectionRequest = 0;
+let _panelPreferences = {};
+let _preferenceWarning = '';
+const PANEL_PREFERENCES_KEY = 'stockmanager.panels.v1';
+const CAPM_PREFERENCES_KEY = 'stockmanager.capm.preferences.v1';
 
 /* ---------- small helpers ---------- */
 function esc(value) {
@@ -729,6 +749,7 @@ function stopScreenPolling() {
   if (screenPollTimer) { clearInterval(screenPollTimer); screenPollTimer = null; }
 }
 
+/** @returns {Promise<void>} */
 async function runScreen() {
   const invalid = validateComposition();
   if (invalid) { toast(invalid, 'warn'); return; }
@@ -740,17 +761,25 @@ async function runScreen() {
   progress.textContent = '正在运行筛选…';
   const btn = $('#run-screen');
   btn.disabled = true;
+  invalidateStockAnalysis();
+  state.screenPending = true;
+  renderStockDetail();
+  renderCapmSettings();
   startScreenPolling();
   try {
+    const before = await readMarketGeneration();
     const data = await api('POST', '/api/screen', { template: buildPayload(), ...cond });
-    state.result = data;
-    state.resultFilter = 'all';
-    state.selectedCode = null;
+    await readMarketGeneration();
+    acceptScreenResult(data, before);
     renderResults();
+    renderStockDetail();
+    renderCapmSettings();
     toast('筛选完成：共 ' + data.summary.total + ' 只。', 'success');
   } catch (err) {
     state.result = null;
     renderResults();
+    renderStockDetail();
+    renderCapmSettings();
     toast('筛选失败：' + err.message, 'error');
   } finally {
     progress.hidden = true;
@@ -758,6 +787,7 @@ async function runScreen() {
     $('#screen-progress-track').hidden = true;
     $('#screen-current').hidden = true;
     btn.disabled = false;
+    state.screenPending = false;
   }
 }
 
@@ -767,7 +797,9 @@ function startSyncPolling() {
   pollSyncProgress();
   pollBackfillV2();
   pollPipelineProgress();
+  pollCapmProgress();
   syncPollTimer = setInterval(function () {
+    pollCapmProgress();
     // 新架构 pipeline 显示期间,旧进度渲染全部让位,避免每秒闪烁。
     if (pipelineProgressActive) {
       pollPipelineProgress();
@@ -884,9 +916,11 @@ async function pollSyncProgress() {
   } catch (e) { /* ignore transient poll errors */ }
 }
 
+/** @returns {Promise<void>} */
 async function pollPipelineProgress() {
   try {
     const p = await api('GET', '/api/sync/pipeline/progress');
+    if (p && Object.hasOwn(p, 'generation')) observeMarketGeneration(p.generation ? p.generation.generation : null);
     if (!p || p.status === 'none') {
       pipelineProgressActive = false;
       return;
@@ -924,7 +958,9 @@ async function pollPipelineProgress() {
     current.hidden = false;
     current.textContent = '八年回补 总进度 ' + pct + '%（已完成 ' + p.completed_tasks + '/' + p.total_tasks + ' 个任务）';
     meta.hidden = false;
-    meta.textContent = '模式 ' + (p.mode || '') + ' · ' + p.target_start + ' ~ ' + p.target_end;
+    meta.textContent = '股票池 · ' + ({RUNNING: '同步中', PLANNED: '已中断 / 待继续', FAILED: '失败，点击重试',
+      SUCCEEDED: '已发布'}[p.status] || p.status) + ' · ' + (p.mode || '') + ' · ' + p.target_start + ' ~ ' + p.target_end;
+    if (p.errors && p.errors.length) meta.textContent += ' · ' + p.errors.slice(0, 3).join('；');
   } catch (e) { /* ignore transient */ }
 }
 
@@ -1023,7 +1059,9 @@ async function loadSyncStatus() {
 }
 
 /** @param {Object<string, any>} s @returns {void} */
+/** @param {object} s @returns {void} */
 function renderSyncStatus(s) {
+  observeMarketGeneration(s.active_generation ? s.active_generation.generation : null);
   // 记录当前进行中/待运行计划的模式(增量/Bootstrap),用于 runner 状态行文案
   state.activePlanMode = null;
   for (const p of (s.p5_plans || [])) {
@@ -1185,7 +1223,118 @@ async function startBootstrap() {
   }
 }
 
-// 初始化按钮存在两个(门禁页 + 工作台面板,id 重复),统一按运行状态禁用/恢复。
+/** @returns {Promise<void>} */
+async function syncCapmReferenceData() {
+  const button = $('#capm-reference-sync');
+  const status = $('#capm-reference-status');
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = '正在启动 CAPM 回补 / 同步（后端按交易日历和截止时间确定范围）…';
+  try {
+    const result = await api('POST', '/api/sync/capm-reference', {});
+    status.textContent = result.note || 'CAPM 后台任务已启动';
+    await pollCapmProgress();
+  } catch (error) {
+    status.textContent = '同步失败：' + error.message;
+    toast('指数同步失败：' + error.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+let capmPollBusy = false;
+let capmCoverageKey = null;
+let capmCoveragePartial = false;
+
+/** @param {object} item @returns {HTMLElement} */
+function capmIndexCoverageRow(item) {
+  const missing = item.missing_dates || [];
+  const hasGaps = item.coverage_status === 'PARTIAL' || item.coverage_status === 'UNAVAILABLE' ||
+    item.missing_count > 0 || (item.unavailable_ranges || []).length > 0;
+  const row = document.createElement(hasGaps ? 'details' : 'p');
+  const label = item.name + ' · ' + item.provider_code + ' → ' + item.index_id +
+    ' · ' + item.return_version + ' · ' + (item.coverage_start || '缺失') + ' ~ ' +
+    (item.coverage_end || '缺失') + ' · ' + item.bar_count + ' 条' +
+    (item.expected_count != null ? ' / 应有 ' + item.expected_count + ' 条' : '');
+  if (!hasGaps) { row.textContent = label; return row; }
+  row.classList.add('sync-warning');
+  row.classList.add('capm-gap-detail');
+  const summary = document.createElement('summary');
+  const ratio = Number(item.coverage_ratio);
+  summary.textContent = label + ' · 缺 ' + (item.missing_count || missing.length) + ' 个交易日' +
+    (Number.isFinite(ratio) ? ' · 覆盖 ' + (ratio * 100).toFixed(1) + '%' : '') + '（展开详情）';
+  const detail = document.createElement('p');
+  detail.textContent = '已发布，但此指数历史不完整；缺失日期不补零、不填充，受影响的 CAPM 窗口不可计算。' +
+    ((item.unavailable_ranges || []).length ? ' 本次来源返回缺口范围：' +
+      item.unavailable_ranges.map((range) => range.join(' ~ ')).join('，') + '。' : '') +
+    (missing.length ? ' 全部缺失交易日（' + missing.length + ' 个）：' + missing.join('，') : '');
+  row.append(summary, detail);
+  return row;
+}
+
+/** @param {object} coverage @returns {void} */
+function renderCapmCoverage(coverage) {
+  capmCoveragePartial = ['PARTIAL', 'UNAVAILABLE'].includes(coverage.coverage_status) || coverage.gap_index_count > 0;
+  const summary = $('#capm-coverage');
+  summary.textContent = '已发布：' + coverage.index_count + ' 个指数 · ' +
+    coverage.bar_count + ' 条日线 · ' + coverage.rate_count + ' 条利率事件' +
+    (coverage.generation ? ' · generation ' + coverage.generation : ' · 暂无可用版本') +
+    (capmCoveragePartial ? ' · 历史不完整：' + coverage.gap_index_count + ' 个指数存在缺口，共缺 ' +
+      coverage.missing_count + ' 条指数交易日记录（非去重天数）' : '');
+  summary.classList.toggle('sync-warning', capmCoveragePartial);
+  $('#capm-index-coverage').replaceChildren(...coverage.indexes.map(capmIndexCoverageRow));
+}
+
+/** @returns {Promise<void>} */
+async function pollCapmProgress() {
+  if (capmPollBusy) return;
+  capmPollBusy = true;
+  const status = $('#capm-reference-status');
+  try {
+    const p = await api('GET', '/api/sync/pipeline/progress?dataset_id=capm');
+    refreshCapmGeneration(p.generation ? p.generation.generation : null);
+    const runner = p.runner || {};
+    const running = ['STARTING', 'RUNNING'].includes(runner.status) || p.status === 'RUNNING';
+    $('#capm-reference-sync').disabled = running;
+    const state = runner.status === 'FAILED' ? 'FAILED' : (running ? 'RUNNING' :
+      (runner.status === 'INTERRUPTED' ? 'PLANNED' : p.status));
+    status.textContent = ({none: '尚未同步', RUNNING: '正在同步 / 等待共享 Provider 通道',
+      SUCCEEDED: '同步验收通过并已发布', FAILED: '同步失败，点击按钮显式重试',
+      PLANNED: '同步已中断，点击按钮继续'}[state] || state) +
+      (p.target_end ? ' · ' + p.target_start + ' ~ ' + p.target_end : '');
+    const errors = (p.errors || []).slice(0, 4);
+    if (runner.status === 'FAILED' && runner.message) errors.unshift(runner.message);
+    if (errors.length) status.textContent += ' · ' + errors.join('；');
+    if (state === 'SUCCEEDED' && runner.message) status.textContent += ' · ' + runner.message;
+    status.classList.toggle('sync-error', state === 'FAILED');
+    $('#capm-progress-track').hidden = !p.total_tasks;
+    $('#capm-progress-fill').style.width = Math.round((p.progress || 0) * 100) + '%';
+    const batch = p.batch || {};
+    $('#capm-progress-current').textContent = p.total_tasks ?
+      '任务 ' + p.completed_tasks + '/' + p.total_tasks + (batch.data_type ? ' · ' +
+      batch.data_type + ' · ' + (batch.current_code || '') : '') : (runner.message || '');
+    const key = [p.plan_id, p.status, p.generation && p.generation.generation].join(':');
+    if (key !== capmCoverageKey) {
+      const coverage = await api('GET', '/api/sync/capm/status');
+      renderCapmCoverage(coverage);
+      capmCoverageKey = key;
+    }
+    const warnings = p.warnings || [];
+    const warning = $('#capm-reference-warnings');
+    warning.hidden = warnings.length === 0;
+    warning.textContent = warnings.slice(0, 4).join('\n') + (warnings.length > 4 ?
+      '\n另有 ' + (warnings.length - 4) + ' 项缺口，详见下方「指数传递与本地覆盖」。' : '');
+    const publishedWithGaps = state === 'SUCCEEDED' && (capmCoveragePartial || warnings.length > 0);
+    if (publishedWithGaps) status.textContent += ' · 历史不完整';
+    status.classList.toggle('sync-warning', publishedWithGaps);
+  } catch (error) {
+    status.textContent = 'CAPM 状态读取失败：' + error.message;
+  } finally {
+    capmPollBusy = false;
+  }
+}
+
+// 数据页保留唯一的股票池同步入口。
 function setBootstrapButtonsDisabled(disabled, label) {
   document.querySelectorAll('#bootstrap-start').forEach((btn) => {
     btn.disabled = disabled;
@@ -1225,14 +1374,15 @@ async function loadInstances() {
 
     // 数据 UI(门禁页):下载 runner 状态行 + 停止按钮
     const runnerEl = $('#gate-runner-status');
-    const runner = downProcs[0];
     if (runnerEl) {
-      if (runner) {
+      if (downProcs.length) {
         runnerEl.hidden = false;
-        runnerEl.innerHTML = modeLabel + '进程运行中 · pid ' + runner.pid +
-          ' <button class="btn btn--danger" data-runner-pid="' + runner.pid + '" type="button">停止同步</button>';
-        const b = runnerEl.querySelector('button[data-runner-pid]');
-        if (b) b.addEventListener('click', () => killInstance(runner.pid));
+        runnerEl.innerHTML = downProcs.map((runner) =>
+          (String(runner.command).includes('--dataset capm') ? 'CAPM' : '股票池') +
+          '进程 · pid ' + runner.pid + ' <button class="btn btn--danger" data-runner-pid="' +
+          runner.pid + '" type="button">停止同步</button>').join('<br>');
+        runnerEl.querySelectorAll('button[data-runner-pid]').forEach((button) =>
+          button.addEventListener('click', () => killInstance(Number(button.dataset.runnerPid))));
       } else {
         runnerEl.hidden = true;
         runnerEl.innerHTML = '';
@@ -1286,6 +1436,7 @@ async function killInstance(pid) {
 }
 
 /* ---------- results ---------- */
+/** @returns {void} */
 function renderResults() {
   const body = $('#result-body');
   const data = state.result;
@@ -1302,6 +1453,7 @@ function renderResults() {
         + ' · ' + (data.max_workers != null ? data.max_workers + ' workers' : '')
     : '';
   $('#result-revision').textContent += timing;
+  if (state.screenGenerationStale) $('#result-revision').textContent += ' · 股票数据版本已更新，请重新筛选';
   const filtered = data.results.filter((r) => {
     if (state.resultFilter === 'passed') return r.passed;
     if (state.resultFilter === 'failed') return !r.passed;
@@ -1324,46 +1476,444 @@ function renderResults() {
   ];
   for (const r of filtered) {
     const pill = r.passed ? 'PASSED' : 'FAILED';
-    html.push('<tr class="clickable" data-code="' + esc(r.code) + '" data-pill="' + pill + '"><td><span class="status-pill status-pill--' + pill + '">' + pill + '</span></td><td>' + esc(r.code) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.trading_day) + '</td></tr>');
+    html.push('<tr class="clickable' + (state.selectedCode === r.code ? ' is-selected' : '') + '" data-code="' + esc(r.code) + '" data-pill="' + pill + '" tabindex="0" aria-label="查看 ' + esc(r.code + ' ' + r.name) + ' 的分析"><td><span class="status-pill status-pill--' + pill + '">' + (r.passed ? '通过' : '未通过') + '</span></td><td>' + esc(r.code) + '</td><td>' + esc(r.name) + '</td><td>' + esc(r.trading_day) + '</td></tr>');
   }
   html.push('</tbody></table>');
-  if (state.selectedCode) {
-    const r = data.results.find((x) => x.code === state.selectedCode);
-    if (r) html.push(buildDetail(r));
-  }
   body.innerHTML = html.join('');
-  if (state.selectedCode) {
-    const r = data.results.find((x) => x.code === state.selectedCode);
-    if (r) loadBars(r);
-  }
 }
 
-function buildDetail(r) {
-  const pill = r.passed ? 'PASSED' : 'FAILED';
-  let inner = '<div class="detail-panel__head"><span class="detail-panel__title">' + esc(r.code) + ' · ' + esc(r.name) + '</span><span class="status-pill status-pill--' + pill + '">' + pill + '</span></div>';
-  inner += r.rule_executions.map((ex) => {
-    const st = ex.status;
+/** @param {unknown} value @returns {string} */
+function formatDetailValue(value) {
+  return value == null ? '—' : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+}
+
+/** @returns {object|null} */
+function selectedStock() {
+  return state.result && state.result.results.find((item) => item.code === state.selectedCode) || null;
+}
+
+/** @returns {void} */
+function renderStockDetail() {
+  const r = state.screenGenerationStale ? null : selectedStock();
+  const analysis = $('#stock-detail-analysis');
+  if (!analysis) return;
+  $('#stock-detail-empty').hidden = !!r;
+  analysis.hidden = !r;
+  $('#stock-detail-title').textContent = r ? r.code + ' · ' + r.name : '个股研究';
+  $('#stock-detail-subtitle').textContent = state.screenGenerationStale ? '股票数据版本已更新，请重新筛选后查看个股分析。' :
+    (r ? (r.passed ? '筛选通过' : '筛选未通过') + ' · ' + (r.trading_day || state.result.trading_day) +
+      ' · ' + (state.result.adjustment || 'qfq').toUpperCase() : '从筛选结果中选择一只股票');
+  $('#stock-detail-empty').textContent = state.screenGenerationStale ? '旧筛选结果不与新股票数据混用。请重新运行筛选。' : '请从筛选结果中选择一只股票，查看条件、K 线与 CAPM。';
+  if (!r) return;
+  const executions = r.rule_executions || [];
+  const skippedRules = executions.filter((ex) => ex.status === 'SKIPPED' || !ex.result);
+  const executedRules = executions.filter((ex) => ex.status !== 'SKIPPED' && ex.result)
+    .sort((a, b) => Number(b.result.passed) - Number(a.result.passed));
+  /** @param {object} ex @returns {string} */
+  const renderRule = (ex) => {
+    const skipped = ex.status === 'SKIPPED' || !ex.result;
+    const st = skipped ? 'SKIPPED' : (ex.result.passed ? 'PASSED' : 'FAILED');
+    const label = { PASSED: '通过', FAILED: '未通过', SKIPPED: '未参与' }[st];
     const name = (state.rules.find((x) => x.rule_id === ex.rule_id) || {}).name || ex.rule_id;
     let vals = '';
     if (ex.result) {
-      vals = '<div class="rule-detail__vals"><span>实际值 ' + esc(ex.result.actual_value) + '</span><span>阈值 ' + esc(ex.result.threshold) + '</span></div>';
+      vals = '<div class="rule-detail__vals"><span>实际值 ' + esc(formatDetailValue(ex.result.actual_value)) + '</span><span>阈值 ' + esc(formatDetailValue(ex.result.threshold)) + '</span></div>';
     }
-    return '<div class="rule-detail"><div class="rule-detail__head"><span class="status-pill status-pill--' + st + '">' + st + '</span><span class="rule-detail__name">' + esc(name) + '</span></div><p class="rule-detail__reason">' + esc(ex.result ? ex.result.reason : '规则未参与（SKIPPED）') + '</p>' + vals + '</div>';
+    return '<div class="rule-detail"><div class="rule-detail__head"><span class="status-pill status-pill--' + st + '">' + label + '</span><span class="rule-detail__name">' + esc(name) + '</span></div><p class="rule-detail__reason">' + esc(ex.result ? ex.result.reason : '规则未参与本次计算') + '</p>' + vals + '</div>';
+  };
+  $('#stock-rules').innerHTML = executedRules.map(renderRule).join('') +
+    (skippedRules.length ? '<details class="stock-rule-skipped"><summary>未参与的规则（' + skippedRules.length + '）</summary>' + skippedRules.map(renderRule).join('') + '</details>' : '') ||
+    '<p class="panel__hint">本次没有逐规则明细。</p>';
+  renderCapmResults();
+}
+
+/** @param {number|string|null} value @returns {string} */
+function fmtPct(value) {
+  if (value == null) return '—';
+  return (Number(value) * 100).toFixed(3) + '%';
+}
+
+/** @param {object} r @returns {string} */
+function buildCapmPanel(r) {
+  const item = state.capmByCode.get(capmCacheKey(r.code));
+  if (!r.passed) return '<div class="capm-panel capm-panel--muted">CAPM 仅对本次筛选通过的股票按需计算。</div>';
+  const unavailable = capmSettingsError();
+  if (unavailable) return '<p class="panel__hint">' + esc(unavailable) + '</p>';
+  const retry = '<button class="btn btn--ghost btn--sm" data-capm-code="' + esc(r.code) + '" type="button">重新计算</button>';
+  if (!item) return '<div class="capm-panel">' + retry + '<span class="panel__hint">选择该股后按当前设置自动读取本地数据计算。</span></div>';
+  if (item.loading) return '<div class="capm-panel"><span class="panel__hint">CAPM 计算中…</span></div>';
+  if (item.error) return '<div class="capm-panel capm-panel--error">CAPM 未完成：' + esc(item.error) + retry + '</div>';
+  const benchmark = state.capmOptions.benchmarks.find((entry) => entry.index_id === state.capmSettings.benchmark_id);
+  const rate = state.capmOptions.rate_terms.find((entry) => entry.term === state.capmSettings.rate_term);
+  const labels = { READY: '可估计', INELIGIBLE: '历史不足', DATA_INCOMPLETE: '数据不完整', NOT_ESTIMABLE: '不可估计' };
+  const rows = (item.results || []).map((result) => {
+    const e = result.estimate;
+    return '<tr><td>' + esc(result.window_days) + '日</td><td>' + esc(labels[result.status] || result.status) +
+      '</td><td>' + (e ? esc(e.observation_count) : '—') + '</td><td>' + (e ? fmtPct(e.alpha_daily) : '—') +
+      '</td><td>' + (e ? fmtPct(e.alpha_annualized) : '—') + '</td><td>' + (e ? Number(e.beta).toFixed(3) : '—') +
+      '</td><td>' + (e ? Number(e.r_squared).toFixed(3) : '—') + '</td></tr>' +
+      (result.reason ? '<tr><td colspan="7" class="capm-reason">' + esc(capmReason(result.reason)) + '</td></tr>' : '');
   }).join('');
-  inner += '<div class="kline-panel">' +
-    '<div class="kline-panel__head"><span class="kline-panel__title">本地日K · 成交量</span>' +
-    '<span class="kline-toolbar">' +
-    '<button class="kline-btn" data-kline-action="zoom-out" type="button" title="缩小">−</button>' +
-    '<button class="kline-btn" data-kline-action="pan-left" type="button" title="左移">←</button>' +
-    '<button class="kline-btn" data-kline-action="pan-right" type="button" title="右移">→</button>' +
-    '<button class="kline-btn" data-kline-action="zoom-in" type="button" title="放大">＋</button>' +
-    '<button class="kline-btn" data-kline-action="reset" type="button" title="复位">复位</button>' +
-    '</span>' +
-    '<span id="kline-info" class="kline-panel__info">加载中…</span>' +
-    '</div>' +
-    '<canvas id="kline-canvas" class="kline-canvas"></canvas>' +
-    '</div>';
-  return '<div class="detail-panel">' + inner + '</div>';
+  return '<div class="capm-panel"><div class="capm-panel__head"><strong>' + esc(benchmark.name) + ' · ' +
+    esc(returnVersionLabel(benchmark.return_version)) + '</strong>' + retry + '</div><p class="panel__hint">' +
+    esc(rate.label) + ' · α年化因子 ' + esc(state.capmSettings.periods_per_year) +
+    ' · 截至 ' + esc(state.result.trading_day) + '</p><div class="capm-table-scroll"><table class="table capm-table"><thead><tr><th>自然日窗口</th><th>状态</th><th>样本数</th><th>日α</th><th>年化α</th><th>β</th><th>R²</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
+/** @returns {void} */
+function renderCapmResults() {
+  const target = $('#stock-capm-results');
+  const r = selectedStock();
+  if (target) target.innerHTML = r ? buildCapmPanel(r) : '';
+}
+
+/** @param {string} code @param {boolean} force @returns {Promise<void>} */
+async function runCapmAnalysis(code, force = false) {
+  if (!state.result || state.selectedCode !== code || state.screenPending) return;
+  const selected = state.result.results.find((item) => item.code === code);
+  if (!selected || !selected.passed) return;
+  if (capmSettingsError()) { renderCapmResults(); return; }
+  const key = capmCacheKey(code);
+  const existing = state.capmByCode.get(key);
+  if (existing && (existing.loading || !force)) { renderCapmResults(); return; }
+  const request = ++_capmRequest;
+  const epoch = state.screenEpoch;
+  const settings = { ...state.capmSettings };
+  const asOf = state.result.trading_day;
+  state.capmByCode.set(key, { loading: true, request });
+  renderCapmResults();
+  /** @returns {boolean} */
+  const current = () => state.screenEpoch === epoch && state.selectedCode === code &&
+    key === capmCacheKey(code) && state.capmByCode.get(key)?.request === request;
+  try {
+    const data = await api('POST', '/api/capm/analyses', {
+      stock_code: code, as_of: asOf, ...settings, windows: [30, 120, 250, 500],
+    });
+    if (!current()) return;
+    state.capmByCode.set(key, data);
+  } catch (error) {
+    if (!current()) return;
+    state.capmByCode.set(key, { error: error.message });
+  }
+  renderCapmResults();
+}
+
+/* ---------- independent detail preferences and asynchronous inputs ---------- */
+/** @param {string} action @param {unknown} error @returns {void} */
+function preferenceFailure(action, error) {
+  _preferenceWarning = '无法' + action + '浏览器设置；本次仍可使用，刷新后可能恢复默认。' +
+    (error && error.message ? ' ' + error.message : '');
+  toast(_preferenceWarning, 'warn');
+}
+
+/** @param {string} key @returns {object|null} */
+function readPreference(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置格式无效');
+    return value;
+  } catch (error) {
+    preferenceFailure('读取', error);
+    return null;
+  }
+}
+
+/** @param {string} key @param {object} value @returns {void} */
+function savePreference(key, value) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); }
+  catch (error) { preferenceFailure('保存', error); }
+}
+
+/** @param {string} panelId @param {boolean} expanded @param {boolean} persist @returns {void} */
+function setPanelExpanded(panelId, expanded, persist = true) {
+  const panel = document.getElementById(panelId);
+  const button = panel && panel.querySelector('[data-panel-toggle]');
+  const content = button && document.getElementById(button.getAttribute('aria-controls'));
+  if (!button || !content) return;
+  button.setAttribute('aria-expanded', String(expanded));
+  button.textContent = expanded ? '收起' : '展开';
+  content.hidden = !expanded;
+  panel.classList.toggle('panel--collapsed', !expanded);
+  if (persist) {
+    _panelPreferences[panelId] = expanded;
+    savePreference(PANEL_PREFERENCES_KEY, _panelPreferences);
+  }
+  if (expanded && panelId === 'stock-detail-panel' && _klineCanvas && _klineBars) {
+    window.requestAnimationFrame(() => { drawKline(_klineCanvas, _klineBars); updateKlineInfo(); });
+  }
+}
+
+/** @returns {void} */
+function initializePanelToggles() {
+  _panelPreferences = readPreference(PANEL_PREFERENCES_KEY) || {};
+  document.querySelectorAll('[data-panel-id]').forEach((panel) => {
+    const button = panel.querySelector('[data-panel-toggle]');
+    if (!button) return;
+    setPanelExpanded(panel.id, _panelPreferences[panel.id] !== false, false);
+    button.addEventListener('click', () => setPanelExpanded(panel.id, button.getAttribute('aria-expanded') !== 'true'));
+  });
+}
+
+/** @returns {void} */
+function initializeStockDetail() {
+  const saved = readPreference(CAPM_PREFERENCES_KEY);
+  if (saved) {
+    state.capmSettings = {
+      benchmark_id: typeof saved.benchmark_id === 'string' ? saved.benchmark_id : null,
+      rate_term: typeof saved.rate_term === 'string' ? saved.rate_term : null,
+      periods_per_year: Number.isSafeInteger(saved.periods_per_year) && saved.periods_per_year > 0 ? saved.periods_per_year : 252,
+    };
+  }
+  $('#capm-periods-per-year').value = String(state.capmSettings.periods_per_year);
+  for (const selector of ['#capm-benchmark', '#capm-rate-term', '#capm-periods-per-year']) {
+    $(selector).addEventListener('change', changeCapmSettings);
+  }
+  $('#capm-options-retry').addEventListener('click', async () => {
+    await loadCapmOptions(true);
+    if (state.selectedCode) await runCapmAnalysis(state.selectedCode, true);
+  });
+  $('#stock-detail-panel').addEventListener('click', (event) => {
+    const kline = event.target.closest('[data-kline-action]');
+    if (kline) { handleKlineAction(kline.dataset.klineAction); return; }
+    const capm = event.target.closest('[data-capm-code]');
+    if (capm) runCapmAnalysis(capm.dataset.capmCode, true);
+  });
+  renderCapmSettings();
+  renderStockDetail();
+}
+
+/** @returns {void} */
+function invalidateStockAnalysis() {
+  state.screenEpoch += 1;
+  state.selectedCode = null;
+  state.capmByCode.clear();
+  state.capmOptions = null;
+  state.capmOptionsLoading = false;
+  state.capmOptionsError = '';
+  _capmOptionsRequest += 1;
+  _capmOptionsPromise = null;
+  _detailIdentity = null;
+  _stockSelectionRequest += 1;
+  _klineRequest += 1;
+  _klineBars = null;
+  _klineView = null;
+  _klineDrag = null;
+  _klineCache.clear();
+}
+
+/** @param {string|null} generation @returns {void} */
+function observeMarketGeneration(generation) {
+  state.activeMarketGeneration = generation;
+  if (!state.result || state.screenGenerationStale || state.screenMarketGeneration === generation) return;
+  state.screenGenerationStale = true;
+  invalidateStockAnalysis();
+  renderResults();
+  renderStockDetail();
+  renderCapmSettings();
+}
+
+/** @returns {Promise<string|null>} */
+async function readMarketGeneration() {
+  const status = await api('GET', '/api/sync/pipeline/progress?dataset_id=market');
+  const generation = status.generation ? status.generation.generation : null;
+  observeMarketGeneration(generation);
+  return generation;
+}
+
+/** @param {object} data @param {string|null} generation @returns {void} */
+function acceptScreenResult(data, generation) {
+  state.result = data;
+  state.resultFilter = 'all';
+  state.selectedCode = null;
+  state.capmByCode.clear();
+  state.screenMarketGeneration = generation;
+  state.screenGenerationStale = !generation || state.activeMarketGeneration !== generation;
+}
+
+/** @param {string} code @returns {Promise<void>} */
+async function selectStock(code) {
+  if (state.screenPending || state.screenGenerationStale || !state.result) return;
+  const r = state.result.results.find((item) => item.code === code);
+  if (!r) return;
+  const epoch = state.screenEpoch;
+  const selection = ++_stockSelectionRequest;
+  try { await readMarketGeneration(); }
+  catch (error) {
+    if (selection === _stockSelectionRequest) toast('无法确认本地股票版本：' + error.message, 'error');
+    return;
+  }
+  if (selection !== _stockSelectionRequest || state.screenEpoch !== epoch || state.screenGenerationStale) return;
+  if (state.selectedCode !== code) {
+    // An abandoned response is ignored, so its loading marker must not block a later visit.
+    for (const [key, value] of state.capmByCode) {
+      if (value.loading) state.capmByCode.delete(key);
+    }
+  }
+  state.selectedCode = code;
+  renderResults();
+  renderStockDetail();
+  setPanelExpanded('stock-detail-panel', true);
+  const panel = $('#stock-detail-panel');
+  if (panel) panel.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  const identity = [state.screenEpoch, code, state.result.trading_day, state.result.adjustment].join('|');
+  if (_detailIdentity !== identity) {
+    _detailIdentity = identity;
+    loadBars(r);
+  }
+  await loadCapmOptions();
+  if (state.screenEpoch !== epoch || state.selectedCode !== code) return;
+  await runCapmAnalysis(code);
+}
+
+/** @param {string} version @returns {string} */
+function returnVersionLabel(version) {
+  return { price: '价格指数', gross_total_return: '全收益指数', net_total_return: '净收益指数' }[version] || version;
+}
+
+/** @param {string} reason @returns {string} */
+function capmReason(reason) {
+  return {
+    'stock has less than 180 natural days of qfq history': '股票前复权有效历史不足 180 个自然日，不能估计 CAPM。',
+    'insufficient effective return observations': '该窗口有效收益观察不足 15 条，不能估计。',
+    'market excess return has zero variance': '市场超额收益方差为零，无法估计 β。',
+    'stock excess return has zero variance': '股票超额收益方差为零，无法定义 R²。',
+    'returns must be finite': '收益中包含非法数值，不能估计。',
+    'market and stock return counts differ': '股票与指数的有效收益观察数不一致。',
+  }[reason] || reason;
+}
+
+/** @returns {string} */
+function capmSettingsError() {
+  if (state.screenGenerationStale) return '股票数据版本已更新，请重新筛选；旧结果不与新数据混用。';
+  if (state.capmOptionsLoading) return '正在读取本地已发布的指数与利率…';
+  if (state.capmOptionsError) return '本地参数读取失败：' + state.capmOptionsError;
+  const data = state.capmOptions;
+  if (!data) return '选择通过的股票后读取本地 CAPM 参数。';
+  if (!data.generation_id) return '暂无已发布的 CAPM 数据，请在数据页先完成 CAPM 同步。';
+  if (!data.benchmarks.some((item) => item.index_id === state.capmSettings.benchmark_id)) return '请选择已发布的基准指数；原选择不可用时不会自动替换。';
+  const rate = data.rate_terms.find((item) => item.term === state.capmSettings.rate_term);
+  if (!rate || rate.annual_rate == null || !rate.effective_on) return '请选择在筛选日期已有有效记录的利率期限；不会替代或填零。';
+  if (!Number.isSafeInteger(state.capmSettings.periods_per_year) || state.capmSettings.periods_per_year <= 0) return 'α 年化因子必须是正整数。';
+  return '';
+}
+
+/** @param {HTMLSelectElement} select @param {Array<object>} values @param {string|null} selected @param {(item: object) => string} identity @param {(item: object) => string} label @returns {void} */
+function renderCapmSelect(select, values, selected, identity, label) {
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '请选择本地可用项';
+  const choices = values.map((item) => {
+    const option = document.createElement('option');
+    option.value = identity(item);
+    option.textContent = label(item);
+    option.disabled = Object.hasOwn(item, 'annual_rate') && (item.annual_rate == null || !item.effective_on);
+    return option;
+  });
+  select.replaceChildren(placeholder, ...choices);
+  select.value = choices.some((item) => item.value === selected && !item.disabled) ? selected : '';
+  select.disabled = state.capmOptionsLoading || !state.capmOptions?.generation_id || !choices.some((item) => !item.disabled);
+}
+
+/** @returns {void} */
+function renderCapmSettings() {
+  if (!$('#capm-options-status')) return;
+  const data = state.capmOptions;
+  renderCapmSelect($('#capm-benchmark'), data ? data.benchmarks : [], state.capmSettings.benchmark_id,
+    (item) => item.index_id, (item) => item.name + ' · ' + returnVersionLabel(item.return_version) + ' · ' + item.provider_code +
+      (item.coverage_status === 'PARTIAL' ? ' · 历史不完整' : (item.coverage_status === 'UNAVAILABLE' ? ' · 无行情' : '')));
+  renderCapmSelect($('#capm-rate-term'), data ? data.rate_terms : [], state.capmSettings.rate_term,
+    (item) => item.term, (item) => item.label + (item.annual_rate == null ? ' · 该日期尚未生效' : ' · ' + fmtPct(item.annual_rate)));
+  $('#capm-periods-per-year').value = String(state.capmSettings.periods_per_year);
+  const rate = data && data.rate_terms.find((item) => item.term === state.capmSettings.rate_term);
+  $('#capm-rate-info').textContent = rate && rate.annual_rate != null ?
+    '截至 ' + data.as_of + ' 生效的年利率 ' + fmtPct(rate.annual_rate) + ' · 生效于 ' + rate.effective_on +
+      ' · 来源 ' + rate.source + '；历史区间按当时有效利率分段计息。' : '利率仅使用本地已发布、在分析日期生效的记录。';
+  const benchmark = data && data.benchmarks.find((item) => item.index_id === state.capmSettings.benchmark_id);
+  const coverageWarning = benchmark && ['PARTIAL', 'UNAVAILABLE'].includes(benchmark.coverage_status) ?
+    ' 所选指数' + (benchmark.coverage_status === 'PARTIAL' ? '历史不完整' : '暂无行情') + '；仅实际数据完整的分析区间可计算，不会补值或切换基准。' : '';
+  $('#capm-options-status').textContent = (capmSettingsError() || '设置供全部模板共用，仅对所选股票本地重算。') + coverageWarning +
+    (_preferenceWarning ? ' ' + _preferenceWarning : '');
+  $('#capm-options-retry').disabled = state.capmOptionsLoading || !state.result;
+  $('#capm-options-retry').hidden = !state.capmOptionsError && !!data?.generation_id;
+}
+
+/** @param {boolean} force @returns {Promise<object|null>} */
+async function loadCapmOptions(force = false) {
+  if (!state.result) { renderCapmSettings(); return null; }
+  const asOf = state.result.trading_day;
+  if (!force && state.capmOptions && state.capmOptions.as_of === asOf) return state.capmOptions;
+  if (!force && _capmOptionsPromise) return _capmOptionsPromise;
+  const request = ++_capmOptionsRequest;
+  const epoch = state.screenEpoch;
+  state.capmOptionsLoading = true;
+  state.capmOptionsError = '';
+  renderCapmSettings();
+  renderCapmResults();
+  _capmOptionsPromise = (async () => {
+    try {
+      const data = await api('GET', '/api/capm/options?as_of=' + encodeURIComponent(asOf));
+      if (request !== _capmOptionsRequest || epoch !== state.screenEpoch) return null;
+      if (data.as_of !== asOf || !Array.isArray(data.benchmarks) || !Array.isArray(data.rate_terms)) throw new Error('本地参数响应格式无效');
+      const previousGeneration = state.capmOptions?.generation_id;
+      state.capmOptions = data;
+      if (previousGeneration !== data.generation_id) state.capmByCode.clear();
+      // A missing default stays unavailable; never replace it with the first catalog row.
+      if (state.capmSettings.benchmark_id == null) state.capmSettings.benchmark_id = data.defaults.benchmark_id;
+      if (state.capmSettings.rate_term == null) state.capmSettings.rate_term = data.defaults.rate_term;
+      return data;
+    } catch (error) {
+      if (request !== _capmOptionsRequest || epoch !== state.screenEpoch) return null;
+      state.capmOptions = null;
+      state.capmOptionsError = error.message;
+      return null;
+    } finally {
+      if (request === _capmOptionsRequest && epoch === state.screenEpoch) {
+        state.capmOptionsLoading = false;
+        _capmOptionsPromise = null;
+        renderCapmSettings();
+        renderCapmResults();
+      }
+    }
+  })();
+  return _capmOptionsPromise;
+}
+
+/** @returns {Promise<void>} */
+async function changeCapmSettings() {
+  state.capmSettings = {
+    benchmark_id: state.capmOptions ? $('#capm-benchmark').value : state.capmSettings.benchmark_id,
+    rate_term: state.capmOptions ? $('#capm-rate-term').value : state.capmSettings.rate_term,
+    periods_per_year: Number($('#capm-periods-per-year').value),
+  };
+  state.capmByCode.clear();
+  const error = capmSettingsError();
+  if (!error) savePreference(CAPM_PREFERENCES_KEY, state.capmSettings);
+  $('#capm-options-status').textContent = error || '设置已应用；仅在本浏览器保存，全部模板共用。' +
+    (_preferenceWarning ? ' ' + _preferenceWarning : '');
+  // Keep an invalid numeric edit visible so the user can correct it.
+  if (!error) renderCapmSettings();
+  renderCapmResults();
+  if (!error && state.selectedCode) await runCapmAnalysis(state.selectedCode);
+}
+
+/** @param {string} code @returns {string} */
+function capmCacheKey(code) {
+  const result = state.result || {};
+  const settings = state.capmSettings;
+  return JSON.stringify([state.screenEpoch, state.screenMarketGeneration,
+    code, result.trading_day, result.adjustment, state.capmOptions?.generation_id,
+    settings.benchmark_id, settings.rate_term, settings.periods_per_year]);
+}
+
+/** @param {string|null} generation @returns {Promise<void>} */
+async function refreshCapmGeneration(generation) {
+  if (state.screenGenerationStale || !state.result || !state.selectedCode || state.capmOptionsLoading || !state.capmOptions ||
+      state.capmOptions.generation_id === generation) return;
+  state.capmByCode.clear();
+  await loadCapmOptions(true);
+  if (state.selectedCode) await runCapmAnalysis(state.selectedCode);
 }
 
 /* ---------- local K-line chart ---------- */
@@ -1374,14 +1924,24 @@ function limitUpDatesOf(r) {
   return v && Array.isArray(v.trading_days) ? v.trading_days : [];
 }
 
+/** @param {object} r @returns {Promise<void>} */
 async function loadBars(r) {
   const canvas = $('#kline-canvas');
   const info = $('#kline-info');
   if (!canvas || !info) return;
+  const request = ++_klineRequest;
+  const epoch = state.screenEpoch;
+  _klineBars = null;
+  _klineView = null;
+  _klineDrag = null;
+  info.textContent = '正在读取本地日K…';
+  drawKline(canvas, []);
+  /** @returns {boolean} */
+  const current = () => request === _klineRequest && epoch === state.screenEpoch && state.selectedCode === r.code;
   try {
     const adj = (state.result && state.result.adjustment) || 'qfq';
     const end = r.trading_day || (state.result && state.result.trading_day) || '';
-    const key = klineKey(r.code, adj, end);
+    const key = [epoch, state.screenMarketGeneration, klineKey(r.code, adj, end)].join('|');
     let bars;
     let dataEnd;
     const cached = _klineCache.get(key);
@@ -1391,10 +1951,12 @@ async function loadBars(r) {
     } else {
       const query = new URLSearchParams({ code: r.code, adjustment: adj, end: end, days: '250' });
       const data = await api('GET', '/api/bars?' + query.toString());
+      if (!current()) return;
       bars = data.bars || [];
       dataEnd = data.end || end;
       _klineCache.set(key, { bars, end: dataEnd });
     }
+    if (!current()) return;
     let defaultInfo = bars.length ? adj.toUpperCase() + ' · ' + dataEnd : '本地暂无日K数据';
     const limitUpDates = limitUpDatesOf(r);
     if (limitUpDates.length) {
@@ -1411,6 +1973,7 @@ async function loadBars(r) {
     bindKlineWheel(canvas);
     updateKlineInfo();
   } catch (err) {
+    if (!current()) return;
     _klineInfoDefault = '加载失败：' + err.message;
     const info2 = $('#kline-info');
     if (info2) info2.textContent = _klineInfoDefault;
@@ -1707,6 +2270,8 @@ window.addEventListener('resize', () => {
 /* ---------- event wiring ---------- */
 /** @returns {void} */
 function bindEvents() {
+  initializePanelToggles();
+  initializeStockDetail();
   $('#run-backtest').addEventListener('click', submitBacktest);
   $('#run-screen').addEventListener('click', runScreen);
   $('#shutdown-server').addEventListener('click', shutdownServer);
@@ -1725,6 +2290,8 @@ function bindEvents() {
   if (enterBtn) enterBtn.addEventListener('click', () => setView('workbench'));
   const openDataBtn = $('#open-data-ui');
   if (openDataBtn) openDataBtn.addEventListener('click', () => setView('gate'));
+  const capmSyncButton = $('#capm-reference-sync');
+  if (capmSyncButton) capmSyncButton.addEventListener('click', syncCapmReferenceData);
   $('#reload-template').addEventListener('click', () => {
     if (state.currentId) loadTemplate(state.currentId);
   });
@@ -1747,12 +2314,15 @@ function bindEvents() {
     b.addEventListener('click', () => setComposeOperator(b.dataset.compose));
   });
   $('#result-body').addEventListener('click', (e) => {
-    const klineBtn = e.target.closest('[data-kline-action]');
-    if (klineBtn) { handleKlineAction(klineBtn.dataset.klineAction); return; }
     const filterBtn = e.target.closest('[data-filter]');
     if (filterBtn) { state.resultFilter = filterBtn.dataset.filter; renderResults(); return; }
     const row = e.target.closest('tr[data-code]');
-    if (row) { state.selectedCode = row.dataset.code; renderResults(); }
+    if (row) selectStock(row.dataset.code);
+  });
+  $('#result-body').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('tr[data-code]');
+    if (row) { e.preventDefault(); selectStock(row.dataset.code); }
   });
   $('#editor-rules').addEventListener('click', (e) => {
     const toggle = e.target.closest('.toggle');

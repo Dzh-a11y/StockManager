@@ -1,5 +1,5 @@
 ---
-date: 2026-09-02
+date: 2026-09-03
 purpose: 定义 P5 DataSync 重构的数据库物理 schema、批次/分区 manifest、active generation 指针、迁移成本基准、磁盘峰值与回滚策略。
 project: StockManager
 status: accepted
@@ -101,9 +101,19 @@ status: accepted
 
 - `candidate_generations` 生命周期（计划 §6.3）：`PLANNED → WRITING → VERIFYING → VERIFIED → PUBLISHED`，`VERIFYING → NEEDS_REPAIR / VERIFICATION_FAILED / REJECTED`，`WRITING → FAILED`，`VERIFIED → INVALIDATED`，`PUBLISHED → SUPERSEDED`。
 - `StagingWriter` 每次成功写入增加 `write_revision`；`CoverageVerifier` 保存 `verified_revision` 与 candidate manifest 摘要；提交条件（计划 §6.3）逐项核对，任一变化使验证失效。
-- `GenerationCommitter` 在单个写事务内：重读 candidate/验证记录/parent generation → 确认全部必需分区 `COMPLETE` → 固化 generation manifest（`generation_partitions`）→ 写 published generation → 切换 `active_generations` 指针 → 写发布事件与成功终态。任一步失败整体回滚。
+- `GenerationCommitter` 在单个写事务内：重读 candidate/验证记录/parent generation → 确认全部必需分区通过当前数据集验收 → 固化 generation manifest（`generation_partitions`）→ 写 published generation → 切换 `active_generations` 指针 → 写发布事件与成功终态。股票分区仍要求 `COMPLETE`；2026-09-03 用户授权的 CAPM 来源缺口例外见下文。任一步失败整体回滚。
 - 增量 generation 复用 parent 未变化分区：新 generation 的 `generation_partitions` 显式引用 parent 已发布分区（不复制数据行），只为新增/修复分区创建新 batch。
 - 已发布 generation 永不因新 candidate 失败而失效；被替代后标记 `SUPERSEDED`，manifest 仍可查。当前 Reader 只允许 active generation，不能从 manifest 推断 superseded generation 的行级数据仍可重放。
+
+#### CAPM 来源缺口与同步验收（2026-09-03）
+
+按 [P5B 当前计划](../plan/P5B_PLAN.md) 的来源可用数据验收，只有 `capm/unadjusted` 的 `index_daily_bars` 可以使用新增验证状态 `ACCEPTED_WITH_GAPS`。该状态表示实际来源请求和返回行质量已经验收，历史交易日覆盖仍不完整；保存请求交易日数、实收数、真实覆盖率、全部缺日、连续缺口范围及 `acceptance_policy=source_available_v1`。不以它代替 `COMPLETE`，不放宽股票池 95% 门槛、目录和利率验收。
+
+Committer 在提交前及同一事务内都限定数据集、复权口径和数据类型，且新状态的非法/重复计数必须为零。批次与验证修订/摘要检查、失败原子回滚和 active 指针切换保持不变。该变更不改表结构，schema 仍为 5；应用修订版为 1.15.1，不能用应用版本号代替 schema 或数据 generation。
+
+来源缺口证据须通过任务分区键（必要时带 sequence 后缀）、批次、candidate 修订及 active manifest 精确绑定。状态 API 从同一 active 快照计算实际缺日，不以观测首尾缩小应有范围。未来同目标范围同步认可已有缺口证据，但原本存在的价格被删除/脱离 active 批次，或起点有效一年期利率缺失，仍进入修复。显式重试先按当前政策复核暂存数据；已可接受的数据不重新请求上游。
+
+发布可接受来源数据不代表 CAPM 可以使用所有日期：研究读取仍检查所选指数和请求范围的实际交易日，缺失则拒绝，不填充、不换基准、不联网。缺口只表明本次来源未返回，不能据此断言永久不可获取。
 
 ### 4. 分区键（partition_key）
 

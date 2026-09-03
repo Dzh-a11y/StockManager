@@ -1,11 +1,13 @@
 ---
-date: 2026-08-31
+date: 2026-09-03
 purpose: 明确 StockManager 第五阶段先建设研究型回测、再建设 CAPM 风险分析的分段架构、任务和验收标准。
 project: StockManager
 status: draft
 ---
 
 # StockManager 第五阶段计划：研究型回测与 CAPM 分段建设
+
+> 2026-09-03 文档分拆：P5B 的当前需求、架构与来源研究已迁入独立 [P5B_PLAN.md](P5B_PLAN.md)，后续只在该文件维护。P5A 以 [P5A_PLAN.md](P5A_PLAN.md) 为准。本文件保留早期阶段总览；其中旧选型、历史长度、接口设想和模型分工不能直接作为当前实现指令。
 
 StockManager 是 A 股研究型筛选平台，禁止自动交易；CAPM 估计和回测结果仅供研究参考，不构成任何投资建议，也不代表未来收益。
 

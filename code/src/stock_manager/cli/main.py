@@ -657,9 +657,8 @@ def _sync_retry_command(args: argparse.Namespace, stdout: TextIO) -> int:
         request_interval_seconds=config.minimum_request_interval_seconds
     )
     service = DataSyncService(provider, repository, args.lock_dir, config)
-    pipeline = service.build_pipeline()
     try:
-        run = pipeline.retry(args.plan_id)
+        run = service.run_pipeline_retry(args.plan_id)
     except (PipelineError, RetryCooldownError, ValueError) as error:
         raise ValueError(str(error)) from error
     _print_json(

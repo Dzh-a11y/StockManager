@@ -176,6 +176,8 @@ body {
   box-shadow: var(--shadow);
 }
 .db-bar .panel__hint { margin: 0; }
+.capm-sync-control { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.capm-sync-control .panel__label, .capm-sync-control .panel__hint { margin: 0; }
 /* 数据同步与维护(全宽底部) */
 .wb-datasync { grid-column: 1 / -1; }
 @media (max-width: 1180px) {
@@ -203,6 +205,26 @@ body {
 .panel__title { margin: 0; font-size: 14px; font-weight: 650; }
 .panel__title-group { display: flex; align-items: center; gap: 10px; }
 .panel__subtitle { font-size: 12px; color: var(--muted); }
+.panel__head > .panel__subtitle { min-width: 0; overflow-wrap: anywhere; }
+.panel-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-soft);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.panel-toggle::before { content: '−'; margin-right: 5px; }
+.panel-toggle[aria-expanded="false"]::before { content: '+'; }
+.panel-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.panel-toggle:focus-visible, .capm-guide summary:focus-visible, .table tr[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.panel.panel--collapsed .panel__head { border-bottom: 0; }
 .panel__body { padding: 16px; }
 .panel__hint { font-size: 12px; color: var(--muted); }
 .field__hint { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); line-height: 1.4; }
@@ -441,6 +463,11 @@ body {
 .rule-detail__name { font-weight: 600; font-size: 12px; }
 .rule-detail__reason { color: var(--text-soft); font-size: 12px; margin: 4px 0 0; }
 .rule-detail__vals { display: flex; gap: 14px; font-family: var(--mono); font-size: 12px; color: var(--text-soft); margin-top: 4px; flex-wrap: wrap; }
+.capm-panel { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px; font-size: 12px; }
+.capm-panel--muted { color: var(--muted); }
+.capm-panel--error { color: var(--fail); }
+.capm-panel__head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 7px; }
+.capm-table th, .capm-table td { padding: 5px 6px; font-size: 11px; white-space: nowrap; }
 
 .kline-panel { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px; }
 .kline-panel__head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
@@ -463,6 +490,77 @@ body {
 .kline-btn:active { transform: translateY(1px); }
 .kline-panel__info { font-family: var(--mono); font-size: 12px; color: var(--text-soft); }
 .kline-canvas { display: block; width: 100%; height: 320px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+
+/* 独立个股研究区：条件 → 日 K/成交量 → CAPM */
+.wb-stock-detail { grid-column: 1 / -1; min-width: 0; scroll-margin-top: 90px; }
+.wb-stock-detail .panel__title-group { flex-wrap: wrap; min-width: 0; }
+.stock-analysis-grid { display: grid; grid-template-columns: minmax(200px, .85fr) minmax(320px, 1.3fr) minmax(330px, 1.25fr); gap: 18px; }
+.stock-analysis-column { min-width: 0; }
+.stock-analysis-column + .stock-analysis-column { border-left: 1px solid var(--border); padding-left: 18px; }
+.stock-analysis-heading { margin: 0 0 10px; font-size: 13px; font-weight: 650; }
+.stock-analysis-heading > span { font: 11px var(--mono); color: var(--muted); margin-right: 5px; }
+#stock-rules { max-height: 420px; overflow: auto; overflow-wrap: anywhere; }
+#stock-rules .rule-detail:first-child { border-top: 0; }
+.stock-rule-skipped { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.stock-rule-skipped summary { cursor: pointer; }
+#stock-capm-results { min-width: 0; overflow-wrap: anywhere; }
+#stock-capm-results .capm-panel { margin-top: 0; border-top: 0; padding-top: 0; overflow-x: auto; }
+#stock-capm-results .capm-table { font-variant-numeric: tabular-nums; }
+#stock-capm-results .capm-table th, #stock-capm-results .capm-table td { padding: 7px 5px; }
+.capm-table-scroll { overflow-x: auto; }
+#stock-capm-results .capm-reason { white-space: normal; color: var(--warn); overflow-wrap: anywhere; }
+#stock-capm-results .capm-panel__head { flex-wrap: wrap; }
+#stock-kline .kline-panel__head { align-items: baseline; }
+#stock-kline .stock-analysis-heading { margin-bottom: 0; }
+#stock-kline .kline-panel__info { min-height: 18px; font-size: 11px; overflow-wrap: anywhere; }
+#stock-kline .panel__hint { margin-bottom: 0; }
+.table .is-selected { background: var(--accent-soft); }
+.empty-state--compact { padding: 24px 12px; }
+.capm-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(130px, .65fr);
+  gap: 8px 16px;
+  padding: 16px;
+  margin-top: 16px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.capm-settings .field { min-width: 0; margin: 0; }
+.capm-settings__wide { grid-column: 1 / -1; margin: 0; }
+.capm-settings button { justify-self: start; }
+.capm-guide { margin-top: 12px; font-size: 12px; color: var(--text-soft); }
+.capm-guide__section { border-top: 1px solid var(--border); padding: 10px 0 0; }
+.capm-guide__section + .capm-guide__section { margin-top: 10px; }
+.capm-guide summary { cursor: pointer; font-weight: 650; color: var(--text); }
+.capm-formula-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.capm-meaning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.capm-guide h4 { margin: 12px 0 6px; font-size: 12px; color: var(--text); }
+.capm-guide p { margin: 6px 0; overflow-wrap: anywhere; }
+.formula { font-family: var(--mono); color: var(--text); background: var(--surface-alt); border-radius: 5px; padding: 6px 8px; }
+@media (max-width: 1180px) {
+  .stock-analysis-grid { grid-template-columns: 1fr; }
+  .stock-analysis-column + .stock-analysis-column { border-left: 0; border-top: 1px solid var(--border); padding: 14px 0 0; }
+  #stock-rules { max-height: 300px; }
+}
+@media (max-width: 700px) {
+  .topbar { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
+  .topbar__brand { gap: 8px; }
+  .topbar__meta { gap: 6px; }
+  .topbar__meta .badge { white-space: nowrap; padding: 3px 6px; }
+  .topbar__meta .disclaimer { display: none; }
+  .brand-title { font-size: 15px; }
+  .workspace { padding: 12px; }
+  .wb-stock-detail { scroll-margin-top: 110px; }
+  .panel__head { flex-wrap: wrap; padding: 12px; }
+  .panel__body { padding: 12px; }
+  .capm-settings, .capm-formula-grid, .capm-meaning-grid { grid-template-columns: 1fr; }
+  .capm-settings { padding: 12px; }
+  .capm-settings__wide { grid-column: 1; }
+  .panel__head--tabs .field--inline { width: 100%; order: 3; }
+  .panel__head--tabs .select { min-width: 0; flex: 1; }
+  #stock-detail-subtitle { overflow-wrap: anywhere; }
+}
 
 .empty-state { text-align: center; padding: 42px 20px; color: var(--muted); }
 .empty-state__title { font-size: 15px; font-weight: 650; color: var(--text-soft); margin: 0 0 6px; }
@@ -493,3 +591,11 @@ body {
 }
 
 [hidden] { display: none !important; }
+.reference-sync-panel { padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.reference-sync-panel details { max-height: 240px; overflow: auto; }
+.reference-sync-panel summary { cursor: pointer; }
+.sync-error { color: #dc5959; overflow-wrap: anywhere; }
+.sync-warning { color: #ba832f; overflow-wrap: anywhere; }
+#capm-reference-warnings { white-space: pre-line; }
+.capm-gap-detail { margin: 6px 0; }
+.capm-gap-detail p { margin: 4px 0 8px; }

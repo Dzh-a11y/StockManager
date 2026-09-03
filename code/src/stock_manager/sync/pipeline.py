@@ -29,6 +29,7 @@ from stock_manager.domain import (
     SyncSource,
     SyncTask,
     SyncTaskStatus,
+    VerificationStatus,
 )
 from stock_manager.sync.committer import GenerationCommitter, ReadinessGate
 from stock_manager.sync.legacy import LegacyImporter
@@ -38,6 +39,7 @@ from stock_manager.sync.verifier import (
     CoverageVerifier,
     VerificationError,
     VerificationRejectedError,
+    VerificationOutcome,
 )
 from stock_manager.sync.worker import (
     SerialFetchWorker,
@@ -84,6 +86,7 @@ class SyncPipeline:
         legacy: LegacyImporter,
         now: Callable[[], datetime],
         retry_cooldown: timedelta = timedelta(minutes=5),
+        expand_tasks: Callable[[SyncPlan], Sequence[SyncTask]] | None = None,
     ) -> None:
         self._repository = repository
         self._planner = planner
@@ -95,6 +98,7 @@ class SyncPipeline:
         self._legacy = legacy
         self._now = now
         self._retry_cooldown = retry_cooldown
+        self._expand_tasks = expand_tasks
 
     # -- public entry points --------------------------------------------------
 
@@ -108,6 +112,7 @@ class SyncPipeline:
         target_end: date,
         required_data_types: Sequence[str] = ("stocks", "daily_bars", "fundamentals"),
         batch_size: int = 20,
+        universe_policy: str = "a-share",
     ) -> PlannedOutput:
         """Create and persist a plan (plus tasks and candidate).
 
@@ -119,7 +124,7 @@ class SyncPipeline:
         existing = self._repository.get_sync_plan(
             self._planner_fingerprint_plan_id(
                 mode, dataset_id, adjustment, target_start, target_end,
-                tuple(required_data_types), batch_size,
+                tuple(required_data_types), batch_size, universe_policy,
             )
         )
         if existing is not None:
@@ -140,6 +145,7 @@ class SyncPipeline:
                 target_end=target_end,
                 required_data_types=tuple(required_data_types),
                 batch_size=batch_size,
+                universe_policy=universe_policy,
             )
         elif mode is SyncPlanMode.LEGACY_IMPORT:
             output = self._planner.plan_legacy_import(
@@ -248,6 +254,10 @@ class SyncPipeline:
             self._repository.update_sync_plan_status(
                 plan_id, SyncPlanStatus.FAILED, self._now()
             )
+            current = self._repository.get_candidate_generation(plan.candidate_generation_id)
+            if current and current.status in (CandidateGenerationStatus.PLANNED, CandidateGenerationStatus.WRITING):
+                self._repository.update_candidate_status(current.candidate_generation_id,
+                                                        CandidateGenerationStatus.FAILED, self._now())
             raise
 
     def retry(self, plan_id: str) -> PipelineRun:
@@ -297,8 +307,12 @@ class SyncPipeline:
                 replace(task, status=SyncTaskStatus.PENDING, error_message=None)
             )
         if pending_repair and candidate is not None:
+            # Re-evaluate persisted responses under the current policy before
+            # deciding to refetch. This also upgrades old strict CAPM failures
+            # without another network request or any fabricated historical bar.
+            outcome = self._verify_candidate(plan, candidate)
             repaired_tasks = self._reset_incomplete_tasks(plan, candidate)
-            if repaired_tasks == 0 and not failed:
+            if outcome.report.issues and repaired_tasks == 0 and not failed:
                 raise PipelineError(
                     "verification reported repairable issues but no matching task"
                 )
@@ -429,6 +443,7 @@ class SyncPipeline:
         target_end: date,
         required_data_types: tuple[str, ...],
         batch_size: int,
+        universe_policy: str = "a-share",
     ) -> str:
         """Deterministic plan_id for the given inputs (independent of now())."""
         from stock_manager.sync.planner import PlanInput
@@ -439,7 +454,7 @@ class SyncPipeline:
             else SyncSource.BAOSTOCK
         )
         input_ = PlanInput(
-            mode, source, dataset_id, adjustment, "a-share",
+            mode, source, dataset_id, adjustment, universe_policy,
             target_start, target_end, required_data_types,
             batch_size=batch_size,
         )
@@ -472,9 +487,12 @@ class SyncPipeline:
                 f"{candidate.status.value}; explicit recovery is required"
             )
         self._reconcile_successful_batches(plan, candidate)
+        if self._expand_tasks is not None:
+            self._expand_tasks(plan)
         pending = self._repository.tasks_by_status(
             plan.plan_id, (SyncTaskStatus.PENDING, SyncTaskStatus.INTERRUPTED)
         )
+        pending = list(pending)
         candidate = self._repository.get_candidate_generation(
             candidate.candidate_generation_id
         )
@@ -590,6 +608,9 @@ class SyncPipeline:
                 raise PipelineError(
                     f"task {task.task_id} failed: {error}"
                 ) from error
+            if self._expand_tasks is not None:
+                additions = self._expand_tasks(plan)
+                pending.extend(additions)
         current = self._repository.get_candidate_generation(
             candidate.candidate_generation_id
         )
@@ -603,7 +624,7 @@ class SyncPipeline:
     def _verify_and_publish(
         self, plan: SyncPlan, candidate: CandidateGeneration
     ) -> tuple[bool, int]:
-        """Verify staged partitions and publish when all COMPLETE."""
+        """Publish only after current verification has no blocking issues."""
         # 重新读取 candidate,确保 verified_revision 等于最新 write_revision。
         current = self._repository.get_candidate_generation(
             candidate.candidate_generation_id
@@ -611,31 +632,7 @@ class SyncPipeline:
         if current is None:
             raise PipelineError("candidate missing before verification")
         candidate = current
-        tasks = self._repository.list_sync_tasks(plan.plan_id)
-        try:
-            outcome = self._verifier.verify(
-                candidate,
-                adjustment=plan.adjustment,
-                target_start=plan.target_start,
-                target_end=plan.target_end,
-                tasks=tasks,
-            )
-        except VerificationRejectedError:
-            self._repository.update_candidate_status(
-                candidate.candidate_generation_id,
-                CandidateGenerationStatus.REJECTED,
-                self._now(),
-            )
-            raise
-        except VerificationError:
-            self._repository.update_candidate_status(
-                candidate.candidate_generation_id,
-                CandidateGenerationStatus.VERIFICATION_FAILED,
-                self._now(),
-            )
-            raise
-        for record in outcome.records:
-            self._repository.save_coverage_verification(record)
+        outcome = self._verify_candidate(plan, candidate)
         if outcome.report.issues:
             repairable = any(
                 issue.repairability.value == "REFETCH"
@@ -677,6 +674,30 @@ class SyncPipeline:
             0,
         )
 
+    def _verify_candidate(
+        self, plan: SyncPlan, candidate: CandidateGeneration,
+    ) -> VerificationOutcome:
+        """Persist current evidence and classify verifier errors without publishing."""
+        tasks = self._repository.list_sync_tasks(plan.plan_id)
+        try:
+            outcome = self._verifier.verify(
+                candidate, adjustment=plan.adjustment, target_start=plan.target_start,
+                target_end=plan.target_end, tasks=tasks,
+            )
+        except VerificationRejectedError:
+            self._repository.update_candidate_status(
+                candidate.candidate_generation_id, CandidateGenerationStatus.REJECTED, self._now(),
+            )
+            raise
+        except VerificationError:
+            self._repository.update_candidate_status(
+                candidate.candidate_generation_id, CandidateGenerationStatus.VERIFICATION_FAILED, self._now(),
+            )
+            raise
+        for record in outcome.records:
+            self._repository.save_coverage_verification(record)
+        return outcome
+
     def _reconcile_successful_batches(
         self, plan: SyncPlan, candidate: CandidateGeneration
     ) -> None:
@@ -714,7 +735,12 @@ class SyncPipeline:
         tasks = self._repository.list_sync_tasks(plan.plan_id)
         reset_ids: set[str] = set()
         for record in records:
-            if record.status.value == "COMPLETE":
+            if record.status is VerificationStatus.COMPLETE or (
+                plan.dataset_id == "capm" and plan.adjustment is AdjustmentMethod.UNADJUSTED
+                and record.data_type == "index_daily_bars"
+                and record.status is VerificationStatus.ACCEPTED_WITH_GAPS
+                and record.invalid_count == 0 and record.duplicate_count == 0
+            ):
                 continue
             suffix = record.partition_key.rsplit(":", maxsplit=1)[-1]
             if suffix.isdigit():

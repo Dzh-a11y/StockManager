@@ -353,7 +353,7 @@ class TestMigration:
         repo = SQLiteRepository(path)
         with sqlite3.connect(path) as connection:
             assert schema_version(connection) == CURRENT_SCHEMA_VERSION
-            assert schema_version(connection) == 3
+            assert schema_version(connection) == 5
         repo = None  # noqa: F841
 
     def test_batch_columns_added(self, tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ from stock_manager.domain import (
 
 #: Data types the planner understands, in a stable dependency order.
 DATA_TYPE_ORDER: tuple[str, ...] = ("stocks", "daily_bars", "fundamentals", "dividends")
+CAPM_DATA_TYPES: tuple[str, ...] = ("index_catalog", "deposit_rates", "index_daily_bars")
 
 UNIVERSE_POLICY_DEFAULT = "a-share"
 
@@ -61,11 +62,11 @@ class PlanInput:
             raise ValueError("required_data_types must not be empty")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        unknown = set(self.required_data_types) - set(DATA_TYPE_ORDER)
+        unknown = set(self.required_data_types) - set(DATA_TYPE_ORDER + CAPM_DATA_TYPES)
         if unknown:
             raise ValueError(f"unknown data types: {sorted(unknown)}")
         normalized = tuple(
-            t for t in DATA_TYPE_ORDER if t in self.required_data_types
+            t for t in DATA_TYPE_ORDER + CAPM_DATA_TYPES if t in self.required_data_types
         )
         if len(normalized) != len(set(self.required_data_types)):
             raise ValueError("required_data_types must not contain duplicates")

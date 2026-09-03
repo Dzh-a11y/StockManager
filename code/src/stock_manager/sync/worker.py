@@ -19,6 +19,9 @@ from stock_manager.domain import (
     DividendRecord,
     FundamentalSnapshot,
     StockIdentity,
+    IndexIdentity,
+    IndexDailyBar,
+    DepositRate,
     SyncTask,
     SyncTaskStatus,
 )
@@ -74,6 +77,13 @@ class FetchTaskProvider(Protocol):
         self, codes: Sequence[str], start: date, end: date
     ) -> Sequence[DividendRecord]: ...
 
+    def fetch_indexes(self, as_of: date) -> Sequence[IndexIdentity]: ...
+
+    def fetch_index_daily_bars(self, indexes: Sequence[IndexIdentity], start: date,
+                               end: date) -> Sequence[IndexDailyBar]: ...
+
+    def fetch_deposit_rates(self) -> Sequence[DepositRate]: ...
+
 
 class SerialFetchWorker:
     """Executes SyncTasks one at a time against a single provider channel.
@@ -88,12 +98,16 @@ class SerialFetchWorker:
         *,
         adjustment: AdjustmentMethod,
         now: Callable[[], datetime],
+        index_resolver: Callable[[SyncTask], Sequence[IndexIdentity]] | None = None,
+        reference_cache: Callable[[SyncTask], Sequence[object] | None] | None = None,
     ) -> None:
         if not isinstance(adjustment, AdjustmentMethod):
             raise ValueError("adjustment must be provided explicitly")
         self._provider = provider
         self._adjustment = adjustment
         self._now = now
+        self._index_resolver = index_resolver
+        self._reference_cache = reference_cache
         self._channel_lock = threading.Lock()
         self._call_log: list[tuple[str, int]] = []
 
@@ -127,7 +141,26 @@ class SerialFetchWorker:
             )
         self._guard_channel()
         try:
-            if task.data_type == "daily_bars":
+            if self._reference_cache is not None:
+                cached = self._reference_cache(task)
+                if cached is not None:
+                    return TaskExecutionResult(task, cached, self._now())
+            if task.data_type == "index_catalog":
+                rows = self._provider.fetch_indexes(task.range_end)
+                if not rows:
+                    raise ProviderFetchError("provider returned an empty index catalogue")
+            elif task.data_type == "deposit_rates":
+                rows = self._provider.fetch_deposit_rates()
+            elif task.data_type == "index_daily_bars":
+                if self._index_resolver is None:
+                    raise ProviderFetchError("reference task requires an index resolver")
+                indexes = self._index_resolver(task) if task.codes else ()
+                if {item.index_id for item in indexes} != set(task.codes):
+                    raise ProviderFetchError(f"index mapping is incomplete for {task.codes}")
+                rows = () if not task.codes else self._provider.fetch_index_daily_bars(
+                    indexes, task.range_start, task.range_end,
+                )
+            elif task.data_type == "daily_bars":
                 rows = self._provider.fetch_daily_bars(
                     task.codes,
                     task.range_start,
