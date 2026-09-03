@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -118,6 +119,38 @@ def _seed_candidate_and_verifications(
 
 
 class TestGenerationCommitter:
+    @pytest.mark.parametrize("dataset_id,adjustment,data_type", (
+        ("market", AdjustmentMethod.QFQ, "daily_bars"),
+        ("market", AdjustmentMethod.UNADJUSTED, "index_daily_bars"),
+        ("capm", AdjustmentMethod.QFQ, "index_daily_bars"),
+        ("capm", AdjustmentMethod.UNADJUSTED, "deposit_rates"),
+    ))
+    def test_source_gap_acceptance_cannot_relax_other_datasets_or_types(
+        self, repo: SQLiteRepository, committer: GenerationCommitter,
+        dataset_id: str, adjustment: AdjustmentMethod, data_type: str,
+    ) -> None:
+        candidate = _candidate()
+        repo.save_candidate_generation(candidate)
+        verification = _verification(data_type=data_type, status=VerificationStatus.ACCEPTED_WITH_GAPS)
+        repo.save_coverage_verification(verification)
+        with pytest.raises(PublishError):
+            committer.publish(candidate, dataset_id=dataset_id, adjustment=adjustment,
+                verifications=(verification,), partitions=(_partition(data_type),))
+        assert repo.get_active_generation(dataset_id, adjustment) is None
+
+    @pytest.mark.parametrize("field", ("invalid_count", "duplicate_count"))
+    def test_source_gap_invalid_evidence_is_rechecked_inside_publish_transaction(
+        self, repo: SQLiteRepository, committer: GenerationCommitter, field: str,
+    ) -> None:
+        candidate = _candidate()
+        repo.save_candidate_generation(candidate)
+        supplied = _verification(data_type="index_daily_bars", status=VerificationStatus.ACCEPTED_WITH_GAPS)
+        repo.save_coverage_verification(replace(supplied, **{field: 1}))
+        with pytest.raises(PublishError, match="inside transaction"):
+            committer.publish(candidate, dataset_id="capm", adjustment=AdjustmentMethod.UNADJUSTED,
+                verifications=(supplied,), partitions=(_partition("index_daily_bars"),))
+        assert repo.get_active_generation("capm", AdjustmentMethod.UNADJUSTED) is None
+
     def test_publish_success(self, repo: SQLiteRepository, committer: GenerationCommitter) -> None:
         candidate = _seed_candidate_and_verifications(repo)
         published = committer.publish(

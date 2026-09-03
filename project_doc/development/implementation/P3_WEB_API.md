@@ -1,5 +1,5 @@
 ---
-date: 2026-09-02
+date: 2026-09-03
 purpose: 记录 StockManager P3 本地 Web 工作台的启动方式、接口契约与错误映射。
 project: StockManager
 status: active
@@ -38,12 +38,27 @@ stock-manager web \
 
 - **运行条件**：数据集、交易日、复权方式、可选股票代码。
 - **策略编辑器**：模板选择、规则卡片、参数控件、规则开关、分组组合 `all`/`any`。
-- **筛选结果**：总数/通过/失败统计、结果表、逐规则详情。
-- **个股 K 线**：点击结果行展开本地日K与成交量；K 线信息栏（图上方）在「涨幅次数」规则（`limit_up_3m`）启用时，附加展示其返回的涨幅日期（`actual_value.trading_days`），无涨幅则为空。
+- **筛选结果**：总数/通过/失败统计、可点击或键盘选择的结果表。
+- **独立个股研究（1.15.2）**：位于数据同步与维护上方，按符合条件、日 K 与成交量、CAPM 三列排列；窄屏顺序堆叠。下方配置市场指数、已发布利率期限与年化因子，提供公式和模型假设说明。K 线信息栏在「涨幅次数」规则（`limit_up_3m`）启用时附加其返回的涨幅日期（`actual_value.trading_days`）。
+- **折叠（1.15.2）**：主工作台八个模块均有原生按钮，通过 `aria-expanded`、`aria-controls` 与内容 `hidden` 同步控制；不卸载内容，本浏览器记住折叠状态。
 
 参数控件由 `GET /api/rules` 元数据自动生成，页面不硬编码内置规则清单。
 
 ## 接口
+
+### CAPM 本地选项与分析（1.15.2）
+
+`GET /api/capm/options?as_of=YYYY-MM-DD` 要求单个规范 ISO 日期，未知/重复参数返回 400。一个 SQLite 只读快照返回 `as_of`、`generation_id`、`defaults`、`benchmarks`、`rate_terms`；未发布时 generation 为 null、列表为空，不触发同步。
+
+- `defaults`：`benchmark_id="hs300.price"`、`rate_term="1_year"`、`periods_per_year=252`。
+- `benchmarks`：每项包含 `index_id/name/provider_code/return_version/category/source/bar_count/coverage_start/coverage_end/coverage_status`，仅来自 active generation 的 manifest。覆盖统计截至请求日期，不保证每个回归窗口可算。
+- `rate_terms`：每项为 `term/label/annual_rate/effective_on/source`；年率为十进制小数字符串（`"0.015"` 表示 1.5%），取截至日最新有效事件。只有未来记录的期限，其年率/生效日/来源为 null，UI 不允许用于该日期。当前 Provider 仅保存一年期。
+
+`POST /api/capm/analyses` 接受 `stock_code/as_of`，以及可选 `benchmark_id/rate_term/windows/periods_per_year`。默认窗口 `[30,120,250,500]`；窗口列表不得为空，各窗口及年化因子须为正整数，不接受布尔值。未知/未发布指数或利率期限返回 400，不运行分析或保存。
+
+成功返回 201，包含既有 `analysis_id/results`，以及实际提交的 `stock_code/as_of/benchmark_id/benchmark_return_version/rate_term/periods_per_year`。每个窗口结果为 `window_days/status/reason/estimate`；`estimate` 含日 alpha、线性年化 alpha、beta、R²、有效收益观察数、年化因子。输入不足是结构化窗口状态；不因选项可见就把缺行情视为可估计。该接口仅本地读取和保存分析，历史利率继续按生效日分段。
+
+前端设置为浏览器级共享偏好，不是服务器项目设置 API；切换模板不会覆盖它。缓存包含分析参数、日期及参考 generation；选股/新筛选/版本变化的迟到响应被丢弃，股票版本变化要求重新筛选。CAPM 结果更新不重建图表。
 
 ### 页面与静态资源
 

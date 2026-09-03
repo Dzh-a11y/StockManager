@@ -12,6 +12,90 @@ class AdjustmentMethod(str, Enum):
     HFQ = "hfq"
 
 
+class IndexReturnVersion(str, Enum):
+    """The economic return convention represented by an index level."""
+
+    PRICE = "price"
+    GROSS_TOTAL_RETURN = "gross_total_return"
+    NET_TOTAL_RETURN = "net_total_return"
+
+
+@dataclass(frozen=True, slots=True)
+class IndexIdentity:
+    """A provider-mapped index; indexes never enter the A-share stock pool."""
+
+    index_id: str
+    provider_code: str
+    name: str
+    category: str
+    return_version: IndexReturnVersion
+    source: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("index_id", "provider_code", "name", "category", "source"):
+            _require_text(getattr(self, field_name), field_name)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexDailyBar:
+    """One published local index closing level and its explicit return version."""
+
+    index_id: str
+    trading_day: date
+    close: Decimal
+    return_version: IndexReturnVersion
+
+    def __post_init__(self) -> None:
+        _require_text(self.index_id, "index_id")
+        if not self.close.is_finite() or self.close <= Decimal("0"):
+            raise ValueError("index close must be finite and positive")
+
+
+@dataclass(frozen=True, slots=True)
+class DepositRate:
+    """A verified central-bank annual deposit benchmark rate effective on a day."""
+
+    term: str
+    effective_on: date
+    annual_rate: Decimal
+    source: str
+
+    def __post_init__(self) -> None:
+        _require_text(self.term, "term")
+        _require_text(self.source, "source")
+        if not self.annual_rate.is_finite() or self.annual_rate < Decimal("0"):
+            raise ValueError("annual_rate must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class CapmResultRecord:
+    """Persistable outcome of one requested stock/window analysis."""
+
+    analysis_id: str
+    stock_code: str
+    as_of: date
+    window_days: int
+    benchmark_id: str
+    benchmark_return_version: IndexReturnVersion
+    rate_term: str
+    alpha_daily: Decimal | None
+    alpha_annualized: Decimal | None
+    beta: Decimal | None
+    r_squared: Decimal | None
+    observation_count: int
+    periods_per_year: int
+    status: str
+    reason: str | None
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        for field_name in ("analysis_id", "stock_code", "benchmark_id", "rate_term", "status"):
+            _require_text(getattr(self, field_name), field_name)
+        if self.window_days <= 0 or self.observation_count < 0 or self.periods_per_year <= 0:
+            raise ValueError("CAPM result numeric bounds are invalid")
+        _require_aware(self.created_at, "created_at")
+
+
 class SyncStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -515,6 +599,7 @@ class VerificationStatus(str, Enum):
     """Outcome of one coverage verification partition."""
 
     COMPLETE = "COMPLETE"
+    ACCEPTED_WITH_GAPS = "ACCEPTED_WITH_GAPS"
     INCOMPLETE = "INCOMPLETE"
     UNAVAILABLE = "UNAVAILABLE"
     FAILED = "FAILED"
@@ -626,7 +711,7 @@ class SyncTask:
         _require_text(self.partition_key, "partition_key")
         if self.sequence_no < 0:
             raise ValueError("sequence_no must be non-negative")
-        if not self.codes:
+        if not self.codes and self.data_type not in ("index_catalog", "deposit_rates", "index_daily_bars"):
             raise ValueError("codes must not be empty")
         if self.range_start > self.range_end:
             raise ValueError("range_start must not be after range_end")
@@ -698,7 +783,7 @@ class IngestBatch:
         _require_text(self.partition_key, "partition_key")
         _require_text(self.source, "source")
         _require_text(self.batch_sha256, "batch_sha256")
-        if not self.codes:
+        if not self.codes and self.data_type not in ("index_catalog", "deposit_rates", "index_daily_bars"):
             raise ValueError("codes must not be empty")
         if self.range_start > self.range_end:
             raise ValueError("range_start must not be after range_end")

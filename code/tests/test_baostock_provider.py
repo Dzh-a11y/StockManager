@@ -57,6 +57,52 @@ class _FakeClient:
         return _FakeQueryResult(self._rows)
 
 
+def test_deposit_rate_empty_term_is_not_zero_or_a_parse_failure() -> None:
+    class RateClient(_FakeClient):
+        def query_deposit_rate_data(self) -> _FakeQueryResult:
+            result = _FakeQueryResult(self._rows)
+            result.fields = ["pubDate", "fixedDepositRate1Year"]
+            return result
+
+    provider = BaostockProvider(client=RateClient([
+        ["1990-01-01", ""], ["2015-10-24", "1.50"],
+    ]), request_interval_seconds=0)
+    rates = provider.fetch_deposit_rates()
+    assert len(rates) == 1
+    assert rates[0].annual_rate == Decimal("0.015")
+    assert rates[0].effective_on == date(2015, 10, 24)
+
+
+def test_index_transport_failure_must_not_be_reported_as_empty_success() -> None:
+    from stock_manager.domain import IndexIdentity, IndexReturnVersion
+
+    class IndexClient(_FakeClient):
+        def query_history_k_data_plus(self, *args: object, **kwargs: object) -> _ErrorResult:
+            return _ErrorResult("9999", "fixture outage")
+
+    provider = BaostockProvider(client=IndexClient([]), max_retries=1)
+    index = IndexIdentity("hs300.price", "sh.000300", "沪深300指数", "broad",
+                          IndexReturnVersion.PRICE, "baostock")
+    with pytest.raises(BaostockProviderError, match="fixture outage"):
+        provider.fetch_index_daily_bars((index,), date(2026, 9, 1), date(2026, 9, 2))
+
+
+def test_index_catalog_excludes_funds_bonds_styles_and_preserves_source_return_variant() -> None:
+    provider = BaostockProvider(client=_FakeClient([
+        ["sh.000300", "1", "沪深300指数"],
+        ["sz.399002", "1", "深证成份指数(收益)"],
+        ["sh.000032", "1", "上证能源行业指数"],
+        ["sh.510160", "1", "中证南方小康产业指数ETF"],
+        ["sh.000012", "1", "上证国债指数"],
+        ["sh.000028", "1", "上证180成长指数"],
+    ]))
+    indexes = provider.fetch_indexes(date(2026, 9, 2))
+    assert len(indexes) == 3
+    assert indexes[0].index_id == "hs300.price"
+    assert indexes[1].return_version.value == "gross_total_return"
+    assert indexes[2].category == "industry"
+
+
 def test_adjustment_mapping_is_explicit() -> None:
     assert BaostockProvider._adjustflag(AdjustmentMethod.UNADJUSTED) == "3"
     assert BaostockProvider._adjustflag(AdjustmentMethod.QFQ) == "2"

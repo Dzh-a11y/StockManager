@@ -76,7 +76,7 @@
             <span class="field__hint">manifest 需位于同目录:<code>&lt;文件&gt;.manifest.json</code></span>
           </label>
           <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
-            <span class="btn__label">开始初始化 / 同步</span>
+            <span class="btn__label">股票筛选池回补和同步</span>
           </button>
           <p id="bootstrap-status" class="panel__hint" hidden></p>
           <div class="section-divider"></div>
@@ -89,7 +89,18 @@
             <div class="progress-fill" id="sync-progress-fill"></div>
           </div>
           <p id="sync-current" class="panel__hint" hidden></p>
-          <p class="panel__hint" style="opacity:.75">1. 数据增量约需 4~5 小时；进度条若卡住会在 5 分钟后自动重启。</p>
+          <p class="panel__hint">股票池：股票行情与基本面，前复权 qfq。中断可续传；失败后点击按钮显式重试。</p>
+          <div class="section-divider"></div>
+          <div class="reference-sync-panel">
+            <button id="capm-reference-sync" class="btn btn--secondary btn--block" type="button">CAPM 回补和同步</button>
+            <p class="panel__hint">独立指数目录、指数点位与一年期利率 · Baostock · 默认沪深300价格指数。</p>
+            <p id="capm-reference-status" class="panel__hint" role="status">尚未同步</p>
+            <div class="progress-track" id="capm-progress-track" hidden><div class="progress-fill" id="capm-progress-fill"></div></div>
+            <p id="capm-progress-current" class="panel__hint"></p>
+            <p id="capm-coverage" class="panel__hint"></p>
+            <p id="capm-reference-warnings" class="panel__hint sync-warning" role="status" hidden></p>
+            <details><summary>指数传递与本地覆盖</summary><div id="capm-index-coverage" class="panel__hint"></div></details>
+          </div>
           <div class="section-divider"></div>
           <p id="gate-runner-status" class="panel__hint" hidden></p>
           <p id="db-select-title" class="panel__hint" hidden>本地数据库 · 进入前请选择</p>
@@ -122,11 +133,12 @@
 
       <!-- 左列:运行筛选 -->
       <div class="wb-col wb-col--left">
-        <section class="panel panel--conditions" aria-label="运行条件">
+        <section id="screen-panel" class="panel panel--conditions" data-panel-id="screen-panel" aria-label="运行条件">
           <div class="panel__head">
             <h2 class="panel__title">运行筛选</h2>
+            <button class="panel-toggle" data-panel-toggle="screen-panel" aria-controls="screen-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
-          <div class="panel__body">
+          <div id="screen-panel-content" class="panel__body">
             <label class="field">
               <span class="field__label">数据集</span>
               <input id="dataset" class="input" type="text" value="market" autocomplete="off">
@@ -164,11 +176,12 @@
         </section>
 
         <!-- 左列下:回测基础数据(资金/窗口/持仓+运行) -->
-        <section class="panel panel--conditions" aria-label="回测基础数据">
+        <section id="backtest-panel" class="panel panel--conditions" data-panel-id="backtest-panel" aria-label="回测基础数据">
           <div class="panel__head">
             <h2 class="panel__title">回测基础数据</h2>
+            <button class="panel-toggle" data-panel-toggle="backtest-panel" aria-controls="backtest-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
-          <div class="panel__body">
+          <div id="backtest-panel-content" class="panel__body">
             <label class="field">
               <span class="field__label">回测窗口（年,1-8）<span class="term__help" data-tip="回测区间长度,终点为本地数据最新已完成交易日,起点按 N×260 个交易日向前。">?</span></span>
               <input id="bt-window" class="input" type="number" min="1" max="8" step="1" value="5" inputmode="numeric">
@@ -199,7 +212,7 @@
 
       <!-- 中列:筛选模版 + 策略模版 -->
       <div class="wb-col wb-col--mid">
-        <section class="panel panel--editor" aria-label="策略编辑器">
+        <section id="template-panel" class="panel panel--editor" data-panel-id="template-panel" aria-label="策略编辑器">
           <div class="panel__head panel__head--tabs">
             <div class="panel__title-group">
               <h2 class="panel__title">筛选模版</h2>
@@ -209,7 +222,9 @@
               <span class="field__label">模板</span>
               <select id="template-select" class="select"></select>
             </label>
+            <button class="panel-toggle" data-panel-toggle="template-panel" aria-controls="template-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
+          <div id="template-panel-content">
           <div class="editor-meta">
             <div id="template-meta" class="template-meta"></div>
             <div class="editor-actions">
@@ -233,14 +248,16 @@
             <button id="add-group" class="btn btn--ghost" type="button">+ 组合分组</button>
             <p id="composition-error" class="panel__hint panel__hint--error" hidden></p>
           </div>
+          </div>
         </section>
 
         <!-- 中列下:策略模版(回测策略/六类政策) -->
-        <section class="panel panel--editor" aria-label="策略模版">
+        <section id="strategy-panel" class="panel panel--editor" data-panel-id="strategy-panel" aria-label="策略模版">
           <div class="panel__head">
             <h2 class="panel__title">策略模版</h2>
+            <button class="panel-toggle" data-panel-toggle="strategy-panel" aria-controls="strategy-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
-          <div class="panel__body">
+          <div id="strategy-panel-content" class="panel__body">
             <p class="panel__hint">六类政策各选其一并填写参数（参数白名单校验,禁止任意代码）</p>
             <div id="strategy-policies" class="editor-rules"></div>
           </div>
@@ -249,43 +266,149 @@
 
       <!-- 右列:筛选结果 + 回测结果 -->
       <div class="wb-col wb-col--right">
-        <section class="panel panel--results" aria-label="筛选结果">
+        <section id="results-panel" class="panel panel--results" data-panel-id="results-panel" aria-label="筛选结果">
           <div class="panel__head">
             <h2 class="panel__title">筛选结果</h2>
             <span id="result-revision" class="panel__subtitle"></span>
+            <button class="panel-toggle" data-panel-toggle="results-panel" aria-controls="results-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
+          <div id="results-panel-content">
           <div id="result-body" class="panel__body">
             <div class="empty-state">
               <p class="empty-state__title">尚未运行筛选</p>
               <p class="empty-state__hint">设置运行条件后点击「运行筛选」。模板临时配置不会被自动保存。</p>
             </div>
           </div>
+          </div>
         </section>
 
-        <section class="panel panel--results" aria-label="回测结果">
+        <section id="backtest-results-panel" class="panel panel--results" data-panel-id="backtest-results-panel" aria-label="回测结果">
           <div class="panel__head">
             <h2 class="panel__title">回测结果</h2>
+            <button class="panel-toggle" data-panel-toggle="backtest-results-panel" aria-controls="backtest-results-panel-content" aria-expanded="true" type="button">收起</button>
           </div>
+          <div id="backtest-results-panel-content">
           <div id="bt-result" class="panel__body" hidden></div>
+          </div>
         </section>
       </div>
 
+      <!-- 个股研究：独立于筛选结果，位于维护区上方 -->
+      <section id="stock-detail-panel" class="panel wb-stock-detail" data-panel-id="stock-detail-panel" aria-label="个股研究">
+        <div class="panel__head">
+          <div class="panel__title-group">
+            <h2 id="stock-detail-title" class="panel__title">个股研究</h2>
+            <span id="stock-detail-subtitle" class="panel__subtitle"></span>
+          </div>
+          <button class="panel-toggle" data-panel-toggle="stock-detail-panel" aria-controls="stock-detail-content" aria-expanded="true" type="button">收起</button>
+        </div>
+        <div id="stock-detail-content" class="panel__body">
+          <div id="stock-detail-empty" class="empty-state empty-state--compact">
+            <p class="empty-state__title">从筛选结果中选择一只股票</p>
+            <p class="empty-state__hint">在这里查看命中条件、日 K 与成交量；通过筛选的股票会按需计算 CAPM。</p>
+          </div>
+          <div id="stock-detail-analysis" class="stock-analysis-grid" hidden>
+            <section class="stock-analysis-column" aria-label="符合条件">
+              <h3 class="stock-analysis-heading"><span>01</span> 符合条件</h3>
+              <div id="stock-rules"></div>
+            </section>
+            <section id="stock-kline" class="stock-analysis-column" aria-label="日 K 与成交量">
+              <div class="kline-panel__head">
+                <h3 class="stock-analysis-heading"><span>02</span> 日 K 与成交量</h3>
+                <span class="kline-toolbar" role="group" aria-label="K 线缩放与平移">
+                  <button class="kline-btn" data-kline-action="zoom-out" type="button" title="缩小 K 线" aria-label="缩小 K 线">−</button>
+                  <button class="kline-btn" data-kline-action="pan-left" type="button" title="左移 K 线" aria-label="左移 K 线">←</button>
+                  <button class="kline-btn" data-kline-action="pan-right" type="button" title="右移 K 线" aria-label="右移 K 线">→</button>
+                  <button class="kline-btn" data-kline-action="zoom-in" type="button" title="放大 K 线" aria-label="放大 K 线">＋</button>
+                  <button class="kline-btn" data-kline-action="reset" type="button" title="复位 K 线">复位</button>
+                </span>
+              </div>
+              <p id="kline-info" class="kline-panel__info" aria-live="polite">尚未选择股票</p>
+              <canvas id="kline-canvas" class="kline-canvas" role="img" aria-label="所选股票的本地日 K 线和成交量，红色上涨、绿色下跌"></canvas>
+              <p class="panel__hint">上图为价格，下图为成交量；滚轮缩放、拖动平移。图表复权跟随筛选结果，CAPM 股票收益固定采用前复权。</p>
+            </section>
+            <section class="stock-analysis-column" aria-label="CAPM 结果">
+              <h3 class="stock-analysis-heading"><span>03</span> CAPM</h3>
+              <div id="stock-capm-results" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <div class="capm-settings" role="group" aria-label="CAPM 参数">
+            <label class="field capm-settings__benchmark">
+              <span class="field__label">市场指数</span>
+              <select id="capm-benchmark" class="select" disabled><option value="">等待本地指数目录</option></select>
+            </label>
+            <label class="field">
+              <span class="field__label">央行存款基准利率 · 期限</span>
+              <select id="capm-rate-term" class="select" disabled><option value="">等待本地利率</option></select>
+            </label>
+            <label class="field capm-settings__periods">
+              <span class="field__label">线性年化因子</span>
+              <input id="capm-periods-per-year" class="input" type="number" min="1" step="1" value="252" inputmode="numeric">
+            </label>
+            <p id="capm-rate-info" class="panel__hint capm-settings__wide" aria-live="polite">利率按筛选截至日展示；历史计算使用当时生效的利率。</p>
+            <p id="capm-options-status" class="panel__hint capm-settings__wide" aria-live="polite">选择股票后读取本地已发布的指数和利率。参数由本浏览器的所有模板共用。</p>
+            <button id="capm-options-retry" class="btn btn--ghost btn--sm" type="button" hidden>重新读取本地选项</button>
+          </div>
+
+          <div class="capm-guide">
+            <details class="capm-guide__section" open>
+              <summary>模型公式 · 日 α 与年化 α</summary>
+              <div class="capm-formula-grid">
+                <div>
+                  <h4>理论 CAPM 与实际回归</h4>
+                  <p class="formula">E(Rᵢ) = R𝒇 + βᵢ [E(Rₘ) − R𝒇]</p>
+                  <p>理论描述均衡下预期收益与市场风险的关系；这里用历史样本估计含截距的回归：</p>
+                  <p class="formula">yₜ = α + β xₜ + εₜ</p>
+                  <p class="formula">xₜ = Rₘ,ₜ − R𝒇,ₜ，yₜ = Rᵢ,ₜ − R𝒇,ₜ</p>
+                  <p>股票和指数均用简单收益率 <code>Rₜ = Pₜ / Pₜ₋₁ − 1</code>。股票采用前复权；指数保留其价格/全收益版本。</p>
+                </div>
+                <div>
+                  <h4>日频 α：窗口内的回归截距</h4>
+                  <p class="formula">β = Σ[(xₜ − x̄)(yₜ − ȳ)] / Σ(xₜ − x̄)²</p>
+                  <p class="formula">α日 = ȳ − β x̄</p>
+                  <p>每日模型调整后的收益差为 <code>yₜ − βxₜ = α日 + εₜ</code>，其样本均值是日 α。每个窗口估计一个日频 α，并非逐日另算一条 α 序列。</p>
+                  <p class="formula">α年化 = α日 × 年化因子（默认 252）</p>
+                  <p>例如日 α 为 0.02%，默认线性年化为 5.04%；不是复利，也不代表未来一年实际收益。</p>
+                </div>
+                <div>
+                  <h4>历史利率与有效样本</h4>
+                  <p class="formula">R𝒇,ₜ = Σ[各段年利率 × 各段自然日数 / 365]</p>
+                  <p>央行人民币整存整取存款基准利率是研究代理，并非可随时按该利率借贷的无风险投资。使用 <code>[前收盘日, 当前收盘日)</code>，跨调息按生效日切段，周末/节假日计入，闰年分母仍为 365。</p>
+                  <p>窗口为 30 / 120 / 250 / 500 自然日，每窗至少 15 条有效收益；股票前复权历史至少跨 180 自然日。利率的 365 分母与 α 的 252 年化因子不同。</p>
+                </div>
+              </div>
+            </details>
+            <details class="capm-guide__section">
+              <summary>如何理解 α、β 和 R² · CAPM 的假设与局限</summary>
+              <div class="capm-meaning-grid">
+                <div>
+                  <h4>用来比较历史表现，不替代投资判断</h4>
+                  <p><strong>α 较小或接近 0：</strong>样本中相对所选基准、扣除市场风险解释部分后的额外收益有限。<strong>α &lt; 0：</strong>样本中的模型调整后表现为负；这只说明历史超额表现不支持明显优势，不等同于未来“没有机会”。</p>
+                  <p>α &gt; 0 也不保证未来获利。本页未计算标准误、p 值或置信区间，不能仅凭正负或大小判断统计显著性；短窗口、异常值和基准选择都可能明显影响估计。</p>
+                  <p><strong>β</strong> 表示收益对市场超额收益的历史敏感度，不是总风险；<strong>R²</strong> 是所选市场因子对样本收益波动的解释比例，不是收益预测准确率。<code>R² = 1 − Σ εₜ² / Σ(yₜ − ȳ)²</code>。</p>
+                </div>
+                <div>
+                  <h4>模型假设与本系统的近似</h4>
+                  <p>经典 CAPM 假设投资者在共同的单期框架中进行均值—方差优化、具有同质预期；市场无税费及交易摩擦，资产可分割/交易，可按同一无风险利率借贷。</p>
+                  <p>理论市场组合包含全部风险资产。本系统用选定指数作为代理：行业指数并不是全市场组合，得到的是相对该行业基准的单因子 α；价格指数和全收益指数的分红口径不同，切换后结果不可脱离口径直接比较。</p>
+                  <p>样本回归额外近似窗口内 β 稳定、关系线性。现实中的交易限制、利率期限、行业/风格因素和数据缺口可能让这些假设不成立。结果仅供研究参考，不构成投资建议。</p>
+                  <p class="panel__hint">理论与局限参考：<a href="https://doi.org/10.1111/j.1540-6261.1964.tb02865.x" target="_blank" rel="noopener noreferrer">Sharpe（1964）</a>；<a href="https://mba.tuck.dartmouth.edu/bespeneckbo/default/AFA611-Eckbo%20web%20site/AFA611-S6B-FamaFrench-CAPM-JEP04.pdf" target="_blank" rel="noopener noreferrer">Fama 与 French（2004）</a>。</p>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
       <!-- 数据同步与维护(全宽底部) -->
-      <section class="panel panel--conditions wb-datasync" aria-label="数据同步与维护">
+      <section id="maintenance-panel" class="panel panel--conditions wb-datasync" data-panel-id="maintenance-panel" aria-label="数据同步与维护">
         <div class="panel__head">
           <h2 class="panel__title">数据同步与维护</h2>
+          <button class="panel-toggle" data-panel-toggle="maintenance-panel" aria-controls="maintenance-panel-content" aria-expanded="true" type="button">收起</button>
         </div>
-        <div class="panel__body">
-          <p id="sync-progress" class="panel__hint" hidden></p>
-          <div class="progress-track" id="sync-batch-track" hidden>
-            <div class="progress-fill" id="sync-batch-fill"></div>
-          </div>
-          <p id="sync-batch-label" class="panel__hint" hidden></p>
-          <div class="progress-track" id="sync-progress-track" hidden>
-            <div class="progress-fill" id="sync-progress-fill"></div>
-          </div>
-          <p id="sync-current" class="panel__hint" hidden></p>
-          <div class="section-divider"></div>
+        <div id="maintenance-panel-content" class="panel__body">
+          <p class="panel__hint">通过顶部「数据同步」统一管理股票筛选池与 CAPM，两条链路拥有独立进度、失败信息与发布状态。</p>
           <div id="sync-status-daily" class="panel__hint"></div>
           <p id="sync-status-daily-legend" class="panel__hint" hidden>最近的 30 天（绿=已同步 橙=拉取中/未完全同步 灰=缺失 红=失败 浅=非交易日）</p>
           <div id="sync-status-bands" class="panel__hint"></div>
@@ -293,27 +416,6 @@
           <div id="sync-status-years" class="panel__hint"></div>
           <p id="sync-status-years-legend" class="panel__hint" hidden>年度覆盖（每块 1 年,色深=覆盖率高;橙=含未完全同步天;灰=该年无数据）</p>
           <div class="section-divider"></div>
-          <div id="bootstrap-panel" class="panel__hint" hidden>
-            <p class="panel__hint" id="bootstrap-readiness"></p>
-            <label class="panel__label" for="bootstrap-source">初始化方式</label>
-            <select id="bootstrap-source" class="input">
-              <option value="incremental" selected>增量同步（已有数据，仅补齐尾部）</option>
-              <option value="online">在线 Bootstrap（Baostock 串行拉取）</option>
-              <option value="seed">导入种子数据库（需外部 manifest）</option>
-            </select>
-            <label class="panel__label" for="bootstrap-adjustment">复权方式</label>
-            <select id="bootstrap-adjustment" class="input">
-              <option value="qfq">前复权 qfq</option>
-              <option value="unadjusted">不复权 unadjusted</option>
-              <option value="hfq">后复权 hfq</option>
-            </select>
-            <label class="panel__label" for="bootstrap-seed-path">种子文件路径（选择“导入种子”时）</label>
-            <input id="bootstrap-seed-path" class="input" type="text" placeholder="如 /path/to/market.sqlite3" autocomplete="off">
-            <button id="bootstrap-start" class="btn btn--primary btn--block" type="button">
-              <span class="btn__label">开始初始化</span>
-            </button>
-            <p id="bootstrap-status" class="panel__hint" hidden></p>
-          </div>
           <div class="section-divider"></div>
           <button id="shutdown-server" class="btn btn--danger btn--block" type="button">
             <span class="btn__label">停止服务（结束本进程）</span>

@@ -23,13 +23,7 @@ StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供�
 
 等待超过 10 秒会提示加载较慢；达到 60 秒可选择“重新加载”，也可继续等待。加载失败时保留失败阶段与原因，并立即提供重新加载按钮，不会自动重试。数据未就绪仍按原有流程进入初始化页。
 
-## 需求沟通与开发协作
 
-新需求默认采用“你提需求，Agent 大量、系统地追问细化”的方式，不设每轮问题数量上限。问题按主题分组并编号，可分批讨论并持续追问，充分明确场景、范围、接口参数、业务与数据口径、交互异常、任务依赖及验收标准，形成尽量精确、可执行、可验收的项目计划（plan），确认后实施。每轮问答持续更新计划和待决清单，避免实现者猜测关键需求。已经确认并授权的工作及范围明确的小修改直接执行，避免重复确认。
-
-模型职责由每次提示词指定，例如“你负责架构”“你负责实现”或“你负责审查”；项目不固定模型分工。实现任务包含必要测试、自审和文档同步，架构讨论按约定范围交付方案。
-
-完整约定见 [项目开发规定](AGENTS.md) 第 7 节。
 
 ## 功能概览
 
@@ -71,10 +65,13 @@ cd /Users/douzihao/StockManager/code
 ### macOS
 
 - **双击脚本（推荐，最简）**：在 `code` 目录中双击 `scripts/StockManager.command`，即可启动并自动打开浏览器；也可为该脚本创建 Finder 替身放到桌面。
+  
   - 脚本按自身位置定位代码目录，移动整个项目无需修改路径；请保留原脚本在 `scripts/` 内。已有 `StockManager.app` 移动后需在新目录重新运行 `./scripts/make_app.sh`。
-- **桌面 App（带图标）**：先运行 `python3 scripts/make_icon.py` 生成图标（若已生成可跳过），再运行 `./scripts/make_app.sh`，在代码仓库根生成 `StockManager.app`，双击图标即可启动。
-- **命令行方式**：
 
+- **桌面 App（带图标）**：先运行 `python3 scripts/make_icon.py` 生成图标（若已生成可跳过），再运行 `./scripts/make_app.sh`，在代码仓库根生成 `StockManager.app`，双击图标即可启动。
+
+- **命令行方式**：
+  
   ```bash
   python3 scripts/launcher.py start    # 启动并打开浏览器
   python3 scripts/launcher.py status   # 查看运行状态
@@ -85,14 +82,17 @@ cd /Users/douzihao/StockManager/code
 ### Windows
 
 - **双击启动（推荐，最傻瓜）**：把项目拷到 Windows 后，直接双击 `scripts\StockManager.bat`。首次会自动查找 Python 3.11+、创建 `.venv`、安装依赖、启动服务、打开浏览器，并**自动在桌面生成带图标的 StockManager 快捷方式**；之后双击桌面图标即可。
-- **快捷方式补救**：若桌面图标缺失，双击 `scripts\setup_windows.bat` 重新生成（快捷方式指向 `StockManager.bat`）。
-- **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。
-- **命令行方式**（在代码仓库根执行）：
 
+- **快捷方式补救**：若桌面图标缺失，双击 `scripts\setup_windows.bat` 重新生成（快捷方式指向 `StockManager.bat`）。
+
+- **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。
+
+- **命令行方式**（在代码仓库根执行）：
+  
   ```bat
   scripts\launcher.py start    & 启动并打开浏览器（首次自动装依赖）
   ```
-
+  
   也可直接双击 `scripts\StockManager.bat` 走同一流程。
 
 ### 手动启动（等价，适合排障）
@@ -117,43 +117,42 @@ stock-manager web \
 
 规则通过模板配置开关与参数，Web 工作台的规则目录由后端元数据自动生成（`GET /api/rules`）：
 
-| rule_id | 名称 | 说明 |
-| --- | --- | --- |
-| `pe_positive` | PE 下限 | PE TTM 必须存在并严格大于下限；用于排除亏损或微利股票 |
-| `non_st` | 排除 ST | 股票不得标记为 ST |
-| `volume_price_5d` | 量价信号 | 相邻交易日同时满足量比和收盘涨幅 |
-| `limit_up_breakout` | 炸板或假阴线 | 检查涨停炸板或假阴线信号 |
-| `limit_up_3m` | 涨幅次数 | 统计窗口内涨幅事件次数 |
-| `volatility_multiple` | 波动倍数 | 限制窗口最高价与最低价的倍数 |
-| `annual_min_volume` | 年度最低交易量 | 目标日是否为自然日窗口最低交易量 |
-| `annual_min_close_price` | 年度最低收盘价 | 目标日是否为自然日窗口最低收盘价 |
-| `consecutive_up_days` | 连阳 | 最近N个交易日窗口内出现至少K个连续上涨交易日（K连阳） |
-| `n_day_close_above` | N日收盘价下限 | 最近N个交易日每天的收盘价都严格高于设定值 |
-| `volume_sum_extreme` | 连续量能极值 | 最近连续N天的成交量之和是所有连续M天成交量之和中的最低值或最高值 |
-| `price_range_ratio` | N日高低点倍率 | 最近N个交易日内最高价相对最低价的倍数落在指定区间内 |
+| rule_id                  | 名称      | 说明                                |
+| ------------------------ | ------- | --------------------------------- |
+| `pe_positive`            | PE 下限   | PE TTM 必须存在并严格大于下限；用于排除亏损或微利股票    |
+| `non_st`                 | 排除 ST   | 股票不得标记为 ST                        |
+| `volume_price_5d`        | 量价信号    | 相邻交易日同时满足量比和收盘涨幅                  |
+| `limit_up_breakout`      | 炸板或假阴线  | 检查涨停炸板或假阴线信号                      |
+| `limit_up_3m`            | 涨幅次数    | 统计窗口内涨幅事件次数                       |
+| `volatility_multiple`    | 波动倍数    | 限制窗口最高价与最低价的倍数                    |
+| `annual_min_volume`      | 年度最低交易量 | 目标日是否为自然日窗口最低交易量                  |
+| `annual_min_close_price` | 年度最低收盘价 | 目标日是否为自然日窗口最低收盘价                  |
+| `consecutive_up_days`    | 连阳      | 最近N个交易日窗口内出现至少K个连续上涨交易日（K连阳）      |
+| `n_day_close_above`      | N日收盘价下限 | 最近N个交易日每天的收盘价都严格高于设定值             |
+| `volume_sum_extreme`     | 连续量能极值  | 最近连续N天的成交量之和是所有连续M天成交量之和中的最低值或最高值 |
+| `price_range_ratio`      | N日高低点倍率 | 最近N个交易日内最高价相对最低价的倍数落在指定区间内        |
 
 系统默认模板把基本面（PE、非 ST）设为全部满足、信号组（量价、炸板、年度最低量/最低价）任一满足、风险组（涨幅次数、波动）全部满足。
-
 
 ## 回测与研究（P5A）
 
 历史筛选 + Backtrader 一体化回测。工作台的「回测策略」编辑器按六类政策各选其一（策略目录由 `GET /api/research/policies` 自动生成）：
 
-| 类别 | policy_id | 说明 |
-| --- | --- | --- |
-| 入场 entry | `eligibility_enter_v1` | 资格名单出现即允许进入（服从执行约束） |
-| 入场 entry | `pullback_entry_v1` | 筛选通过后不立即买入，等价格自近 N 日高点回落 drawdown_ratio 后再买入（回调入场） |
-| 入场 entry | `sma_below_v1` | 收盘价低于 N 日均线时买入（均线买入，均值回归） |
-| 退出 exit | `eligibility_exit_v1` | 不再合格即退出 |
-| 退出 exit | `sma_timing_v1` | 收盘价跌破 N 日均线时退出 |
-| 退出 exit | `fixed_holding_v1` | 持有 N 个交易日后退出 |
-| 退出 exit | `take_profit_partial_v1` | 上涨到 take_profit_ratio 后卖出一定比例（止盈减仓） |
-| 退出 exit | `sma_above_v1` | 收盘价高于 N 日均线时卖出（均线卖出，均值回归） |
-| 再平衡 rebalance | `daily_v1` | 每个交易日收盘后重算目标组合 |
-| 分配 allocation | `equal_weight_v1` | 等权分配：每只目标股资金 = 净资产 / 目标持仓数 |
+| 类别            | policy_id                | 说明                                                                  |
+| ------------- | ------------------------ | ------------------------------------------------------------------- |
+| 入场 entry      | `eligibility_enter_v1`   | 资格名单出现即允许进入（服从执行约束）                                                 |
+| 入场 entry      | `pullback_entry_v1`      | 筛选通过后不立即买入，等价格自近 N 日高点回落 drawdown_ratio 后再买入（回调入场）                  |
+| 入场 entry      | `sma_below_v1`           | 收盘价低于 N 日均线时买入（均线买入，均值回归）                                           |
+| 退出 exit       | `eligibility_exit_v1`    | 不再合格即退出                                                             |
+| 退出 exit       | `sma_timing_v1`          | 收盘价跌破 N 日均线时退出                                                      |
+| 退出 exit       | `fixed_holding_v1`       | 持有 N 个交易日后退出                                                        |
+| 退出 exit       | `take_profit_partial_v1` | 上涨到 take_profit_ratio 后卖出一定比例（止盈减仓）                                 |
+| 退出 exit       | `sma_above_v1`           | 收盘价高于 N 日均线时卖出（均线卖出，均值回归）                                           |
+| 再平衡 rebalance | `daily_v1`               | 每个交易日收盘后重算目标组合                                                      |
+| 分配 allocation | `equal_weight_v1`        | 等权分配：每只目标股资金 = 净资产 / 目标持仓数                                          |
 | 分配 allocation | `add_position_on_dip_v1` | 持有中回调 add_drawdown_ratio 且有现金则按 add_fraction 补仓（最多 max_additions 次） |
-| 排名 ranking | `turnover_20d_desc_v1` | 按近 20 日平均换手率降序取候选 |
-| 执行 execution | `ashare_execution_v1` | A 股执行模型：次日开盘成交、T+1、整手、停牌/涨跌停、佣金/印花税/过户费 |
+| 排名 ranking    | `turnover_20d_desc_v1`   | 按近 20 日平均换手率降序取候选                                                   |
+| 执行 execution  | `ashare_execution_v1`    | A 股执行模型：次日开盘成交、T+1、整手、停牌/涨跌停、佣金/印花税/过户费                             |
 
 回测窗口以年为单位（1~8 年）：终点为本地数据最新已完成交易日，起点按 N×260 个交易日向前；回测结果包含净值曲线、收益/回撤/夏普指标与逐笔成交记录。回测依赖八年历史覆盖，首次启动自动回补（断点续传，批次内逐代码实时进度）。
 

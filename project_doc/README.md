@@ -1,5 +1,5 @@
 ---
-date: 2026-09-02
+date: 2026-09-03
 purpose: StockManager 项目文档中心索引：说明 project_doc 的目录组织与各文档归属。
 project: StockManager
 status: active
@@ -34,6 +34,8 @@ project_doc/
 
 - `PHASE_1_PLAN.md` ~ `PHASE_6_PLAN.md`：P1 至 P6 阶段计划。
 - `P5A_PLAN.md`：P5A 历史筛选与 Backtrader 一体化回测方案（含阶段状态与验收记录）。
+- `P5B_PLAN.md`（active）：P5B 指数数据与 CAPM 独立计划，保存当前确认的 Baostock 范围、央行存款基准利率、独立同步和来源可用数据验收口径；保留早期讨论及变更记录。
+- [ALPHA_SEARCH_20260901_RUN.md](development/plan/ALPHA_SEARCH_20260901_RUN.md)：截至 2026-09-01 的稳健 Alpha 模板搜索；40 个候选、完整观测、邻档检查与冠军原生模板，未使用回测系统。
 - `P5_RECONSTRUCT_DATASYNC.md`：DataSync 重构计划，定义确定性规划、串行抓取、staging、完整性验证、generation 原子发布、种子 SHA-256 与跨平台迁移。
 - `MIGRATION_PLAN.md`：核心逻辑迁移至新架构的生效计划。
 - `DELETE_MANIFEST.md`：可安全删除的非业务文件候选清单（P1-1 执行依据）。
@@ -65,11 +67,13 @@ project_doc/
 - `P4_READ_LAYER.md`：P4 可替换数据库只读访问、并发读取与分片筛选基础设施实现手册。
 - `P5A_1_HISTORY_V2.md` ~ `P5A_9_ACCEPTANCE.md`：P5A 各阶段实现手册（八年覆盖、PIT 契约、策略规格、历史筛选、运行存储、回测适配器、执行模型、研究 API、最终验收）。
 - `P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md`：P5 DataSync 重构实现手册（Planner/Worker/Staging/Verifier/Committer/Gate、种子与迁移工具、CLI、验收记录）。
+- [CAPM数据处理](development/implementation/CAPM数据处理.md)（active）：P5B 指数与利率数据、前复权简单收益、CAPM 回归及线性年化处理手册；包含来源缺口验收、独立个股研究 UI、可切换参数、实际覆盖、接口和离线测试证据。
 - `AMBIGUITY_LOG.md`：P1-3 旧规则行为歧义清单。
 
 ## usage（使用手册）
 
 - `README.md`：用户使用手册，说明功能、内置筛选规则、回测策略（P5A）以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
+- [STOCK_TEMPLATE_ALPHA_SEARCH.md](usage/STOCK_TEMPLATE_ALPHA_SEARCH.md)：个人稳健 Alpha 模板搜索技能的调用、maximin 目标、代码只读边界与辅助脚本验证记录；先不用回测系统。
 
 ## 元数据要求
 

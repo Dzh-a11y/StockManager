@@ -18,6 +18,7 @@ from typing import Callable, Mapping
 from zoneinfo import ZoneInfo
 
 from stock_manager import __version__
+from stock_manager.capm import CapmAnalysisService
 from stock_manager.domain import (
     AdjustmentMethod,
     SyncPlanStatus,
@@ -234,7 +235,14 @@ class WebApp:
             if path == "/api/sync/backfill/progress":
                 return self._json(200, self._backfill_v2_progress())
             if path == "/api/sync/pipeline/progress":
-                return self._json(200, self._pipeline_progress())
+                dataset_id = query.get("dataset_id", ["market"])[0]
+                if dataset_id not in ("market", "capm"):
+                    raise BadRequestError("dataset_id must be market or capm")
+                return self._json(200, self._pipeline_progress(dataset_id))
+            if path == "/api/sync/capm/status":
+                return self._json(200, self._services.repository.capm_data_status())
+            if path == "/api/capm/options":
+                return self._handle_capm_options(query)
             if path == "/api/screen/progress":
                 return self._json(200, self._screen_progress)
             if path == "/api/instances":
@@ -281,6 +289,12 @@ class WebApp:
 
         if method == "POST" and path == "/api/sync/bootstrap":
             return self._handle_bootstrap(body)
+
+        if method == "POST" and path == "/api/sync/capm-reference":
+            return self._handle_capm_reference_sync(body)
+
+        if method == "POST" and path == "/api/capm/analyses":
+            return self._handle_capm_analysis(body)
 
         if method == "POST" and path == "/api/research/backtests":
             return self._handle_research_submit(body)
@@ -522,6 +536,73 @@ class WebApp:
             return self._bootstrap_incremental(adjustment)
         return self._bootstrap_online(adjustment)
 
+    def _handle_capm_reference_sync(self, body: object) -> Response:
+        """Launch the same isolated background runner for reference inputs."""
+        data = self._object(body, "body")
+        unknown = set(data) - {"start", "end"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        if self._sync_config is None or self._config.lock_directory is None:
+            raise BadRequestError("sync config and lock directory are required")
+        try:
+            start = date.fromisoformat(self._text(data["start"], "start")) if "start" in data else None
+            end = date.fromisoformat(self._text(data["end"], "end")) if "end" in data else None
+        except ValueError as error:
+            raise BadRequestError("start and end must be ISO dates") from error
+        if start and end and start > end:
+            raise BadRequestError("start must not be after end")
+        return self._launch_runner_process(AdjustmentMethod.UNADJUSTED, "online",
+                                           dataset_id="capm", start=start, end=end)
+
+    def _handle_capm_options(self, query: Mapping[str, list[str]]) -> Response:
+        """Expose only published local research choices, without synchronization."""
+        unknown = set(query) - {"as_of"}
+        if unknown:
+            raise BadRequestError(f"unknown parameter(s): {', '.join(sorted(unknown))}")
+        if len(query.get("as_of", [])) != 1:
+            raise BadRequestError("as_of must be supplied exactly once")
+        raw_date = self._query_text(query, "as_of")
+        try:
+            as_of = date.fromisoformat(raw_date)
+        except ValueError as error:
+            raise BadRequestError("as_of must be an ISO date (YYYY-MM-DD)") from error
+        if as_of.isoformat() != raw_date:
+            raise BadRequestError("as_of must be an ISO date (YYYY-MM-DD)")
+        return self._json(200, self._services.repository.capm_options(as_of))
+
+    def _handle_capm_analysis(self, body: object) -> Response:
+        """Compute and persist one local-only analysis requested by the user."""
+        data = self._object(body, "body")
+        unknown = set(data) - {"stock_code", "as_of", "benchmark_id", "rate_term", "windows", "periods_per_year"}
+        if unknown:
+            raise BadRequestError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        try:
+            stock_code = self._text(data.get("stock_code"), "stock_code")
+            as_of = date.fromisoformat(self._text(data.get("as_of"), "as_of"))
+        except ValueError as error:
+            raise BadRequestError("as_of must be an ISO date") from error
+        raw_windows = data.get("windows", [30, 120, 250, 500])
+        if not isinstance(raw_windows, list) or not raw_windows:
+            raise BadRequestError("windows must be a non-empty positive integer list")
+        windows = tuple(self._positive_integer(value, "windows item") for value in raw_windows)
+        periods = self._positive_integer(data.get("periods_per_year", 252), "periods_per_year")
+        benchmark_id = self._text(data.get("benchmark_id", "hs300.price"), "benchmark_id")
+        rate_term = self._text(data.get("rate_term", "1_year"), "rate_term")
+        options = self._services.repository.capm_options(as_of)
+        benchmark = next((item for item in options["benchmarks"] if item["index_id"] == benchmark_id), None)
+        if benchmark is None:
+            raise BadRequestError(f"benchmark_id is not in the published local CAPM catalog: {benchmark_id}")
+        if not any(item["term"] == rate_term for item in options["rate_terms"]):
+            raise BadRequestError(f"rate_term is not in the published local CAPM data: {rate_term}")
+        analysis_id, results = CapmAnalysisService(self._services.repository).analyse_and_save(
+            stock_code, as_of, benchmark_id=benchmark_id, rate_term=rate_term,
+            windows=windows, periods_per_year=periods,
+        )
+        return self._json(201, {"analysis_id": analysis_id, "results": to_jsonable(results),
+            "stock_code": stock_code, "as_of": as_of.isoformat(), "benchmark_id": benchmark_id,
+            "benchmark_return_version": benchmark["return_version"], "rate_term": rate_term,
+            "periods_per_year": periods})
+
     def _bootstrap_incremental(self, adjustment: AdjustmentMethod) -> Response:
         """增量同步:启动独立 runner 进程补齐尾部,不阻塞请求。
 
@@ -550,7 +631,20 @@ class WebApp:
         return self._launch_runner_process(adjustment, "online")
 
     def _launch_runner_process(
-        self, adjustment: AdjustmentMethod, mode: str
+        self, adjustment: AdjustmentMethod, mode: str, *, dataset_id: str = "market",
+        start: date | None = None, end: date | None = None,
+    ) -> Response:
+        """Serialize click admission as well as the provider's fetch channel."""
+        from stock_manager.sync.locks import persistent_file_lock, process_lock
+        if self._config.lock_directory is None:
+            raise BadRequestError("sync lock directory is required")
+        path = self._config.lock_directory / f"{dataset_id}_launch.lock"
+        with process_lock(str(path.resolve())), persistent_file_lock(path):
+            return self._launch_runner_locked(adjustment, mode, dataset_id=dataset_id, start=start, end=end)
+
+    def _launch_runner_locked(
+        self, adjustment: AdjustmentMethod, mode: str, *, dataset_id: str,
+        start: date | None, end: date | None,
     ) -> Response:
         """启动独立回补 runner 子进程(与 Web 线程隔离)。"""
         import subprocess as _subprocess
@@ -558,8 +652,11 @@ class WebApp:
         from pathlib import Path as _Path
 
         plans = self._services.repository.list_sync_plans(
-            "market", adjustment
+            dataset_id, adjustment
         )
+        for plan in plans:
+            self._reset_stale_plan_if_needed(self._services.repository, plan)
+        plans = self._services.repository.list_sync_plans(dataset_id, adjustment)
         if any(p.status.value == "RUNNING" for p in plans):
             return self._json(
                 409,
@@ -579,8 +676,13 @@ class WebApp:
         from stock_manager.sync.locks import is_file_lock_held as _lock_held
 
         runner_lock = (
-            _Path(self._config.lock_directory) / "backfill_runner.lock"
+            _Path(self._config.lock_directory) / ("capm_runner.lock" if dataset_id == "capm" else "backfill_runner.lock")
         )
+        launch = self._services.repository.get_sync_runner(dataset_id)
+        if launch and launch["status"] == "STARTING" and (
+            datetime.now(SHANGHAI) - datetime.fromisoformat(str(launch["updated_at"]))
+        ).total_seconds() < 15:
+            return self._json(409, {"error": {"code": "ALREADY_RUNNING", "message": "同步任务正在启动，请勿重复点击"}})
         if _lock_held(runner_lock):
             return self._json(
                 409,
@@ -608,31 +710,45 @@ class WebApp:
         python = _sys.executable
         log_dir = repo_root / "data" / "backfill_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        with open(
-            log_dir / "runner_web.log", "a", encoding="utf-8"
-        ) as log_handle:
-            proc = _subprocess.Popen(
-                [
-                    python, "-u", str(runner),
-                    "--config", str(self._config.sync_config_path),
-                    "--db", str(self._config.database_path),
-                    "--lock-dir", str(self._config.lock_directory),
-                    "--adjustment", adjustment.value,
-                ],
-                cwd=str(repo_root),
-                stdout=log_handle,
-                stderr=_subprocess.STDOUT,
-                start_new_session=True,
+        self._services.repository.set_sync_runner(dataset_id, "STARTING", None,
+                                                  datetime.now(SHANGHAI), "同步任务正在启动")
+        extra_args = ["--dataset", dataset_id]
+        if start:
+            extra_args.extend(["--start", start.isoformat()])
+        if end:
+            extra_args.extend(["--end", end.isoformat()])
+        try:
+            with open(
+                log_dir / ("runner_capm.log" if dataset_id == "capm" else "runner_web.log"), "a", encoding="utf-8"
+            ) as log_handle:
+                proc = _subprocess.Popen(
+                    [
+                        python, "-u", str(runner),
+                        "--config", str(self._config.sync_config_path),
+                        "--db", str(self._config.database_path),
+                        "--lock-dir", str(self._config.lock_directory),
+                        "--adjustment", adjustment.value,
+                        *extra_args,
+                    ],
+                    cwd=str(repo_root),
+                    stdout=log_handle,
+                    stderr=_subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except OSError as error:
+            message = f"无法启动 {dataset_id} 同步进程：{error}"
+            self._services.repository.set_sync_runner(dataset_id, "FAILED", None, datetime.now(SHANGHAI), message)
+            raise BadRequestError(message) from error
+        if dataset_id == "market":
+            self._sync_progress.update(
+                {
+                    "status": "running",
+                    "phase": mode,
+                    "dataset_id": dataset_id,
+                    "adjustment": adjustment.value,
+                    "message": f"{mode} 回补已在独立进程启动(pid {proc.pid});杀掉该进程即停止。",
+                }
             )
-        self._sync_progress.update(
-            {
-                "status": "running",
-                "phase": mode,
-                "dataset_id": "market",
-                "adjustment": adjustment.value,
-                "message": f"{mode} 回补已在独立进程启动(pid {proc.pid});杀掉该进程即停止。",
-            }
-        )
         return self._json(
             200,
             {
@@ -1054,6 +1170,13 @@ class WebApp:
         """
         if getattr(plan, "status", None) is not SyncPlanStatus.RUNNING:
             return
+        # A single historical request can legitimately take longer than the
+        # progress timeout. A held runner lock is stronger evidence than age.
+        from stock_manager.sync.locks import is_file_lock_held
+        if self._config.lock_directory is not None:
+            lock_name = "capm_runner.lock" if plan.dataset_id == "capm" else "backfill_runner.lock"
+            if is_file_lock_held(self._config.lock_directory / lock_name):
+                return
         tasks = repo.list_sync_tasks(plan.plan_id)
         running = [t for t in tasks if t.status.value == "RUNNING"]
         now = datetime.now(SHANGHAI)
@@ -1098,7 +1221,7 @@ class WebApp:
                 _as_interrupted(task, now)
             )
 
-    def _pipeline_progress(self) -> dict[str, object]:
+    def _pipeline_progress(self, dataset_id: str = "market") -> dict[str, object]:
         """Live progress of the P5 SyncPipeline (new-architecture backfill).
 
         Reads the newest sync plan's task status counts plus the currently
@@ -1106,20 +1229,24 @@ class WebApp:
         Returns ``{"status": "none"}`` when no pipeline plan exists.
         """
         repo = self._services.repository
-        try:
-            plans = repo.list_sync_plans("market", AdjustmentMethod.QFQ)
-        except Exception:
-            return {"status": "none"}
+        adjustment = AdjustmentMethod.UNADJUSTED if dataset_id == "capm" else AdjustmentMethod.QFQ
+        plans = repo.list_sync_plans(dataset_id, adjustment)
+        runner = repo.get_sync_runner(dataset_id)
+        if runner and runner["status"] in ("STARTING", "RUNNING") and self._config.lock_directory is not None:
+            from stock_manager.sync.locks import is_file_lock_held
+            name = "capm_runner.lock" if dataset_id == "capm" else "backfill_runner.lock"
+            age = (datetime.now(SHANGHAI) - datetime.fromisoformat(str(runner["updated_at"]))).total_seconds()
+            if age > 15 and not is_file_lock_held(self._config.lock_directory / name):
+                repo.set_sync_runner(dataset_id, "INTERRUPTED", runner["runner_pid"], datetime.now(SHANGHAI),
+                                     "同步进程已停止；点击对应按钮继续，成功任务不会重拉")
+                runner = repo.get_sync_runner(dataset_id)
         if not plans:
-            return {"status": "none"}
+            return {"status": "none", "dataset_id": dataset_id, "runner": runner}
         plan = plans[0]
         self._reset_stale_plan_if_needed(repo, plan)
         # 若发生了重置,重新读取计划与任务,避免用旧状态。
         plan = repo.get_sync_plan(plan.plan_id) or plan
-        try:
-            tasks = repo.list_sync_tasks(plan.plan_id)
-        except Exception:
-            return {"status": "none"}
+        tasks = repo.list_sync_tasks(plan.plan_id)
         if not tasks:
             return {
                 "status": "none",
@@ -1149,8 +1276,53 @@ class WebApp:
             progress["range_start"] = running.range_start.isoformat()
             progress["range_end"] = running.range_end.isoformat()
             batch = progress
+        errors = [task.error_message for task in tasks if task.error_message]
+        warnings: list[str] = []
+        gap_details: list[dict[str, object]] = []
+        for verification in repo.list_coverage_verifications(plan.candidate_generation_id):
+            if verification.status.value == "COMPLETE":
+                continue
+            details = json.loads(verification.details_json)
+            codes = details.get("codes") or []
+            index_id = details.get("index_id") or (codes[0] if codes else "")
+            provider_code = details.get("provider_code") or ""
+            index_name = details.get("index_name") or ""
+            identity = " · ".join(str(value) for value in (index_name, provider_code, index_id) if value)
+            label = f"{identity or verification.partition_key} · {verification.data_type}"
+            missing = list(verification.missing_items)
+            preview = ", ".join(missing[:5])
+            missing_label = "交易日" if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", item) for item in missing) else "项目"
+            message = (f"{label}：缺少 {len(missing)} 个{missing_label}"
+                       + (f"（前 {min(5, len(missing))} 个示例，非完整清单：{preview}）" if missing else "")
+                       + f"；invalid={verification.invalid_count}"
+                       + (f"；duplicates={verification.duplicate_count}" if verification.duplicate_count else ""))
+            accepted_gap = (dataset_id == "capm" and verification.data_type == "index_daily_bars"
+                            and plan.adjustment is AdjustmentMethod.UNADJUSTED
+                            and verification.status.value == "ACCEPTED_WITH_GAPS"
+                            and verification.invalid_count == 0 and verification.duplicate_count == 0)
+            if accepted_gap:
+                warnings.append(f"本次来源返回存在缺口，已按来源可用口径验收；{message}")
+                gap_details.append({
+                    "index_id": index_id,
+                    "provider_code": provider_code,
+                    "index_name": index_name,
+                    "expected_count": verification.expected_count,
+                    "actual_count": verification.actual_count,
+                    "missing_count": len(missing),
+                    "missing_dates": missing,
+                    "coverage_ratio": str(verification.coverage_ratio),
+                    "unavailable_ranges": details.get("unavailable_ranges", []),
+                })
+            else:
+                errors.append(message)
         return {
             "status": plan.status.value,
+            "dataset_id": dataset_id,
+            "runner": runner,
+            "generation": to_jsonable(repo.get_active_generation(dataset_id, adjustment)),
+            "errors": errors,
+            "warnings": warnings,
+            "gap_details": gap_details,
             "plan_id": plan.plan_id,
             "mode": plan.mode.value,
             "target_start": plan.target_start.isoformat(),

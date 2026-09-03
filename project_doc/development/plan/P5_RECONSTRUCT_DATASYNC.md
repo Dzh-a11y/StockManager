@@ -1,8 +1,8 @@
 ---
-date: 2026-09-02
+date: 2026-09-01
 purpose: 定义 StockManager P5 DataSync 重构的目标架构、数据库 generation 边界、种子与跨平台迁移契约、任务包和验收标准。
 project: StockManager
-status: active
+status: draft
 ---
 
 # P5_RECONSTRUCT_DATASYNC：数据同步重构计划
@@ -13,14 +13,14 @@ status: active
 
 本计划不切换数据源，不引入自动交易，不允许筛选、规则、回测、API 或 CLI 绕过本地数据库直接访问 Baostock。现有 `DataSyncService` 保留为唯一外部数据入口和兼容门面，内部拆分为可测试组件。
 
-本文件定义架构、接口边界、迁移顺序、任务包和验收标准。实现事实与 2026-09-02 稳定性修复证据以 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 为准。
+本文件只定义架构、接口边界、迁移顺序、任务包和验收标准，不代表功能已经实现。
 
 ### 0.1 AI 分工声明
 
 - 架构与任务拆分代理：**Codex**。
 - 实现、测试、调试、数据库迁移、代码审查与最终技术验收代理：**DeepSeek V4 Flash**。
 - 文档助手：**Qwen3.8:27b**，仅在真实代码契约稳定并通过技术验收后，根据完整任务包起草注释和 Markdown 技术文档。
-- 2026-09-02 用户在当前维护任务中明确调整分工：Codex 直接负责数据同步 Bug 修复、测试、数据库恢复与技术文档同步；本次明确指令覆盖上述默认分工。
+- Codex 本轮只交付本计划，不修改业务代码、测试、配置或数据库。
 
 ### 0.2 产品与数据边界
 
@@ -35,16 +35,16 @@ status: active
 
 ### 1.1 当前可复用能力
 
-| 能力 | 当前实现 | 重构后的去向 |
-|---|---|---|
-| Provider 抽象 | `providers/baostock_provider.py` | 保留在 `SerialFetchWorker` 后方 |
-| 外部数据单一入口 | `sync/data_sync_service.py` | 保留为同步门面，不再承担全部内部状态 |
-| 进程锁与文件锁 | 当前同步流程已有 | 由同步门面和 Worker 复用 |
-| 串行限速、超时、重登录 | Baostock Provider 已有部分机制 | 固化为 Worker 契约并补故障测试 |
-| v2 run/chunk checkpoint | `backfill_runs_v2`、`backfill_chunks_v2` | 迁移为确定性 plan/task checkpoint |
-| coverage 与 generation 元数据 | `dataset_coverage`、`dataset_versions` | 迁移为逐分区验证和显式 active generation |
-| PIT Reader generation 绑定 | `read/historical.py` | 改由 `ReadinessGate` 返回已发布快照 |
-| 数据库只读完整性脚本 | `storage/integrity.py` | 作为 verifier 的结构检查之一 |
+| 能力                        | 当前实现                                    | 重构后的去向                        |
+| ------------------------- | --------------------------------------- | ----------------------------- |
+| Provider 抽象               | `providers/baostock_provider.py`        | 保留在 `SerialFetchWorker` 后方    |
+| 外部数据单一入口                  | `sync/data_sync_service.py`             | 保留为同步门面，不再承担全部内部状态            |
+| 进程锁与文件锁                   | 当前同步流程已有                                | 由同步门面和 Worker 复用              |
+| 串行限速、超时、重登录               | Baostock Provider 已有部分机制                | 固化为 Worker 契约并补故障测试           |
+| v2 run/chunk checkpoint   | `backfill_runs_v2`、`backfill_chunks_v2` | 迁移为确定性 plan/task checkpoint   |
+| coverage 与 generation 元数据 | `dataset_coverage`、`dataset_versions`   | 迁移为逐分区验证和显式 active generation |
+| PIT Reader generation 绑定  | `read/historical.py`                    | 改由 `ReadinessGate` 返回已发布快照    |
+| 数据库只读完整性脚本                | `storage/integrity.py`                  | 作为 verifier 的结构检查之一           |
 
 ### 1.2 当前必须修复的问题
 
@@ -102,29 +102,29 @@ flowchart LR
 
 ### 3.1 核心组件职责
 
-| 组件 | 唯一职责 | 禁止事项 |
-|---|---|---|
-| `DataSyncService` Facade | 外部同步单一入口、锁、权限和顶层编排 | 不再直接实现所有规划、抓取、验证和发布细节 |
-| `BootstrapCoordinator` | 新用户初始化、种子/在线来源选择、首个 generation 流程 | 不直接写正式数据 |
-| `SyncPlanner` | 根据本地 published coverage、目标窗口、交易日历或结构化 VerificationReport 生成确定性任务清单 | 不调用 Provider、不写市场数据、不自行判断数据正确性 |
-| `SerialFetchWorker` | 单通道执行 Provider 任务，执行限速、超时、冷却和重登录 | 不并发访问 Baostock、不决定完整性 |
-| `SeedPackageVerifier` | 校验种子 manifest、文件 SHA-256、SQLite 结构和 schema | 不把外部 generation 直接标记为本地已发布 |
-| `SeedImporter` | 把验证过的种子导入 candidate/batch | 不覆盖较新的工作副本 |
-| `StagingWriter` | 幂等写入 candidate 对应批次并保存 checkpoint | 不更新 active generation |
-| `CoverageVerifier` | 读取已落地 candidate，逐类型/逐分区验证业务完整性 | 不相信 Provider 返回数量或 manifest 自报数量 |
-| `GenerationCommitter` | 在事务内重新核对验证证据并原子发布 generation | 验证不通过时严禁发布或写成功 |
-| `ReadinessGate` | 按数据集、复权、区间、股票池口径返回可读 generation | 不自动联网、不回退读取 staging |
+| 组件                       | 唯一职责                                                               | 禁止事项                             |
+| ------------------------ | ------------------------------------------------------------------ | -------------------------------- |
+| `DataSyncService` Facade | 外部同步单一入口、锁、权限和顶层编排                                                 | 不再直接实现所有规划、抓取、验证和发布细节            |
+| `BootstrapCoordinator`   | 新用户初始化、种子/在线来源选择、首个 generation 流程                                  | 不直接写正式数据                         |
+| `SyncPlanner`            | 根据本地 published coverage、目标窗口、交易日历或结构化 VerificationReport 生成确定性任务清单 | 不调用 Provider、不写市场数据、不自行判断数据正确性   |
+| `SerialFetchWorker`      | 单通道执行 Provider 任务，执行限速、超时、冷却和重登录                                   | 不并发访问 Baostock、不决定完整性            |
+| `SeedPackageVerifier`    | 校验种子 manifest、文件 SHA-256、SQLite 结构和 schema                         | 不把外部 generation 直接标记为本地已发布       |
+| `SeedImporter`           | 把验证过的种子导入 candidate/batch                                          | 不覆盖较新的工作副本                       |
+| `StagingWriter`          | 幂等写入 candidate 对应批次并保存 checkpoint                                  | 不更新 active generation            |
+| `CoverageVerifier`       | 读取已落地 candidate，逐类型/逐分区验证业务完整性                                     | 不相信 Provider 返回数量或 manifest 自报数量 |
+| `GenerationCommitter`    | 在事务内重新核对验证证据并原子发布 generation                                       | 验证不通过时严禁发布或写成功                   |
+| `ReadinessGate`          | 按数据集、复权、区间、股票池口径返回可读 generation                                    | 不自动联网、不回退读取 staging              |
 
 ## 4. 同步模式与统一计划契约
 
 ### 4.1 同步模式
 
-| mode | 使用场景 | parent generation |
-|---|---|---|
-| `BOOTSTRAP` | 新用户第一次建立本地数据 | `None` |
-| `INCREMENTAL` | 从当前 active generation 补齐最新已完成交易日 | 必须存在 |
-| `REPAIR` | 修复 FAILED、INCOMPLETE、除权重拉或指定缺口 | 可选，通常存在 |
-| `LEGACY_IMPORT` | 把旧版共享正式表迁移为首个受验证 generation | `None` |
+| mode            | 使用场景                             | parent generation |
+| --------------- | -------------------------------- | ----------------- |
+| `BOOTSTRAP`     | 新用户第一次建立本地数据                     | `None`            |
+| `INCREMENTAL`   | 从当前 active generation 补齐最新已完成交易日 | 必须存在              |
+| `REPAIR`        | 修复 FAILED、INCOMPLETE、除权重拉或指定缺口   | 可选，通常存在           |
+| `LEGACY_IMPORT` | 把旧版共享正式表迁移为首个受验证 generation      | `None`            |
 
 ### 4.2 `SyncPlan` 建议字段
 
@@ -229,8 +229,6 @@ ReadinessGate = NO_GENERATION
 - Windows 或其他机器收到文件后重新计算 SHA-256，与外部 manifest 比较。
 - 工作数据库后续增量写入后文件 SHA-256 会变化，不影响已经记录的来源证明。
 
-> 注：上述 JSON 为契约示例。`schema_version` 是拟议值——当前数据库尚无 `user_version`/schema 版本机制（仅模板元数据 `schema_version=2`），最终 schema 版本号与字段定义必须在 P5-RD-0 数据库 ADR 中基于真实库确定后写入，禁止把示例值当作现状事实。
-
 ## 6. 数据库存储与 generation 发布模型
 
 ### 6.1 推荐模型：不可变批次 + generation 分区清单
@@ -253,16 +251,16 @@ active_generations 指针原子切换
 
 ### 6.2 建议新增表
 
-| 表 | 主要用途 |
-|---|---|
-| `sync_plans` | 确定性计划和顶层状态 |
-| `sync_tasks` | 串行任务、重试、冷却和 checkpoint |
-| `candidate_generations` | candidate 身份、父 generation、写入修订号和生命周期 |
-| `ingest_batches` | 不可变数据批次、行数、来源和批次摘要 |
-| `generation_partitions` | generation 对数据类型/分区/batch 的不可变映射 |
-| `coverage_verifications` | 逐类型/逐交易日或分区的验证证据 |
-| `active_generations` | 每个 dataset/adjustment 当前可读 generation |
-| `seed_imports` | 种子文件、source SHA-256、manifest、导入和验证结果 |
+| 表                        | 主要用途                                  |
+| ------------------------ | ------------------------------------- |
+| `sync_plans`             | 确定性计划和顶层状态                            |
+| `sync_tasks`             | 串行任务、重试、冷却和 checkpoint                |
+| `candidate_generations`  | candidate 身份、父 generation、写入修订号和生命周期  |
+| `ingest_batches`         | 不可变数据批次、行数、来源和批次摘要                    |
+| `generation_partitions`  | generation 对数据类型/分区/batch 的不可变映射      |
+| `coverage_verifications` | 逐类型/逐交易日或分区的验证证据                      |
+| `active_generations`     | 每个 dataset/adjustment 当前可读 generation |
+| `seed_imports`           | 种子文件、source SHA-256、manifest、导入和验证结果  |
 
 实际 SQL、外键、索引和旧表迁移必须在实现前通过专门 ADR 与真实八年库基准确认；不得仅凭 fixture 假定查询性能。
 
@@ -412,14 +410,14 @@ universe_policy
 
 `ReadinessGate` 只能返回以下结果：
 
-| 结果 | 语义 |
-|---|---|
-| `READY(generation)` | active generation 完整覆盖请求 |
-| `NO_GENERATION` | 新用户尚未发布任何 generation |
-| `OUT_OF_RANGE` | generation 存在但不覆盖请求区间 |
-| `MISSING_DATA_TYPE` | 缺少规则/回测所需数据类型 |
-| `ADJUSTMENT_MISMATCH` | 请求复权与 generation 不一致 |
-| `INCOMPLETE` | 目标分区验证未通过 |
+| 结果                    | 语义                       |
+| --------------------- | ------------------------ |
+| `READY(generation)`   | active generation 完整覆盖请求 |
+| `NO_GENERATION`       | 新用户尚未发布任何 generation     |
+| `OUT_OF_RANGE`        | generation 存在但不覆盖请求区间    |
+| `MISSING_DATA_TYPE`   | 缺少规则/回测所需数据类型            |
+| `ADJUSTMENT_MISMATCH` | 请求复权与 generation 不一致     |
+| `INCOMPLETE`          | 目标分区验证未通过                |
 
 Screening、Rules、Web 查询、CLI 查询和 Backtest 只能通过 Gate 获取 generation，并只读取该 generation 的分区清单。任何非 `READY` 结果都必须明确失败并给出补齐建议，禁止隐式调用 Provider。
 
@@ -465,8 +463,6 @@ SQLite 数据文件跨平台，但迁移必须执行受控流程：
 如果无法先 checkpoint，则必须同时迁移 `-wal` 和 `-shm`，但产品文档与默认工具必须推荐先 checkpoint 后复制单一数据库文件。
 
 迁移校验的 SHA-256 只证明复制前后文件相同。Windows 端发生任何合法写入后文件 SHA-256 都会变化；新状态由 generation、manifest 和 coverage 证明。
-
-**验收边界（2026-09-01 用户确认）**：本章定义的是迁移契约与流程设计。离线测试（WAL checkpoint、SHA-256、模拟复制到不同根目录等）可在 macOS 上执行并纳入代理验收；Windows 实机上的人工验收不纳入完成定义（见第 17 章第 8 条），由用户在 Windows 机器上另行执行。
 
 ## 11. 兼容迁移与发布策略
 
@@ -532,9 +528,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 13. 实施任务包
 
-> **状态注记（2026-09-02）**：P5-RD-0..P5-RD-10 已实现；本轮由用户明确改派 Codex 完成稳定性修复、schema v3 迁移与真实工作库恢复。用户已取消本地每日请求额度和持久化黑名单熔断；`10001011` 仅使当前请求立即失败。当前版本 1.13.0，全量离线测试 594 passed，DataSyncService/SyncPipeline 已用于 Web 在线 Bootstrap runner。真实 Baostock 八年回补尚未完成，所以计划保持 `active`，不能把未发布 candidate 写成已完成数据集；详见 `development/implementation/P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md` 第 11 节。
-
-### P5-RD-0：架构 ADR 与真实库基准门禁 —— 已完成（2026-09-01 验收）
+### P5-RD-0：架构 ADR 与真实库基准门禁
 
 **负责人**：Codex 定义架构；DeepSeek 执行基准与技术核对。
 
@@ -543,9 +537,9 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 明确 daily bars、股票池、fundamentals、dividends 的分区键。
 - 产出数据库 ADR、迁移风险、磁盘峰值和回滚策略。
 
-**验收**：没有 ADR 和真实库基准，不得执行破坏性 schema 迁移。已产出 `ADR_P5_DATASYNC_DATABASE.md`（accepted）并在真实 850 MB 库副本完成三种迁移方案基准。
+**验收**：没有 ADR 和真实库基准，不得执行破坏性 schema 迁移。
 
-### P5-RD-1：领域契约与数据库迁移骨架 —— 已完成（2026-09-01 验收）
+### P5-RD-1：领域契约与数据库迁移骨架
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -554,7 +548,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - Repository Protocol 隔离 SQLite 实现。
 - 所有迁移测试离线运行，覆盖空库、旧库、重复迁移和失败回滚。
 
-### P5-RD-2：确定性 SyncPlanner —— 已完成（2026-09-01 验收）
+### P5-RD-2：确定性 SyncPlanner
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -565,7 +559,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 计划指纹覆盖全部关键输入。
 - 禁止在 Planner 内调用 Provider。
 
-### P5-RD-3：SerialFetchWorker 与 Provider 安全边界 —— 已完成（2026-09-01 验收）
+### P5-RD-3：SerialFetchWorker 与 Provider 安全边界
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -574,7 +568,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 并发触发时只允许一个外部请求通道。
 - Provider 失败必须抛明确业务异常并写 FAILED，不得吞异常。
 
-### P5-RD-4：StagingWriter、批次与 checkpoint —— 已完成（2026-09-01 验收）
+### P5-RD-4：StagingWriter、批次与 checkpoint
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -583,7 +577,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 每次写入更新 revision，checkpoint 绑定计划、任务、数据范围和代码集合。
 - 注入进程中断、数据库锁和重复任务，验证可恢复且不重复抓取。
 
-### P5-RD-5：CoverageVerifier —— 已完成（2026-09-01 验收）
+### P5-RD-5：CoverageVerifier
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -595,7 +589,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 区分 `NEEDS_REPAIR`、`VERIFICATION_FAILED` 和 `REJECTED`，不得把所有不通过压成同一个 FAILED。
 - 验证失败不得修改 active generation。
 
-### P5-RD-6：GenerationCommitter 与 ReadinessGate —— 已完成（2026-09-01 验收）
+### P5-RD-6：GenerationCommitter 与 ReadinessGate
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -604,7 +598,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 筛选运行中 generation 被切换时，仍读取绑定 generation 或明确失败，禁止混合快照。
 - staging 和 FAILED candidate 对读取路径不可见。
 
-### P5-RD-7：种子、SHA-256 与跨平台迁移 —— 已完成（2026-09-01 验收）
+### P5-RD-7：种子、SHA-256 与跨平台迁移
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -613,9 +607,8 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 实现种子对账、较新工作副本保护、前缀/尾部缺口规划。
 - 实现 WAL checkpoint、迁移 manifest、Mac→Windows 复制后校验流程。
 - 离线测试覆盖 SHA 不匹配、manifest 缺字段、schema 不兼容、损坏 SQLite 和合法跨平台副本。
-- Windows 实机人工验收不纳入本任务验收（见第 17 章第 8 条），由用户在 Windows 端执行。
 
-### P5-RD-8：Web / CLI 同步控制与可见状态 —— 已完成（2026-09-01 验收）
+### P5-RD-8：Web / CLI 同步控制与可见状态
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -624,7 +617,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 用户显式 retry、取消/暂停边界和警告。
 - 筛选/回测不可用时显示 ReadinessGate 的具体原因。
 
-### P5-RD-9：旧库迁移与灰度切换 —— 已完成（2026-09-01 验收）
+### P5-RD-9：旧库迁移与灰度切换
 
 **负责人**：DeepSeek V4 Flash。
 
@@ -633,7 +626,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - 回滚不删除用户数据。
 - 新旧路径不得同时写同一逻辑分区。
 
-### P5-RD-10：端到端验收、版本与文档同步 —— 已完成（2026-09-01 验收）
+### P5-RD-10：端到端验收、版本与文档同步
 
 **负责人**：DeepSeek V4 Flash 最终技术验收；Qwen3.8:27b 文档草稿；DeepSeek 事实核对。
 
@@ -690,7 +683,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 - Mac 路径不进入数据库或 manifest 必需字段。
 - WAL checkpoint 后只复制主文件可读。
 - 模拟复制到不同根目录后 schema、active generation、coverage 和筛选结果一致。
-- Windows 继续补齐尾部后发布新 generation，旧 generation 保持不可变（需 Windows 实机，纳入第 17 章第 8 条排除范围，由用户执行）。
+- Windows 继续补齐尾部后发布新 generation，旧 generation 保持不可变。
 
 ### 14.6 断网红线
 
@@ -710,16 +703,16 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 16. 风险与决策门禁
 
-| 风险 | 门禁或缓解 |
-|---|---|
-| 八年数据迁移造成磁盘翻倍 | P5-RD-0 真实库基准后确定物理 schema |
-| generation manifest 查询变慢 | 建立分区索引并完成真实库读取基准 |
-| 种子 SHA 自引用 | 权威 SHA 只放外部 sidecar，库内只存 provenance |
-| qfq 种子随除权失真 | 除权触发 REPAIR 计划，完成前不宣称完整 |
-| 历史股票池不完整 | Verifier 明确 INCOMPLETE，禁止以当前快照冒充 |
-| SQLite 锁竞争 | 单写者、短事务、持久化锁和故障注入 |
-| 旧库误标 COMPLETE | 必须经过 LEGACY_IMPORT 和新 verifier |
-| 文档先于实现承诺完成 | 本计划保持 draft；实现文档只能依据验收后的代码 |
+| 风险                       | 门禁或缓解                               |
+| ------------------------ | ----------------------------------- |
+| 八年数据迁移造成磁盘翻倍             | P5-RD-0 真实库基准后确定物理 schema           |
+| generation manifest 查询变慢 | 建立分区索引并完成真实库读取基准                    |
+| 种子 SHA 自引用               | 权威 SHA 只放外部 sidecar，库内只存 provenance |
+| qfq 种子随除权失真              | 除权触发 REPAIR 计划，完成前不宣称完整             |
+| 历史股票池不完整                 | Verifier 明确 INCOMPLETE，禁止以当前快照冒充    |
+| SQLite 锁竞争               | 单写者、短事务、持久化锁和故障注入                   |
+| 旧库误标 COMPLETE            | 必须经过 LEGACY_IMPORT 和新 verifier      |
+| 文档先于实现承诺完成               | 本计划保持 draft；实现文档只能依据验收后的代码          |
 
 涉及以下任一事项必须返回 Codex 重新做架构决策：
 
@@ -731,7 +724,7 @@ stock-manager db verify-transfer <database> --manifest <file>
 
 ## 17. 完成定义
 
-P5_RECONSTRUCT_DATASYNC 只有同时满足以下条件才可从 `draft` 改为 `active/completed`。**2026-09-01 用户确认：第 8 条不纳入完成定义**——Mac→Windows 物理迁移的「人工验收」必须在 Windows 实机执行，实现与审查代理无法完成；迁移契约仍按第 10 节实现并通过可在 macOS 上离线执行的测试，Windows 端实机验收由用户在 Windows 机器上另行执行。
+P5_RECONSTRUCT_DATASYNC 只有同时满足以下条件才可从 `draft` 改为 `active/completed`：
 
 1. Baostock 仍仅由 DataSyncService 边界调用，Provider 串行、限速、超时和重登录有测试证据。
 2. Planner、Worker、Writer、Verifier、Committer、Gate 分层清晰且具有完整类型标注。
@@ -740,7 +733,7 @@ P5_RECONSTRUCT_DATASYNC 只有同时满足以下条件才可从 `draft` 改为 `
 5. generation 绑定实际分区，发布为原子事务，失败不改变 active generation。
 6. 新用户种子和在线 Bootstrap 均可恢复，失败不伪装成功。
 7. SHA-256、SQLite integrity、schema 和 seed provenance 验收通过。
-8. ~~Mac→Windows 物理迁移流程通过不同路径下的离线测试和人工验收。~~ **（2026-09-01 用户确认不纳入完成定义：Windows 实机人工验收无法由代理完成，见本节开头说明；Windows 端实机验收由用户另行执行。）**
+8. Mac→Windows 物理迁移流程通过不同路径下的离线测试和人工验收。
 9. 筛选和回测在断网环境只读已发布 generation。
 10. 旧数据库迁移可回滚，不删除用户数据，不把旧 coverage 直接冒充新验证。
 11. 关键边界、故障注入、并发保护和性能基准全部通过。

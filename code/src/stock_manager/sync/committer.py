@@ -26,10 +26,12 @@ from stock_manager.domain import (
     AdjustmentMethod,
     CandidateGeneration,
     CandidateGenerationStatus,
+    CoverageVerification,
     GenerationPartition,
     PublishedGeneration,
     ReadinessResult,
     ReadinessStatus,
+    VerificationStatus,
 )
 
 #: Data types the committer understands (must match planner/verifier order).
@@ -37,6 +39,9 @@ DATA_TYPE_ORDER: tuple[str, ...] = ("stocks", "daily_bars", "fundamentals", "div
 
 #: staging table -> (published table, column list without batch_id).
 _STAGING_TO_PUBLISHED: dict[str, tuple[str, str]] = {
+    "index_catalog": ("index_catalog", "index_id, provider_code, name, category, return_version, source, batch_id"),
+    "index_daily_bars": ("index_daily_bars", "index_id, trading_day, close, return_version, batch_id"),
+    "deposit_rates": ("deposit_rates", "term, effective_on, annual_rate, source, batch_id"),
     "stocks": (
         "stocks",
         "code, as_of, name, exchange, is_st, listed_on, delisted_on, batch_id",
@@ -65,6 +70,19 @@ class ReadGateError(RuntimeError):
     """Raised when a read request is malformed."""
 
 
+def _publishable_verification(
+    dataset_id: str, adjustment: AdjustmentMethod, data_type: str,
+    status: str, invalid_count: int, duplicate_count: int,
+) -> bool:
+    """Only reference index history may publish an explicitly recorded source gap."""
+    if status == VerificationStatus.COMPLETE.value:
+        return True
+    return (dataset_id == "capm" and adjustment is AdjustmentMethod.UNADJUSTED
+            and data_type == "index_daily_bars"
+            and status == VerificationStatus.ACCEPTED_WITH_GAPS.value
+            and invalid_count == 0 and duplicate_count == 0)
+
+
 class GenerationCommitter:
     """Publishes a verified candidate atomically (P5 section 6.4)."""
 
@@ -83,14 +101,15 @@ class GenerationCommitter:
         *,
         dataset_id: str,
         adjustment: AdjustmentMethod,
-        verifications: Sequence[object],
+        verifications: Sequence[CoverageVerification],
         partitions: Sequence[GenerationPartition],
     ) -> PublishedGeneration:
         """Publish a VERIFIED candidate in one transaction.
 
         ``verifications`` must be the persisted coverage records with
-        ``status COMPLETE`` for every required partition; ``partitions`` maps
-        each partition to its batch. The commit re-reads the candidate and
+        ``status COMPLETE`` for every required partition, except explicitly
+        accepted CAPM index source gaps; ``partitions`` maps each to its batch.
+        The commit re-reads the candidate and
         verification rows inside the transaction and aborts on any mismatch.
         """
         if candidate.status is not CandidateGenerationStatus.VERIFIED:
@@ -118,10 +137,12 @@ class GenerationCommitter:
         if len(partition_batch_ids) != len(candidate_partitions):
             raise PublishError("duplicate candidate partition batch was supplied")
         for verification in verifications:
-            if verification.status.value != "COMPLETE":
+            if not _publishable_verification(dataset_id, adjustment, verification.data_type,
+                                            verification.status.value, verification.invalid_count,
+                                            verification.duplicate_count):
                 raise PublishError(
                     f"verification for {verification.data_type}/"
-                    f"{verification.partition_key} is not COMPLETE"
+                    f"{verification.partition_key} is not COMPLETE or an accepted source gap"
                 )
         missing_types = required_types - {
             v.data_type for v in verifications
@@ -159,7 +180,8 @@ class GenerationCommitter:
                 )
                 manifest_sha256 = self._manifest_digest(partitions)
                 self._recheck_inside_txn(
-                    connection, candidate, verifications, candidate_partitions
+                    connection, candidate, verifications, candidate_partitions,
+                    dataset_id=dataset_id, adjustment=adjustment,
                 )
                 connection.execute(
                     """UPDATE candidate_generations SET status = ?, updated_at = ?
@@ -296,6 +318,16 @@ class GenerationCommitter:
         if staging is None:
             return
         published, columns = staging
+        if published == "index_catalog":
+            connection.execute(
+                f"""INSERT INTO index_catalog ({columns})
+                    SELECT {columns} FROM index_catalog_staging WHERE batch_id = ?
+                    ON CONFLICT(index_id) DO UPDATE SET name=excluded.name,
+                    category=excluded.category, batch_id=excluded.batch_id""",
+                (partition.batch_id,),
+            )
+            connection.execute("DELETE FROM index_catalog_staging WHERE batch_id = ?", (partition.batch_id,))
+            return
         connection.execute(
             f"""INSERT OR REPLACE INTO {published} ({columns})
                 SELECT {columns} FROM {published}_staging
@@ -311,8 +343,11 @@ class GenerationCommitter:
         self,
         connection: sqlite3.Connection,
         candidate: CandidateGeneration,
-        verifications: Sequence[object],
+        verifications: Sequence[CoverageVerification],
         partitions: Sequence[GenerationPartition],
+        *,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
     ) -> None:
         """Re-verify state inside the transaction (plan section 6.3/6.4)."""
         row = connection.execute(
@@ -333,7 +368,7 @@ class GenerationCommitter:
             )
         for verification in verifications:
             check = connection.execute(
-                """SELECT status, verified_revision, manifest_sha256
+                """SELECT status, verified_revision, manifest_sha256, invalid_count, duplicate_count
                    FROM coverage_verifications
                    WHERE candidate_generation_id = ? AND data_type = ?
                      AND partition_key = ?""",
@@ -345,8 +380,11 @@ class GenerationCommitter:
             ).fetchone()
             if check is None:
                 raise PublishError("verification row missing inside transaction")
-            if check["status"] != "COMPLETE":
-                raise PublishError("verification not COMPLETE inside transaction")
+            if (check["status"] != verification.status.value
+                    or not _publishable_verification(dataset_id, adjustment, verification.data_type,
+                                                    check["status"], check["invalid_count"],
+                                                    check["duplicate_count"])):
+                raise PublishError("verification not COMPLETE or an accepted source gap inside transaction")
             if int(check["verified_revision"]) != candidate.write_revision:
                 raise PublishError("verification revision mismatch inside transaction")
             if check["manifest_sha256"] != verification.manifest_sha256:

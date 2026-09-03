@@ -23,6 +23,9 @@ from stock_manager.domain import (
     DividendRecord,
     FundamentalSnapshot,
     IngestBatch,
+    IndexIdentity,
+    IndexDailyBar,
+    DepositRate,
     StockIdentity,
     SyncTask,
     SyncTaskStatus,
@@ -33,6 +36,9 @@ _STAGING_TABLE = {
     "daily_bars": "daily_bars_staging",
     "fundamentals": "fundamentals_staging",
     "dividends": "dividends_staging",
+    "index_catalog": "index_catalog_staging",
+    "index_daily_bars": "index_daily_bars_staging",
+    "deposit_rates": "deposit_rates_staging",
 }
 
 
@@ -354,6 +360,30 @@ class StagingWriter:
     ) -> int:
         if not rows:
             return 0
+        if table == "index_catalog_staging":
+            self._require_row_type(rows, IndexIdentity, table)
+            connection.executemany(
+                "INSERT INTO index_catalog_staging VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(batch_id, r.index_id, r.provider_code, r.name, r.category,
+                  r.return_version.value, r.source) for r in rows],
+            )
+            return len(rows)
+        if table == "index_daily_bars_staging":
+            self._require_row_type(rows, IndexDailyBar, table)
+            connection.executemany(
+                "INSERT INTO index_daily_bars_staging VALUES (?, ?, ?, ?, ?)",
+                [(batch_id, r.index_id, r.trading_day.isoformat(), str(r.close),
+                  r.return_version.value) for r in rows],
+            )
+            return len(rows)
+        if table == "deposit_rates_staging":
+            self._require_row_type(rows, DepositRate, table)
+            connection.executemany(
+                "INSERT INTO deposit_rates_staging VALUES (?, ?, ?, ?, ?)",
+                [(batch_id, r.term, r.effective_on.isoformat(), str(r.annual_rate),
+                  r.source) for r in rows],
+            )
+            return len(rows)
         if table == "stocks_staging":
             self._require_row_type(rows, StockIdentity, table)
             connection.executemany(

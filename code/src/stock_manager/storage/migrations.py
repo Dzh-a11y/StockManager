@@ -14,7 +14,7 @@ import sqlite3
 from typing import Any
 
 #: Current schema version after all migrations.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 5
 
 #: Data tables that gain an immutable-batch binding column.
 _BATCH_TABLES: tuple[tuple[str, str], ...] = (
@@ -281,10 +281,90 @@ def _migrate_to_v3(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE IF EXISTS provider_circuit_breakers")
 
 
+def _migrate_to_v4(connection: sqlite3.Connection) -> None:
+    """Add independently versioned P5B index, rate and analysis records."""
+    _execute_statements(
+        connection,
+        """
+        CREATE TABLE IF NOT EXISTS index_catalog (
+            index_id TEXT PRIMARY KEY,
+            provider_code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            return_version TEXT NOT NULL,
+            source TEXT NOT NULL,
+            UNIQUE (provider_code, return_version, source)
+        );
+        CREATE TABLE IF NOT EXISTS index_daily_bars (
+            index_id TEXT NOT NULL,
+            trading_day TEXT NOT NULL,
+            close TEXT NOT NULL,
+            return_version TEXT NOT NULL,
+            PRIMARY KEY (index_id, trading_day),
+            FOREIGN KEY (index_id) REFERENCES index_catalog(index_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_index_daily_bars_day
+            ON index_daily_bars (index_id, trading_day);
+        CREATE TABLE IF NOT EXISTS deposit_rates (
+            term TEXT NOT NULL,
+            effective_on TEXT NOT NULL,
+            annual_rate TEXT NOT NULL,
+            source TEXT NOT NULL,
+            PRIMARY KEY (term, effective_on, source)
+        );
+        CREATE TABLE IF NOT EXISTS capm_results (
+            analysis_id TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            window_days INTEGER NOT NULL,
+            benchmark_id TEXT NOT NULL,
+            benchmark_return_version TEXT NOT NULL,
+            rate_term TEXT NOT NULL,
+            alpha_daily TEXT,
+            alpha_annualized TEXT,
+            beta TEXT,
+            r_squared TEXT,
+            observation_count INTEGER NOT NULL,
+            periods_per_year INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (analysis_id, window_days),
+            FOREIGN KEY (benchmark_id) REFERENCES index_catalog(index_id)
+        );
+        """,
+    )
+
+
+def _migrate_to_v5(connection: sqlite3.Connection) -> None:
+    """Bind reference inputs to the same staged/verified publication lifecycle."""
+    connection.execute("""CREATE TABLE IF NOT EXISTS sync_runners (
+        dataset_id TEXT PRIMARY KEY, status TEXT NOT NULL, runner_pid INTEGER,
+        updated_at TEXT NOT NULL, message TEXT NOT NULL)""")
+    definitions = {
+        "index_catalog": "index_id TEXT, provider_code TEXT, name TEXT, category TEXT, return_version TEXT, source TEXT",
+        "index_daily_bars": "index_id TEXT, trading_day TEXT, close TEXT, return_version TEXT",
+        "deposit_rates": "term TEXT, effective_on TEXT, annual_rate TEXT, source TEXT",
+    }
+    keys = {"index_catalog": "index_id", "index_daily_bars": "index_id, trading_day",
+            "deposit_rates": "term, effective_on, source"}
+    for table, columns in definitions.items():
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "batch_id" not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN batch_id TEXT")
+        connection.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_batch ON {table}(batch_id)")
+        connection.execute(
+            f"CREATE TABLE IF NOT EXISTS {table}_staging (batch_id TEXT NOT NULL, "
+            f"{columns}, PRIMARY KEY (batch_id, {keys[table]}))"
+        )
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _migrate_to_v1,
     2: _migrate_to_v2,
     3: _migrate_to_v3,
+    4: _migrate_to_v4,
+    5: _migrate_to_v5,
 }
 
 

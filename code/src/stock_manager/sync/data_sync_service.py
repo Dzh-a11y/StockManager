@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time as wall_time, timedelta
 from pathlib import Path
 from typing import TypeVar
@@ -171,6 +171,61 @@ class DataSyncService:
     def _provider_call(self, operation: Callable[[], T]) -> T:
         """Invoke the provider; request pacing is the provider's own job."""
         return operation()
+
+    def sync_capm_reference_data(
+        self, start: date | None = None, end: date | None = None,
+        *, retry_failed: bool = False,
+    ) -> PipelineRun:
+        """Run references through exactly the market pipeline, in their own dataset."""
+        from stock_manager.domain import SyncPlanMode, SyncPlanStatus
+        from stock_manager.sync.capm import DATASET, DATA_TYPES
+
+        if start is not None and end is not None and start > end:
+            raise ValueError("reference-data start must not be after end")
+        # Planning/resumption is dataset-locked; external calls also take the
+        # shared provider lock, including calendar requests via their facade.
+        with process_lock(f"{self._lock_directory.resolve()}:capm-reference"), persistent_file_lock(
+            self._lock_directory / "capm_reference.lock"
+        ):
+            pipeline = self.build_pipeline(dataset_id=DATASET)
+            plans = self._repository.list_sync_plans(DATASET, AdjustmentMethod.UNADJUSTED)
+            pending = next((p for p in plans if p.status is not SyncPlanStatus.SUCCEEDED), None)
+            resumed: PipelineRun | None = None
+            if pending is not None:
+                with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
+                    pipeline.recover_interrupted(pending.plan_id)
+                    if pending.status is SyncPlanStatus.FAILED:
+                        if not retry_failed:
+                            raise RetryRequiredError(f"{pending.plan_id}: explicit retry required")
+                        resumed = pipeline.retry(pending.plan_id)
+                    else:
+                        resumed = pipeline.execute(pending.plan_id)
+                if not resumed.published:
+                    return resumed
+                plans = self._repository.list_sync_plans(DATASET, AdjustmentMethod.UNADJUSTED)
+            # Same-day success is checked before calendar/network discovery.
+            now = self._now()
+            local_days = self._repository.get_trading_days(now.date() - timedelta(days=45), now.date())
+            local_target = latest_completed_trading_day(now, local_days, self._config.cutoff_time) if local_days else None
+            target_hint = min(end, local_target) if end and local_target else local_target
+            if plans and target_hint is not None and plans[0].target_end >= target_hint and (
+                start is None or plans[0].target_start <= start
+            ) and self._repository.capm_coverage_intact(start or plans[0].target_start, target_hint):
+                return resumed or replace(pipeline.execute(plans[0].plan_id), warning="数据已存在，跳过拉取")
+            target = min(end, self._latest_completed_trading_day()) if end else self._latest_completed_trading_day()
+            years = self._config.history.target_years if self._config.history else 8
+            first = start or target - timedelta(days=years * 365 + 2)
+            self.sync_trading_calendar(first, target)
+            days = self._repository.get_trading_days(first, target)
+            if not days:
+                raise ValueError("reference target contains no completed trading days")
+            active = self._repository.get_active_generation(DATASET, AdjustmentMethod.UNADJUSTED)
+            output = pipeline.plan(mode=SyncPlanMode.BOOTSTRAP, dataset_id=DATASET,
+                adjustment=AdjustmentMethod.UNADJUSTED, target_start=min(days), target_end=max(days),
+                required_data_types=DATA_TYPES, batch_size=1,
+                universe_policy=f"provider-indexes:{active.generation if active else 'initial'}")
+            with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
+                return pipeline.execute(output.plan.plan_id)
 
     def _emit_progress(
         self, phase: str, completed: int, total: int, current_code: str
@@ -1278,7 +1333,7 @@ class DataSyncService:
     # P5 DataSync reconstruction pipeline facade (gateway to SyncPipeline)
     # ------------------------------------------------------------------
 
-    def build_pipeline(self) -> SyncPipeline:
+    def build_pipeline(self, *, dataset_id: str = "market") -> SyncPipeline:
         """Construct the P5 pipeline bound to this service's provider/repo.
 
         The pipeline uses the same provider instance, so the provider's own
@@ -1342,6 +1397,11 @@ class DataSyncService:
             universe_codes=universe,
             now=self._now,
         )
+        reference_tasks = None
+        if dataset_id == "capm":
+            from stock_manager.sync.capm import CapmPlanner, ReferenceTasks
+            planner = CapmPlanner(repository, self._now)
+            reference_tasks = ReferenceTasks(repository, connection_factory)
         provider = self._provider
 
         def worker_factory(adjustment: AdjustmentMethod) -> SerialFetchWorker:
@@ -1349,6 +1409,8 @@ class DataSyncService:
                 provider,
                 adjustment=adjustment,
                 now=self._now,
+                index_resolver=None if reference_tasks is None else reference_tasks.indexes,
+                reference_cache=None if reference_tasks is None else reference_tasks.cached,
             )
 
         staging = StagingWriter(connection_factory, now=self._now)
@@ -1360,6 +1422,10 @@ class DataSyncService:
             ),
             stock_lifecycles=stock_lifecycles,
         )
+        if dataset_id == "capm":
+            from stock_manager.sync.capm import CapmVerifier
+            verifier = CapmVerifier(connection_factory, trading_days=calendar,
+                                    expected_universe_size=lambda day: 0)
         committer = GenerationCommitter(connection_factory, now=self._now)
         gate = ReadinessGate(connection_factory)
         legacy = LegacyImporter(connection_factory, now=self._now)
@@ -1374,6 +1440,7 @@ class DataSyncService:
             legacy=legacy,
             now=self._now,
             retry_cooldown=self._config.retry_cooldown,
+            expand_tasks=None if reference_tasks is None else reference_tasks.expand,
         )
 
     def run_pipeline_plan(
@@ -1401,11 +1468,23 @@ class DataSyncService:
 
     def run_pipeline_execute(self, plan_id: str) -> PipelineRun:
         """Execute a P5 plan under the provider lock (single channel)."""
-        pipeline = self.build_pipeline()
+        plan = self._repository.get_sync_plan(plan_id)
+        if plan is None:
+            raise ValueError(f"sync plan not found: {plan_id}")
+        pipeline = self.build_pipeline(dataset_id=plan.dataset_id)
         with self._provider_process_lock, persistent_file_lock(
             self._provider_file_lock
         ):
             return pipeline.execute(plan_id)
+
+    def run_pipeline_retry(self, plan_id: str) -> PipelineRun:
+        """Retry either dataset through the same provider channel protection."""
+        plan = self._repository.get_sync_plan(plan_id)
+        if plan is None:
+            raise ValueError(f"sync plan not found: {plan_id}")
+        pipeline = self.build_pipeline(dataset_id=plan.dataset_id)
+        with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
+            return pipeline.retry(plan_id)
 
     def startup_sync(
         self,

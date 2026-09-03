@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import re
 import time
 import warnings
 from collections.abc import Callable, Iterator, Sequence
@@ -15,7 +16,11 @@ from typing import Any
 from stock_manager.domain import (
     AdjustmentMethod,
     DailyBar,
+    DepositRate,
     FundamentalSnapshot,
+    IndexDailyBar,
+    IndexIdentity,
+    IndexReturnVersion,
     StockIdentity,
 )
 
@@ -47,6 +52,27 @@ def _parse_optional_date(value: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _index_category(name: str) -> str | None:
+    """Conservative adapter classification; unknown/theme/style is not broad."""
+    if any(token in name for token in (
+        "ETF", "基金", "债", "B股", "成长", "价值", "红利", "等权", "贝塔", "波动",
+        "治理", "责任", "主题", "策略", "基本面", "绩效", "投资时钟", "动态", "稳定",
+    )):
+        return None
+    if any(token in name for token in (
+        "行业", "工业", "商业", "金融", "地产", "能源", "材料", "医药", "消费",
+        "公用事业", "信息技术", "电信", "银行", "证券", "保险", "煤炭", "钢铁",
+        "石油", "农牧渔", "交通运输", "制药", "生物科技", "军工", "白酒",
+    )):
+        return "industry"
+    if any(token in name for token in ("综合", "成份", "成指", "A股", "全指", "大盘", "中盘", "小盘", "基础市场")):
+        return "broad"
+    base = re.sub(r"指数|\((?:价格|收益|全收益|净收益)\)|收益|全收益|净收益", "", name)
+    if re.fullmatch(r"(?:沪深|中证A?|上证|深证|国证|创业板|中小企业|中小创业企业|中小板)\d*", base):
+        return "broad"
+    return None
 
 
 class BaostockProviderError(RuntimeError):
@@ -405,6 +431,78 @@ class BaostockProvider:
             if row.get("tradeStatus", "1") in {"0", "1"}
             and _is_ashare_stock(row["code"])
         )
+
+    def fetch_indexes(self, as_of: date) -> Sequence[IndexIdentity]:
+        """Discover Baostock's actual listed price/return indexes only.
+
+        Baostock exposes indices through ``query_all_stock`` rather than a
+        separate catalogue API.  Names are source evidence, not a claim that
+        every index has a total-return counterpart.
+        """
+        with self._session() as relogin:
+            rows = self._rows(
+                self._query(
+                    lambda: self._client.query_all_stock(day=as_of.isoformat()),
+                    relogin=relogin,
+                ),
+                "query_all_stock(index catalog)",
+            )
+        indexes: list[IndexIdentity] = []
+        for row in rows:
+            name = row.get("code_name", "").strip()
+            code = row.get("code", "").strip()
+            if not re.fullmatch(r"(?:sh\.000|sz\.399)\d{3}", code) or "指数" not in name:
+                continue
+            version = (
+                IndexReturnVersion.NET_TOTAL_RETURN
+                if "净收益" in name
+                else IndexReturnVersion.GROSS_TOTAL_RETURN
+                if "收益" in name
+                else IndexReturnVersion.PRICE
+            )
+            category = _index_category(name)
+            if category is None:
+                continue
+            index_id = "hs300.price" if code == "sh.000300" and version is IndexReturnVersion.PRICE else f"baostock:{code}:{version.value}"
+            indexes.append(IndexIdentity(
+                index_id, code, name, category, version, self.source_name
+            ))
+        return tuple(indexes)
+
+    def fetch_index_daily_bars(
+        self, indexes: Sequence[IndexIdentity], start: date, end: date
+    ) -> Sequence[IndexDailyBar]:
+        """Fetch raw index closes; index levels are never labelled qfq."""
+        results: list[IndexDailyBar] = []
+        with self._session() as relogin:
+            for position, item in enumerate(indexes, start=1):
+                self._emit_progress("index_daily_bars", position, len(indexes), item.provider_code)
+                rows = self._rows(self._query(
+                    lambda code=item.provider_code: self._client.query_history_k_data_plus(
+                        code, "date,code,close", start_date=start.isoformat(), end_date=end.isoformat(),
+                        frequency="d", adjustflag="3",
+                    ), relogin=relogin), f"query_history_k_data_plus({item.provider_code})")
+                results.extend(IndexDailyBar(
+                    item.index_id, date.fromisoformat(row["date"]),
+                    self._required_decimal(row["close"], "index close"), item.return_version
+                ) for row in rows)
+        return tuple(results)
+
+    def fetch_deposit_rates(self) -> Sequence[DepositRate]:
+        """Fetch published PBC deposit-rate events through the Baostock adapter."""
+        with self._session() as relogin:
+            rows = self._rows(self._query(
+                lambda: self._client.query_deposit_rate_data(), relogin=relogin),
+                "query_deposit_rate_data",
+            )
+        rates: list[DepositRate] = []
+        for row in rows:
+            value = self._decimal(row.get("fixedDepositRate1Year", ""), "fixedDepositRate1Year", optional=True)
+            effective = _parse_optional_date(row.get("pubDate", ""))
+            if value is None or effective is None:
+                continue
+            rates.append(DepositRate("1_year", effective, value / Decimal("100"), self.source_name))
+        return tuple(rates)
 
     def fetch_daily_bars(
         self,
