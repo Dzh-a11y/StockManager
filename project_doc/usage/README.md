@@ -11,11 +11,15 @@ StockManager 是面向 A 股的研究型筛选平台。所有筛选结果仅供�
 
 ## 版本与分支
 
-当前主分支版本：**1.13.10**。
+当前主分支版本：**1.15.2**。
 
 2026-09-02 将 `codex/fix-datasync-stability` 的 13 个开发提交及需求澄清、任务职责文档更新合入本地 `main`。1.13.8 的回测 Worker 数配置和 1.13.9 的回测前置提示均包含在内；原主分支版本为 1.12.0。
 
-包版本以所用分支的 `pyproject.toml`、`src/stock_manager/__init__.py` 和 `tests/test_package_structure.py` 为准。上述主分支记录对应 1.13.10；当前 P5B 开发分支 `codex/p5b-capm` 的工作区修订为 **1.15.2**，三处同步更新。工作区实现不代表已合入主分支或推送远端。
+2026-09-03 将 `codex/p5b-capm` 的两个提交（`9a7811d`、`875c163`）快进合入本地 `main`，包含 P5B CAPM、本地参考数据独立同步、来源缺口验收及紧凑工作台与个股研究模块。本次仅合并本地主分支，未推送远端。
+
+同日远端 PR #1 的合并提交 `25f9894` 仅纳入 `9a7811d`，因此 CI 因缺少 CAPM 模块而失败。后续修复整合本地补齐提交与远端历史，并加入 Web/CLI 与 CAPM 导入回归检查；复现与本地验证见 [CAPM数据处理 §9.8](../development/implementation/CAPM数据处理.md#98-合并后-ci-导入失败修复2026-09-03)。版本仍为 1.15.2；远端发布与跨平台验证状态以对应提交和 Actions 记录为准。
+
+包版本以所用分支的 `pyproject.toml`、`src/stock_manager/__init__.py` 和 `tests/test_package_structure.py` 为准，当前三处均为 **1.15.2**。
 
 ## 紧凑工作台与个股研究（1.15.2）
 
