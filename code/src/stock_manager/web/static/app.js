@@ -2141,10 +2141,10 @@ function renderSyncStatus(s) {
     $('#sync-status-years-legend').hidden = false;
   }
 
-  // 门禁页/工作台切换:READY 才自动进工作台;有已激活库时允许在数据页
-  // 点选本地库后手动进入(数据截止日/覆盖见版本区提示)。
+  // 门禁页/工作台/回测系统三视图切换:显式视图互斥;'auto'(首次启动)按就绪态路由。
   const gate = $('#gate-view');
   const workbench = $('#workbench-view');
+  const backtest = $('#backtest-view');
   const readiness = s.readiness || {};
   const ready = readiness.status === 'READY';
   const canEnter = !!(s.can_enter && s.active_generation);
@@ -2159,12 +2159,31 @@ function renderSyncStatus(s) {
   if (state.uiView === 'workbench') {
     if (gate) gate.hidden = true;
     if (workbench) workbench.hidden = false;
+    if (backtest) backtest.hidden = true;
   } else if (state.uiView === 'gate') {
     if (gate) gate.hidden = false;
     if (workbench) workbench.hidden = true;
+    if (backtest) backtest.hidden = true;
+  } else if (state.uiView === 'backtest') {
+    if (gate) gate.hidden = true;
+    if (workbench) workbench.hidden = true;
+    if (backtest) backtest.hidden = false;
   } else if (gate && workbench) {
+    // auto:首次启动/刷新后尚未手动选视图,按数据就绪度决定入口
     gate.hidden = ready;
     workbench.hidden = !ready;
+    if (backtest) backtest.hidden = true;
+  }
+  const btHint = $('#bt-top-hint');
+  if (btHint) {
+    if (state.uiView === 'backtest') {
+      btHint.hidden = ready;
+      btHint.textContent = ready
+        ? ''
+        : '数据正在回补/同步中（回测依赖历史数据完整），可先前往「数据同步」查看进度。';
+    } else {
+      btHint.hidden = true;
+    }
   }
   if (gate && !ready) {
     const reason = readiness.reason || '数据未就绪';
