@@ -7,11 +7,13 @@ bounded single-job runner so HTTP requests never block on long runs.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from zoneinfo import ZoneInfo
 
 from stock_manager.backtest.backtrader_engine import BacktraderBacktestEngine
@@ -33,13 +35,20 @@ from stock_manager.research import (
 from stock_manager.research.models import (
     EvaluationSchedule,
     PolicyKind,
+    PolicyOperator,
     PolicySpec,
     ResearchStrategySpec,
+    TakeProfitTierSpec,
+)
+from stock_manager.research.strategies import (
+    StrategyTemplateError,
+    _policy_from_dict,
+    validate_and_normalize_policies,
 )
 from stock_manager.rules.historical_capability import HistoricalCapabilityValidator
-import hashlib
 from stock_manager.services.historical_screening_cache import historical_cache_key
 from stock_manager.services.historical_screening_executor import (
+    EligibilitySnapshot,
     HistoricalScreeningExecutor,
     HistoricalScreeningRequest,
 )
@@ -110,6 +119,15 @@ class ResearchBacktestService:
         max_workers: int | None = None,
         dataset_id: str = "market",
         adjustment: AdjustmentMethod = AdjustmentMethod.QFQ,
+        stock_codes: Sequence[str] = (),
+        ignore_eligibility: bool = False,
+        commission_rate: Decimal | None = None,
+        stamp_duty_rate: Decimal | None = None,
+        transfer_fee_rate: Decimal | None = None,
+        min_commission: Decimal | None = None,
+        lot_size: int | None = None,
+        strategy_template_id: str | None = None,
+        strategy_template_revision: int | None = None,
     ) -> str:
         if initial_cash <= 0:
             raise ResearchBacktestError("initial_cash must be positive")
@@ -125,6 +143,20 @@ class ResearchBacktestService:
             raise ResearchBacktestError("backtest_start/backtest_end or window_years is required")
         if backtest_start > backtest_end:
             raise ResearchBacktestError("backtest_start must not be after backtest_end")
+        if lot_size is not None and lot_size <= 0:
+            raise ResearchBacktestError("lot_size must be positive")
+        for name, value in (
+            ("commission_rate", commission_rate),
+            ("stamp_duty_rate", stamp_duty_rate),
+            ("transfer_fee_rate", transfer_fee_rate),
+            ("min_commission", min_commission),
+        ):
+            if value is not None and value < 0:
+                raise ResearchBacktestError(f"{name} must not be negative")
+        if ignore_eligibility and not stock_codes:
+            raise ResearchBacktestError(
+                "忽略资格模式需要至少一个股票代码"
+            )
         template = self._template_loader.get(template_id)
         loaded_revision = template.metadata.revision
         if loaded_revision != template_revision:
@@ -143,7 +175,6 @@ class ResearchBacktestService:
                 backtest_start=backtest_start,
                 backtest_end=backtest_end,
                 initial_cash=initial_cash,
-                max_positions=max_positions,
             )
         else:
             known_specs = builtin_strategy_specs(
@@ -162,14 +193,29 @@ class ResearchBacktestService:
                 raise ResearchBacktestError(
                     f"unknown strategy spec: {strategy_spec_id}"
                 ) from error
-        build_default_policy_registry().validate_strategy(
-            entry=spec.entry_policy,
-            exit=spec.exit_policy,
-            rebalance=spec.rebalance_policy,
-            allocation=spec.allocation_policy,
-            ranking=spec.ranking_policy,
-            execution=spec.execution_policy,
+        spec = self._apply_run_level(
+            spec,
+            max_positions=max_positions,
+            stock_codes=stock_codes,
+            ignore_eligibility=ignore_eligibility,
+            commission_rate=commission_rate,
+            stamp_duty_rate=stamp_duty_rate,
+            transfer_fee_rate=transfer_fee_rate,
+            min_commission=min_commission,
+            lot_size=lot_size,
+            strategy_template_id=strategy_template_id,
+            strategy_template_revision=strategy_template_revision,
         )
+        registry = build_default_policy_registry()
+        registry.validate_group(spec.entry_policies, PolicyKind.ENTRY)
+        registry.validate_group(spec.exit_policies, PolicyKind.EXIT)
+        for key, kind in (
+            ("rebalance_policy", PolicyKind.REBALANCE),
+            ("allocation_policy", PolicyKind.ALLOCATION),
+            ("ranking_policy", PolicyKind.RANKING),
+            ("execution_policy", PolicyKind.EXECUTION),
+        ):
+            registry.validate_spec(getattr(spec, key), kind)
         now = self._store._now()
         run_id = f"rb-{uuid.uuid4().hex[:12]}"
         self._run_max_workers[run_id] = (
@@ -240,35 +286,35 @@ class ResearchBacktestService:
         backtest_start: date,
         backtest_end: date,
         initial_cash: Decimal,
-        max_positions: int,
     ) -> ResearchStrategySpec:
-        """Assemble a custom strategy spec from six editor-selected policies."""
-        kind_map = {
-            "entry": PolicyKind.ENTRY,
-            "exit": PolicyKind.EXIT,
-            "rebalance": PolicyKind.REBALANCE,
-            "allocation": PolicyKind.ALLOCATION,
-            "ranking": PolicyKind.RANKING,
-            "execution": PolicyKind.EXECUTION,
+        """Assemble a custom strategy spec from editor-selected policies.
+
+        Accepts both the legacy flat shape (entry/exit as single policy objects,
+        P5A) and the P5C group shape (``entry``/``exit`` = ``{operator, items}``
+        plus optional top-level ``take_profit_tiers``). Both are normalized to
+        the canonical group payload and validated against the policy registry.
+        """
+        try:
+            canonical = _normalize_submit_policies(policies)
+        except (StrategyTemplateError, TypeError, ValueError) as error:
+            raise ResearchBacktestError(f"invalid policies: {error}") from error
+        entry_items = canonical["entry"]["items"]
+        exit_items = canonical["exit"]["items"]
+        entry_specs = tuple(_policy_from_dict(item) for item in entry_items)
+        exit_specs = tuple(_policy_from_dict(item) for item in exit_items)
+        singles = {
+            key: _policy_from_dict(canonical[key])
+            for key in ("rebalance", "allocation", "ranking", "execution")
         }
-        registry = build_default_policy_registry()
-        selected: dict[str, PolicySpec] = {}
-        for key, kind in kind_map.items():
-            item = policies.get(key)
-            if item is None or not isinstance(item, dict):
-                raise ResearchBacktestError(f"missing policy: {key}")
-            try:
-                policy = PolicySpec(
-                    str(item["policy_id"]),
-                    int(item["version"]),
-                    dict(item.get("parameters", {})),
-                )
-            except (KeyError, ValueError, TypeError) as error:
-                raise ResearchBacktestError(f"invalid policy {key}: {error}") from error
-            registry.validate_spec(policy, kind)
-            selected[key] = policy
+        tiers = tuple(
+            TakeProfitTierSpec(
+                Decimal(str(item["take_profit_ratio"])),
+                Decimal(str(item["partial_ratio"])),
+            )
+            for item in canonical["take_profit_tiers"]
+        )
         digest = hashlib.sha256(
-            json.dumps(policies, sort_keys=True).encode("utf-8")
+            json.dumps(canonical, sort_keys=True).encode("utf-8")
         ).hexdigest()[:10]
         return ResearchStrategySpec(
             strategy_spec_id=f"custom-{digest}",
@@ -277,16 +323,61 @@ class ResearchBacktestService:
             screening_plan_fingerprint=plan_fingerprint,
             adjustment=AdjustmentMethod.QFQ,
             evaluation_schedule=EvaluationSchedule.DAILY,
-            entry_policy=selected["entry"],
-            exit_policy=selected["exit"],
-            rebalance_policy=selected["rebalance"],
-            allocation_policy=selected["allocation"],
-            ranking_policy=selected["ranking"],
-            execution_policy=selected["execution"],
+            entry_policy=entry_specs[0],
+            exit_policy=exit_specs[0],
+            rebalance_policy=singles["rebalance"],
+            allocation_policy=singles["allocation"],
+            ranking_policy=singles["ranking"],
+            execution_policy=singles["execution"],
+            entry_policies=entry_specs,
+            exit_policies=exit_specs,
+            entry_operator=PolicyOperator(canonical["entry"]["operator"]),
+            exit_operator=PolicyOperator(canonical["exit"]["operator"]),
+            take_profit_tiers=tiers,
             initial_cash=initial_cash,
             backtest_start=backtest_start,
             backtest_end=backtest_end,
         )
+
+    def _apply_run_level(
+        self,
+        spec: ResearchStrategySpec,
+        *,
+        max_positions: int,
+        stock_codes: Sequence[str],
+        ignore_eligibility: bool,
+        commission_rate: Decimal | None,
+        stamp_duty_rate: Decimal | None,
+        transfer_fee_rate: Decimal | None,
+        min_commission: Decimal | None,
+        lot_size: int | None,
+        strategy_template_id: str | None,
+        strategy_template_revision: int | None,
+    ) -> ResearchStrategySpec:
+        """Overlay P5C run-level settings onto a built spec (base data wins)."""
+        allocation = replace(
+            spec.allocation_policy,
+            parameters={
+                **dict(spec.allocation_policy.parameters),
+                "max_positions": max_positions,
+            },
+        )
+        try:
+            return replace(
+                spec,
+                allocation_policy=allocation,
+                stock_codes=tuple(stock_codes),
+                ignore_eligibility=ignore_eligibility,
+                commission_rate=commission_rate,
+                stamp_duty_rate=stamp_duty_rate,
+                transfer_fee_rate=transfer_fee_rate,
+                min_commission=min_commission,
+                lot_size=lot_size,
+                strategy_template_id=strategy_template_id,
+                strategy_template_revision=strategy_template_revision,
+            )
+        except ValueError as error:
+            raise ResearchBacktestError(str(error)) from error
 
     def _window_bounds(self, years: int) -> tuple[date, date]:
         """Resolve [end - N years, end] from the local trading calendar.
@@ -368,7 +459,22 @@ class ResearchBacktestService:
         dataset_id: str,
         adjustment: AdjustmentMethod,
     ) -> Any:
-        """Eligibility from cache when the cache key already succeeded."""
+        """Eligibility from cache when the cache key already succeeded.
+
+        P5C: ignore-eligibility mode skips screening entirely (the selected
+        codes are eligible every evaluation day); otherwise a non-empty code
+        list narrows every day's eligible set to those codes (same PIT path as
+        the full-universe run).
+        """
+        codes = spec.stock_codes
+        code_filter: set[str] | None = set(codes) if codes else None
+        if spec.ignore_eligibility:
+            assert codes, "ignore_eligibility requires codes (spec invariant)"
+            days = self._evaluation_days(spec)
+            snapshots = tuple(
+                EligibilitySnapshot(day, codes, len(codes)) for day in days
+            )
+            return _StaticTimeline(snapshots)
         run = self._store.get(run_id)
         cache_key = "" if run is None else run.cache_key
         cached = self._store.find_cached(cache_key)
@@ -379,6 +485,7 @@ class ResearchBacktestService:
                     cached.run_id,
                     days,
                     self._repository,
+                    code_filter=code_filter,
                 )
         request = HistoricalScreeningRequest(
             dataset_id=dataset_id,
@@ -397,8 +504,9 @@ class ResearchBacktestService:
         from stock_manager.read.plan_view import PicklableScreeningPlan
 
         result = executor.execute(PicklableScreeningPlan.from_plan(plan), request)
-        self._store.save_eligibility(run_id, result.snapshots)
-        return result
+        snapshots = _filter_snapshots(result.snapshots, code_filter)
+        self._store.save_eligibility(run_id, snapshots)
+        return _StaticTimeline(snapshots)
 
     def _load_market_data(
         self,
@@ -466,6 +574,9 @@ class ResearchBacktestService:
             ),
             warnings_json=json.dumps(list(result.warnings), ensure_ascii=False),
             provenance_json=json.dumps(result.provenance, ensure_ascii=False),
+            run_settings_json=json.dumps(
+                _run_settings_snapshot(spec), ensure_ascii=False
+            ),
             created_at=self._store._now(),
         )
         self._repository.save_backtest_orders(run_id, result.trades)
@@ -507,6 +618,10 @@ class ResearchBacktestService:
 
     def list_runs(self, *, offset: int = 0, limit: int = 20) -> tuple[dict[str, object], ...]:
         runs = self._store.list("market", AdjustmentMethod.QFQ, offset=offset, limit=limit)
+        result_rows = {
+            row["run_id"]: row
+            for row in self._repository.list_backtest_results(run_ids=[r.run_id for r in runs])
+        }
         return tuple(
             {
                 "run_id": run.run_id,
@@ -514,6 +629,7 @@ class ResearchBacktestService:
                 "template_id": run.template_id,
                 "evaluation_start": run.evaluation_start.isoformat(),
                 "evaluation_end": run.evaluation_end.isoformat(),
+                "result": _run_list_item(result_rows.get(run.run_id)),
             }
             for run in runs
         )
@@ -522,10 +638,17 @@ class ResearchBacktestService:
 class _CachedTimeline:
     """Eligibility timeline backed by persisted eligibility rows."""
 
-    def __init__(self, run_id: str, days: tuple[tuple[date, int], ...], repository: Any) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        days: tuple[tuple[date, int], ...],
+        repository: Any,
+        code_filter: set[str] | None = None,
+    ) -> None:
         self._run_id = run_id
         self._days = days
         self._repository = repository
+        self._code_filter = code_filter
 
     @property
     def snapshots(self) -> tuple[Any, ...]:
@@ -536,11 +659,162 @@ class _CachedTimeline:
         return tuple(
             EligibilitySnapshot(
                 day,
-                self._repository.list_eligible_codes(self._run_id, day),
+                _filter_codes(
+                    self._repository.list_eligible_codes(self._run_id, day),
+                    self._code_filter,
+                ),
                 count,
             )
             for day, count in self._days
         )
+
+
+class _StaticTimeline:
+    """In-memory eligibility timeline (ignore-eligibility or filtered run)."""
+
+    def __init__(self, snapshots: Sequence[Any]) -> None:
+        self.snapshots = tuple(snapshots)
+
+
+def _filter_codes(
+    codes: Sequence[str], code_filter: set[str] | None
+) -> tuple[str, ...]:
+    if code_filter is None:
+        return tuple(codes)
+    return tuple(code for code in codes if code in code_filter)
+
+
+def _filter_snapshots(
+    snapshots: Sequence[Any], code_filter: set[str] | None
+) -> tuple[Any, ...]:
+    if code_filter is None:
+        return tuple(snapshots)
+    return tuple(
+        EligibilitySnapshot(
+            snapshot.trading_day,
+            _filter_codes(snapshot.eligible_codes, code_filter),
+            len(snapshot.eligible_codes),
+        )
+        for snapshot in snapshots
+    )
+
+
+def _normalize_submit_policies(
+    policies: Mapping[str, object],
+) -> dict[str, object]:
+    """Normalize the legacy/P5C submission policies into canonical group shape."""
+    def _group(raw: object) -> dict[str, object]:
+        if not isinstance(raw, Mapping) or "items" not in raw:
+            # legacy single policy object
+            if not isinstance(raw, Mapping):
+                raise StrategyTemplateError("group must be an object")
+            return {"operator": "any", "items": [dict(raw)]}
+        return {
+            "operator": raw.get("operator", "any"),
+            "items": list(raw["items"]),
+        }
+
+    payload: dict[str, object] = {}
+    for kind in ("entry", "exit"):
+        if kind not in policies:
+            raise StrategyTemplateError(f"missing policy: {kind}")
+        payload[kind] = _group(policies[kind])
+    for kind in ("rebalance", "allocation", "ranking", "execution"):
+        item = policies.get(kind)
+        if item is None:
+            raise StrategyTemplateError(f"missing policy: {kind}")
+        if not isinstance(item, Mapping):
+            raise StrategyTemplateError(f"{kind} policy must be an object")
+        payload[kind] = dict(item)
+    payload["take_profit_tiers"] = list(
+        policies.get("take_profit_tiers") or ()
+    )
+    return validate_and_normalize_policies(payload, build_default_policy_registry())
+
+
+def _run_settings_snapshot(spec: ResearchStrategySpec) -> dict[str, object]:
+    """Snapshot for run history playback (P5C): run-level fields + strategy ids."""
+    return {
+        "template_id": spec.screening_template_id,
+        "template_revision": spec.screening_template_revision,
+        "strategy_template_id": spec.strategy_template_id,
+        "strategy_template_revision": spec.strategy_template_revision,
+        "window_start": spec.backtest_start.isoformat(),
+        "window_end": spec.backtest_end.isoformat(),
+        "mode": "ignore_eligibility" if spec.ignore_eligibility else "eligibility",
+        "codes": list(spec.stock_codes),
+        "initial_cash": str(spec.initial_cash),
+        "max_positions": int(
+            spec.allocation_policy.parameters.get("max_positions", 20)
+        ),
+        "fees": {
+            "commission_rate": (
+                None if spec.commission_rate is None else str(spec.commission_rate)
+            ),
+            "stamp_duty_rate": (
+                None
+                if spec.stamp_duty_rate is None
+                else str(spec.stamp_duty_rate)
+            ),
+            "transfer_fee_rate": (
+                None
+                if spec.transfer_fee_rate is None
+                else str(spec.transfer_fee_rate)
+            ),
+            "min_commission": (
+                None if spec.min_commission is None else str(spec.min_commission)
+            ),
+            "lot_size": spec.lot_size,
+        },
+        "strategy": {
+            "entry": {
+                "operator": spec.entry_operator.value,
+                "policies": [
+                    {"policy_id": p.policy_id, "version": p.version}
+                    for p in spec.entry_policies
+                ],
+            },
+            "exit": {
+                "operator": spec.exit_operator.value,
+                "policies": [
+                    {"policy_id": p.policy_id, "version": p.version}
+                    for p in spec.exit_policies
+                ],
+            },
+            "take_profit_tiers": [
+                {
+                    "take_profit_ratio": str(tier.take_profit_ratio),
+                    "partial_ratio": str(tier.partial_ratio),
+                }
+                for tier in spec.take_profit_tiers
+            ],
+        },
+    }
+
+
+def _run_list_item(row: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Lightweight per-run summary for the run history list."""
+    if row is None:
+        return None
+    try:
+        metrics = json.loads(str(row.get("metrics_json") or "{}"))
+        settings = json.loads(str(row.get("run_settings_json") or "{}"))
+    except (TypeError, ValueError):
+        metrics = {}
+        settings = {}
+    return {
+        "score_start": row.get("score_start"),
+        "score_end": row.get("score_end"),
+        "created_at": row.get("created_at"),
+        "settings": settings,
+        "summary": {
+            "initial_cash": metrics.get("initial_cash"),
+            "final_value": metrics.get("final_value"),
+            "total_return": metrics.get("total_return"),
+            "trade_count": metrics.get("trade_count"),
+            "total_fees": metrics.get("total_fees"),
+        },
+    }
 
 
 def _warmup_start(score_start: date) -> date:
