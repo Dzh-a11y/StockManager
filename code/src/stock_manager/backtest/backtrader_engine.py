@@ -35,8 +35,6 @@ from stock_manager.backtest.execution import (
 from stock_manager.backtest.policies import (
     RankingEntry,
     equal_weight_targets,
-    exit_on_eligibility,
-    exit_on_fixed_holding,
     exit_on_sma,
     rank_candidates,
     should_add_on_dip,
@@ -46,7 +44,12 @@ from stock_manager.backtest.policies import (
     should_take_profit,
 )
 from stock_manager.domain import AdjustmentMethod, DailyBar, StockIdentity
-from stock_manager.research.models import PolicySpec, ResearchStrategySpec
+from stock_manager.research.models import (
+    PolicyOperator,
+    PolicySpec,
+    ResearchStrategySpec,
+    TakeProfitTierSpec,
+)
 
 
 class _TradingCalendarFeed(bt.feeds.PandasData):
@@ -98,14 +101,17 @@ class StockManagerPortfolioStrategy(bt.Strategy):
         self.equity_points: list[EquityPoint] = []
 
     def _execution_parameters(self) -> ExecutionParameters:
-        parameters = self.spec.execution_policy.parameters
         return ExecutionParameters(
-            lot_size=int(parameters.get("lot_size", 100)),
-            commission_rate=Decimal(str(parameters.get("commission_rate", "0.0003"))),
-            min_commission=Decimal(str(parameters.get("min_commission", "5"))),
-            stamp_duty_rate=Decimal(str(parameters.get("stamp_duty_rate", "0.0005"))),
-            transfer_fee_rate=Decimal(str(parameters.get("transfer_fee_rate", "0.00001"))),
-            slippage_rate=Decimal(str(parameters.get("slippage_rate", "0"))),
+            lot_size=_run_level_lot(self.spec),
+            commission_rate=_run_level_fee(self.spec, "commission_rate", "0.0003"),
+            min_commission=_run_level_fee(self.spec, "min_commission", "5"),
+            stamp_duty_rate=_run_level_fee(self.spec, "stamp_duty_rate", "0.0005"),
+            transfer_fee_rate=_run_level_fee(
+                self.spec, "transfer_fee_rate", "0.00001"
+            ),
+            slippage_rate=Decimal(
+                str(self.spec.execution_policy.parameters.get("slippage_rate", "0"))
+            ),
         )
 
     def _date(self) -> date:
@@ -161,63 +167,50 @@ class StockManagerPortfolioStrategy(bt.Strategy):
         eligible = set(self.eligibility.get(today, ()))
         holdings = self._holdings()
         held_codes = tuple(holdings)
-        exit_policy = self.spec.exit_policy
-        # 1) 退出决定(T+1 / 跌停 / 停牌受限)
-        exits: set[str] = set()
-        if exit_policy.policy_id == "eligibility_exit_v1":
-            exits.update(exit_on_eligibility(held_codes, tuple(eligible), exit_policy))
-        elif exit_policy.policy_id == "sma_timing_v1":
-            closes = {code: self._closes(code) for code in held_codes}
-            exits.update(
-                exit_on_sma(
-                    held_codes,
-                    closes,
-                    int(exit_policy.parameters.get("sma_period", 20)),
+        # 旧版兼容:退出组仅含 take_profit_partial_v1 时,等价于把它转成止盈档
+        # (全额退出组为空),避免 P5A 旧配置/测试语义消失。
+        exit_policies = self.spec.exit_policies
+        tiers = list(self.spec.take_profit_tiers)
+        legacy_tp = _legacy_take_profit_policy(exit_policies)
+        if legacy_tp is not None:
+            exit_policies = ()
+            tiers.append(
+                TakeProfitTierSpec(
+                    Decimal(
+                        str(legacy_tp.parameters.get("take_profit_ratio", "0.10"))
+                    ),
+                    Decimal(str(legacy_tp.parameters.get("partial_ratio", "0.50"))),
                 )
             )
-        elif exit_policy.policy_id == "fixed_holding_v1":
-            exits.update(
-                exit_on_fixed_holding(
-                    self.held_since,
-                    today,
-                    int(exit_policy.parameters.get("holding_trading_days", 20)),
-                )
+            tiers.sort(key=lambda item: item.take_profit_ratio)
+        # 1) 退出决定:退出组按操作符对持仓逐股求值,命中即整仓退出(P5C)
+        full_exits: set[str] = set()
+        for code in held_codes:
+            hits = tuple(
+                self._exit_hit(code, policy, eligible, today)
+                for policy in exit_policies
             )
-        elif exit_policy.policy_id == "take_profit_partial_v1":
-            tp_ratio = Decimal(str(exit_policy.parameters.get("take_profit_ratio", "0.10")))
-            partial = Decimal(str(exit_policy.parameters.get("partial_ratio", "0.50")))
-            for code in held_codes:
-                closes = self._closes(code)
-                cost = self.cost_by_code.get(code)
-                if cost and closes and should_take_profit(cost, closes[-1], tp_ratio):
-                    self._partial_sell(code, today, partial)
-        elif exit_policy.policy_id == "sma_above_v1":
-            sma_period = int(exit_policy.parameters.get("sma_period", 20))
-            for code in held_codes:
-                if should_sma_above_exit(self._closes(code), sma_period):
-                    exits.add(code)
-        for code in sorted(exits):
+            if self._group_hits(hits, self.spec.exit_operator):
+                full_exits.add(code)
+        for code in sorted(full_exits):
             self._sell(code, today, "exit")
-        # 2) 买入:候选按排名取 max_positions(回调入场时先过滤未达回调的)
+        # 1b) 止盈减仓:独立档位区,仅对当日未全额退出的持仓执行(全额退出优先)
+        self._apply_take_profit(full_exits, today, tuple(tiers))
+        # 2) 买入:候选按排名取 max_positions(入场组按操作符过滤)
         held_after = self._holdings()
         candidates = tuple(
             RankingEntry(code, self._turnover().get(code, Decimal("0")))
             for code in eligible
             if code not in held_after
         )
-        if self.spec.entry_policy.policy_id == "pullback_entry_v1":
-            lb = int(self.spec.entry_policy.parameters.get("lookback_trading_days", 20))
-            dr = Decimal(str(self.spec.entry_policy.parameters.get("drawdown_ratio", "0.05")))
-            candidates = tuple(
-                c for c in candidates
-                if self._pullback_ok(c.code, lb, dr)
+        candidates = tuple(
+            c
+            for c in candidates
+            if self._group_hits(
+                tuple(self._entry_hit(c.code, policy) for policy in self.spec.entry_policies),
+                self.spec.entry_operator,
             )
-        if self.spec.entry_policy.policy_id == "sma_below_v1":
-            sma_period = int(self.spec.entry_policy.parameters.get("sma_period", 20))
-            candidates = tuple(
-                c for c in candidates
-                if should_sma_below_entry(self._closes(c.code), sma_period)
-            )
+        )
         max_positions = int(
             self.spec.allocation_policy.parameters.get("max_positions", 20)
         )
@@ -262,6 +255,86 @@ class StockManagerPortfolioStrategy(bt.Strategy):
         self.equity_points.append(
             EquityPoint(today, net, cash, net - cash)
         )
+
+    @staticmethod
+    def _group_hits(hits: tuple[bool, ...], operator: PolicyOperator) -> bool:
+        """Apply the group operator: ALL requires every hit, ANY at least one."""
+        if operator is PolicyOperator.ALL:
+            return bool(hits) and all(hits)
+        return any(hits)
+
+    def _exit_hit(
+        self,
+        code: str,
+        policy: PolicySpec,
+        eligible: set[str],
+        today: date,
+    ) -> bool:
+        """Whether one full-exit policy fires for a held code today (P5C)."""
+        policy_id = policy.policy_id
+        if policy_id == "eligibility_exit_v1":
+            return code not in eligible
+        if policy_id == "sma_timing_v1":
+            closes = self._closes(code)
+            period = int(policy.parameters.get("sma_period", 20))
+            return code in exit_on_sma((code,), {code: closes}, period)
+        if policy_id == "fixed_holding_v1":
+            entered = self.held_since.get(code)
+            if entered is None:
+                return False
+            days = int(policy.parameters.get("holding_trading_days", 20))
+            return (today - entered).days >= days
+        if policy_id == "sma_above_v1":
+            closes = self._closes(code)
+            period = int(policy.parameters.get("sma_period", 20))
+            return should_sma_above_exit(closes, period)
+        raise BacktestInputError(
+            f"unsupported exit policy in exit group: {policy_id}"
+        )
+
+    def _entry_hit(self, code: str, policy: PolicySpec) -> bool:
+        """Whether one entry policy allows buying an eligible, unheld code."""
+        policy_id = policy.policy_id
+        if policy_id == "eligibility_enter_v1":
+            return True
+        if policy_id == "pullback_entry_v1":
+            lookback = int(
+                policy.parameters.get("lookback_trading_days", 20)
+            )
+            drawdown = Decimal(str(policy.parameters.get("drawdown_ratio", "0.05")))
+            return self._pullback_ok(code, lookback, drawdown)
+        if policy_id == "sma_below_v1":
+            closes = self._closes(code)
+            period = int(policy.parameters.get("sma_period", 20))
+            return should_sma_below_entry(closes, period)
+        raise BacktestInputError(
+            f"unsupported entry policy in entry group: {policy_id}"
+        )
+
+    def _apply_take_profit(
+        self,
+        full_exit_codes: set[str],
+        today: date,
+        tiers: tuple[TakeProfitTierSpec, ...] | None = None,
+    ) -> None:
+        """Independent take-profit tiers on positions that are not exiting fully.
+
+        Tiers are pre-sorted by ascending threshold; matched tiers fire in that
+        order and each sells ``partial_ratio`` of the then-current holding.
+        """
+        tiers = self.spec.take_profit_tiers if tiers is None else tiers
+        if not tiers:
+            return
+        candidates = sorted(set(self._holdings()) - set(full_exit_codes))
+        for code in candidates:
+            closes = self._closes(code)
+            cost = self.cost_by_code.get(code)
+            if not closes or cost is None:
+                continue
+            close = closes[-1]
+            for tier in tiers:
+                if should_take_profit(cost, close, tier.take_profit_ratio):
+                    self._partial_sell(code, today, tier.partial_ratio)
 
     def _closes(self, code: str) -> tuple[Decimal, ...]:
         data = self._data_by_name(code)
@@ -406,6 +479,37 @@ class StockManagerPortfolioStrategy(bt.Strategy):
                 self.close(data=data)
 
 
+def _run_level_fee(spec: ResearchStrategySpec, key: str, default: str) -> Decimal:
+    """Fee value: run-level spec field wins, legacy execution-policy param fallback."""
+    value = getattr(spec, key, None)
+    if value is not None:
+        return Decimal(str(value))
+    return Decimal(str(spec.execution_policy.parameters.get(key, default)))
+
+
+def _run_level_lot(spec: ResearchStrategySpec) -> int:
+    if spec.lot_size is not None:
+        return int(spec.lot_size)
+    return int(spec.execution_policy.parameters.get("lot_size", 100))
+
+
+def _legacy_take_profit_policy(
+    exit_policies: tuple[PolicySpec, ...],
+) -> PolicySpec | None:
+    """Return the legacy single take-profit exit policy, or None.
+
+    P5A treated ``take_profit_partial_v1`` as an exit policy; P5C moved it to
+    the independent take-profit tier area. A pure legacy configuration (exactly
+    one exit policy of that id) keeps its previous behaviour.
+    """
+    if len(exit_policies) != 1:
+        return None
+    policy = exit_policies[0]
+    if policy.policy_id == "take_profit_partial_v1":
+        return policy
+    return None
+
+
 class BacktraderBacktestEngine:
     """Adapter implementing BacktestEngine over Backtrader."""
 
@@ -442,13 +546,14 @@ class BacktraderBacktestEngine:
         }
         cerebro = bt.Cerebro(stdstats=False)
         cerebro.broker.setcash(float(spec.initial_cash))
-        execution = spec.execution_policy.parameters
         cerebro.broker.addcommissioninfo(
             AShareCommission(
-                commission=float(execution.get("commission_rate", "0.0003")),
-                min_commission=float(execution.get("min_commission", "5")),
-                stamp_duty=float(execution.get("stamp_duty_rate", "0.0005")),
-                transfer=float(execution.get("transfer_fee_rate", "0.00001")),
+                commission=float(_run_level_fee(spec, "commission_rate", "0.0003")),
+                min_commission=float(_run_level_fee(spec, "min_commission", "5")),
+                stamp_duty=float(_run_level_fee(spec, "stamp_duty_rate", "0.0005")),
+                transfer=float(
+                    _run_level_fee(spec, "transfer_fee_rate", "0.00001")
+                ),
             )
         )
         cerebro.addstrategy(
@@ -498,14 +603,25 @@ class BacktraderBacktestEngine:
             "engine": "backtrader",
             "engine_version": bt.__version__,
             "strategy": "StockManagerPortfolioStrategy",
-            "strategy_policies": ",".join(
+            "strategy_policies": ";".join(
                 [
-                    f"{spec.entry_policy.policy_id}@{spec.entry_policy.version}",
-                    f"{spec.exit_policy.policy_id}@{spec.exit_policy.version}",
-                    f"{spec.rebalance_policy.policy_id}@{spec.rebalance_policy.version}",
-                    f"{spec.allocation_policy.policy_id}@{spec.allocation_policy.version}",
-                    f"{spec.ranking_policy.policy_id}@{spec.ranking_policy.version}",
-                    f"{spec.execution_policy.policy_id}@{spec.execution_policy.version}",
+                    "entry="
+                    + ",".join(
+                        f"{p.policy_id}@{p.version}" for p in spec.entry_policies
+                    ),
+                    "exit="
+                    + ",".join(
+                        f"{p.policy_id}@{p.version}" for p in spec.exit_policies
+                    ),
+                    "take_profit="
+                    + ";".join(
+                        f"{tier.take_profit_ratio}x{tier.partial_ratio}"
+                        for tier in spec.take_profit_tiers
+                    ),
+                    "rebalance=" + f"{spec.rebalance_policy.policy_id}@{spec.rebalance_policy.version}",
+                    "allocation=" + f"{spec.allocation_policy.policy_id}@{spec.allocation_policy.version}",
+                    "ranking=" + f"{spec.ranking_policy.policy_id}@{spec.ranking_policy.version}",
+                    "execution=" + f"{spec.execution_policy.policy_id}@{spec.execution_policy.version}",
                 ]
             ),
             "cheat_modes": "none",
