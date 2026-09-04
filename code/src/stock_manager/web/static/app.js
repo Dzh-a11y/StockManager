@@ -1803,6 +1803,7 @@ async function pollNewBacktest() {
 
 /**
  * 展示一次运行的结果(供运行结束与历史回看共用)。
+ * 指标卡先渲染;成交与净值各自容错,失败不影响指标展示;最后统一收尾。
  * @param {string} runId @returns {Promise<void>}
  */
 async function renderBtResult(runId) {
@@ -1818,12 +1819,15 @@ async function renderBtResult(runId) {
     const status = await api('GET', '/api/research/backtests/' + runId);
     if (status.status !== 'SUCCEEDED' || !status.metrics) {
       toast('该运行没有可用的回测结果。', 'warn');
+      setBtBusy(false);
+      setBtProgress('回测完成（无可展示结果）。', null);
       return;
     }
     btResultPayload = status;
     btActiveRun = runId;
     const metrics = status.metrics || {};
     const settings = status.settings || {};
+    expandBtResultPanel();
     const subtitle = $('#bt-result-subtitle');
     if (subtitle) {
       const modeLabel = settings.mode === 'ignore_eligibility' ? '忽略资格' : '套用资格';
@@ -1853,24 +1857,49 @@ async function renderBtResult(runId) {
       '<div class="bt-metric"><div class="bt-metric__label">' + label + '</div>'
       + '<div class="bt-metric__value">' + value + '</div></div>').join('');
     metricsBox.hidden = false;
+    if (equityBox) equityBox.hidden = false;
     if (warnings) {
       const list = status.warnings || [];
       warnings.hidden = !list.length;
       warnings.textContent = list.length ? '提示：' + list.join('；') : '';
     }
+    // 成交与净值:独立容错,不让它们阻塞指标展示
     ordersBox.innerHTML = '';
     btOrdersAll = [];
     btOrdersOffset = 0;
     if (moreBox) moreBox.hidden = true;
     if (ordersHead) ordersHead.hidden = true;
-    await loadBtOrders(runId, true);
-    await drawBtEquity(status);
-    setBtBusy(false);
-    markBtDirty(btEditorDirty);
+    try {
+      await loadBtOrders(runId, true);
+    } catch (orderError) {
+      toast('成交明细读取失败：' + (orderError && orderError.message ? orderError.message : String(orderError)), 'err');
+    }
+    try {
+      await drawBtEquity(status);
+    } catch (equityError) {
+      toast('净值曲线加载失败：' + (equityError && equityError.message ? equityError.message : String(equityError)), 'err');
+    }
   } catch (error) {
     if (metricsBox) metricsBox.hidden = true;
     toast('读取结果失败：' + (error && error.message ? error.message : String(error)), 'err');
+  } finally {
+    // 无论成败,收尾:清进度、启用按钮、保留活动 run 供历史回看;若成功且右侧已显示,进度停住。
     setBtBusy(false);
+    setBtProgress('回测完成。', null);
+    markBtDirty(btEditorDirty);
+  }
+}
+
+/** @returns {void} 展开回测结果面板(用户可能手动收起过) */
+function expandBtResultPanel() {
+  const content = $('#bt-result-content');
+  if (content) content.hidden = false;
+  const panel = $('#bt-result-panel');
+  if (!panel) return;
+  const toggle = panel.querySelector('.panel-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.textContent = '收起';
   }
 }
 
