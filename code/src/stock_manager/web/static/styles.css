@@ -706,3 +706,5 @@ body {
 .bt-replay-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-soft, #5c6b7a); flex-wrap: wrap; }
 .bt-legend-buy::before { content: "▲"; color: #c0392b; margin-right: 3px; }
 .bt-legend-sell::before { content: "▼"; color: #1e8449; margin-right: 3px; }
+.bt-policy-desc { font-size: 12px; line-height: 1.5; color: var(--text-soft, #5c6b7a); margin: 0; }
+.bt-policy-card .bt-policy-desc { border-left: 2px solid var(--border, #d6dee6); padding-left: 8px; }

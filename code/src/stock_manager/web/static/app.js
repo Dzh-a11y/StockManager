@@ -1153,8 +1153,8 @@ function btEditorFromPolicies(policies) {
   ['entry', 'exit'].forEach(fill);
   BT_SINGLE_KINDS.forEach(fill);
   btEditor.tiers = (policies.take_profit_tiers || []).map((t) => ({
-    take_profit_ratio: btFractionToPercent(t.take_profit_ratio),
-    partial_ratio: btFractionToPercent(t.partial_ratio),
+    take_profit_ratio: t.take_profit_ratio == null ? '' : String(t.take_profit_ratio),
+    partial_ratio: t.partial_ratio == null ? '' : String(t.partial_ratio),
   }));
 }
 
@@ -1199,6 +1199,11 @@ function renderBtGroupItems(kind) {
     head.appendChild(select);
     head.appendChild(remove);
     card.appendChild(head);
+    const desc = document.createElement('p');
+    desc.className = 'bt-policy-desc';
+    desc.dataset.policyDesc = kind + ':' + index;
+    desc.textContent = policy.description || '';
+    card.appendChild(desc);
     const params = document.createElement('div');
     params.className = 'bt-policy-card__params';
     params.dataset.params = kind + ':' + index;
@@ -1206,6 +1211,16 @@ function renderBtGroupItems(kind) {
     container.appendChild(card);
     renderBtPolicyParams(kind, index);
   });
+}
+
+/** @param {string} kind @param {number} index @returns {void} 更新政策卡的中文机制说明 */
+function refreshBtPolicyDesc(kind, index) {
+  const el = document.querySelector('#bt-' + kind + '-items [data-policy-desc="' + kind + ':' + index + '"]');
+  if (!el) return;
+  const item = btEditor[kind][index];
+  if (!item) return;
+  const policy = btFindPolicy(kind, item.policy_id);
+  el.textContent = policy ? policy.description || '' : '';
 }
 
 /**
@@ -1278,15 +1293,7 @@ function renderBtOperatorButtons() {
   });
 }
 
-/** 把后端小数比例(如 '0.07')转成百分数字符串('7'),避免浮点尾巴。@param {string|number|null} fraction @returns {string} */
-function btFractionToPercent(fraction) {
-  if (fraction == null || fraction === '') return '';
-  const n = Number(fraction);
-  if (!Number.isFinite(n)) return '';
-  return String(parseFloat((n * 100).toFixed(6)));
-}
-
-/** @returns {void} */
+/** 渲染止盈档(小数比例,与后端同一口径:0.02=2%),不做任何百分制换算。@returns {void} */
 function renderBtTiers() {
   const container = $('#bt-tp-items');
   if (!container) return;
@@ -1313,7 +1320,7 @@ function renderBtTiers() {
     card.appendChild(head);
     const params = document.createElement('div');
     params.className = 'bt-policy-card__params';
-    const addInput = (id, labelText, value, percent) => {
+    const addInput = (id, labelText, placeholderText) => {
       const label = document.createElement('label');
       label.className = 'field';
       const span = document.createElement('span');
@@ -1322,7 +1329,8 @@ function renderBtTiers() {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'input';
-      input.value = value == null ? '' : String(value);
+      input.value = valueOf(id);
+      input.placeholder = placeholderText;
       input.dataset.tierIndex = String(index);
       input.dataset.tierField = id;
       label.appendChild(span);
@@ -1330,8 +1338,12 @@ function renderBtTiers() {
       params.appendChild(label);
       return input;
     };
-    addInput('take_profit_ratio', '触发涨幅 (%)', tier.take_profit_ratio == null ? '' : (Number(tier.take_profit_ratio) * 100), true);
-    addInput('partial_ratio', '减仓比例 (%)', tier.partial_ratio == null ? '' : (Number(tier.partial_ratio) * 100), true);
+    const valueOf = (id) => {
+      const v = tier[id];
+      return v == null || v === '' ? '' : String(v);
+    };
+    addInput('take_profit_ratio', '触发涨幅比例（小数）', '如 0.02 = 2%');
+    addInput('partial_ratio', '减仓比例（小数）', '如 0.1 = 10%');
     card.appendChild(params);
     container.appendChild(card);
   });
@@ -1367,6 +1379,11 @@ function renderBtSingles() {
     head.appendChild(kindLabel);
     head.appendChild(select);
     card.appendChild(head);
+    const desc = document.createElement('p');
+    desc.className = 'bt-policy-desc';
+    desc.dataset.singleDesc = kind;
+    desc.textContent = policy.description || '';
+    card.appendChild(desc);
     const params = document.createElement('div');
     params.className = 'bt-single-card__params';
     params.dataset.singleParams = kind;
@@ -1374,6 +1391,16 @@ function renderBtSingles() {
     container.appendChild(card);
     renderBtSingleParams(kind);
   });
+}
+
+/** @param {string} kind @returns {void} 更新单项政策卡的中文机制说明 */
+function refreshBtSingleDesc(kind) {
+  const el = document.querySelector('#bt-singles [data-single-desc="' + kind + '"]');
+  if (!el) return;
+  const select = document.querySelector('#bt-singles select[data-single-kind="' + kind + '"]');
+  if (!select) return;
+  const policy = btFindPolicy(kind, select.value);
+  el.textContent = policy ? policy.description || '' : '';
 }
 
 /** @param {string} kind @returns {void} */
@@ -1448,8 +1475,8 @@ function collectBtPolicies() {
       const ratio = read('take_profit_ratio');
       const partial = read('partial_ratio');
       return {
-        take_profit_ratio: ratio == null ? '0' : String(ratio / 100),
-        partial_ratio: partial == null ? '0' : String(partial / 100),
+        take_profit_ratio: ratio == null || Number.isNaN(ratio) ? '0' : String(ratio),
+        partial_ratio: partial == null || Number.isNaN(partial) ? '0' : String(partial),
       };
     }),
   };
@@ -1527,7 +1554,7 @@ async function btValidateLocal() {
     const tr = Number(t.take_profit_ratio);
     const pr = Number(t.partial_ratio);
     if (!(tr > 0) || !(pr > 0 && pr < 1)) {
-      throw new Error('第 ' + (index + 1) + ' 档止盈：涨幅需 >0%，减仓比例需在 (0%,100%) 区间。');
+      throw new Error('第 ' + (index + 1) + ' 档止盈：触发涨幅需 >0（小数，如 0.02=2%）；减仓比例需在 (0,1) 区间（小数，如 0.1=10%）。');
     }
   });
   const data = await api('POST', '/api/research/strategies/validate', { policies });
@@ -3738,6 +3765,7 @@ function bindEvents() {
         const kind = singleSelect.dataset.singleKind;
         btEditor.singles[kind] = { policy_id: singleSelect.value, parameters: {} };
         renderBtSingleParams(kind);
+        refreshBtSingleDesc(kind);
         markBtDirty(true);
         return;
       }
@@ -3747,6 +3775,7 @@ function bindEvents() {
         const index = Number(groupSelect.dataset.index);
         btEditor[kind][index] = { policy_id: groupSelect.value, parameters: {} };
         renderBtPolicyParams(kind, index);
+        refreshBtPolicyDesc(kind, index);
         markBtDirty(true);
         return;
       }
@@ -3756,7 +3785,7 @@ function bindEvents() {
       if (tierInput) {
         const index = Number(tierInput.dataset.tierIndex);
         const field = tierInput.dataset.tierField;
-        // 状态直接保存用户输入的百分数原文;仅在提交载荷 collectBtPolicies 时 ÷100。
+        // 小数比例口径:输入/显示/保存均为同一单位(如 0.02=2%),不做换算。
         btEditor.tiers[index][field] = tierInput.value;
         markBtDirty(true);
         return;
