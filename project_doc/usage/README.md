@@ -114,6 +114,7 @@ cd /Users/douzihao/StockManager/code
 - **双击启动（推荐，最傻瓜）**：把项目拷到 Windows 后，直接双击 `scripts\StockManager.bat`。首次会自动查找 Python 3.11+、创建 `.venv`、安装依赖、启动服务、打开浏览器，并**自动在桌面生成带图标的 StockManager 快捷方式**；之后双击桌面图标即可。
 - **快捷方式补救**：若桌面图标缺失，双击 `scripts\setup_windows.bat` 重新生成（快捷方式指向 `StockManager.bat`）。
 - **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。打包脚本会自动安装并嵌入全部运行时依赖（含 backtrader 回测引擎），若检测到依赖缺失会先执行安装，无需手动补装。
+- **云端构建 exe（推荐，本机全程免装任何东西）**：在 GitHub 仓库 Actions 页手动运行 `build-exe`（推送 `main` 或提交 PR 时也会自动触发），构建完成后在 `StockManager-windows-exe` 产物下载 `StockManager.exe`，复制到任意 Windows 机器双击即可运行。打包在 GitHub 的 Windows runner 上完成，产物已内嵌全部依赖（含 backtrader 回测引擎），无需在本机安装 Python 或任何依赖。
 - **命令行方式**（在代码仓库根执行）：
 
   ```bat

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import threading
@@ -91,6 +92,14 @@ def _wait_until_running_and_open(timeout: float = 20.0) -> None:
 
 
 def main() -> int:
+    # CI smoke check:set STOCK_MANAGER_SMOKE_CHECK=1 时,仅验证冻结后的应用能导入
+    # 完整运行时图(含 backtrader 回测引擎)并正常退出,不启动服务、不写数据。
+    if os.environ.get("STOCK_MANAGER_SMOKE_CHECK") == "1":
+        import backtrader as _bt  # noqa: F401
+
+        print(f"SMOKE_OK backtrader={_bt.__version__}")
+        return 0
+
     root = app_dir()
     prepare(root, resource_dir())
 
