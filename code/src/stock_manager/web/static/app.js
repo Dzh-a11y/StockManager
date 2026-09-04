@@ -1765,30 +1765,35 @@ async function runNewBacktest() {
 
 /** @returns {Promise<void>} */
 async function pollNewBacktest() {
-  if (!btRunId) return;
+  const runId = btRunId;
+  if (!runId) return;
   try {
-    const payload = await api('GET', '/api/research/backtests/' + btRunId);
+    const payload = await api('GET', '/api/research/backtests/' + runId);
     const done = Number(payload.progress_completed) || 0;
     const total = Number(payload.progress_total) || 0;
     const percent = total > 0 ? Math.round((done / total) * 100) : null;
     setBtProgress('任务状态：' + payload.status + (total > 0 ? '（' + done + '/' + total + '）' : ''), percent);
     if (payload.status === 'SUCCEEDED') {
-      setBtRun(null);
-      setBtProgress('回测完成。', 100);
-      await renderBtResult(btActiveRun);
+      // 先停轮询并保留 runId,再渲染结果(不能把活动 run 一起清空)
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
+      btActiveRun = runId;
+      setBtProgress('回测完成，正在汇总结果…', 100);
+      await renderBtResult(runId);
+      loadBacktestHistory();
       return;
     }
     if (payload.status === 'FAILED') {
-      setBtRun(null);
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
       setBtProgress('回测失败：' + (payload.error_message || '未知错误'), null);
-      const btn = $('#bt-run');
       setBtBusy(false);
       return;
     }
     if (payload.status === 'CANCELLED') {
-      setBtRun(null);
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
       setBtProgress('任务已取消。', null);
-      const btn = $('#bt-run');
       setBtBusy(false);
     }
   } catch (error) {
