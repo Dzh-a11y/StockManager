@@ -1152,7 +1152,10 @@ function btEditorFromPolicies(policies) {
   };
   ['entry', 'exit'].forEach(fill);
   BT_SINGLE_KINDS.forEach(fill);
-  btEditor.tiers = (policies.take_profit_tiers || []).map((t) => ({ take_profit_ratio: String(t.take_profit_ratio), partial_ratio: String(t.partial_ratio) }));
+  btEditor.tiers = (policies.take_profit_tiers || []).map((t) => ({
+    take_profit_ratio: btFractionToPercent(t.take_profit_ratio),
+    partial_ratio: btFractionToPercent(t.partial_ratio),
+  }));
 }
 
 /** @returns {void} */
@@ -1275,11 +1278,12 @@ function renderBtOperatorButtons() {
   });
 }
 
-/** 输入为空返回 '';否则把用户输入的百分比数值转成小数比例(如 '2' → '0.02')。@param {string} raw @returns {string} */
-function btPercentToFraction(raw) {
-  if (raw === '' || raw == null) return '';
-  const n = Number(raw);
-  return Number.isFinite(n) ? String(n / 100) : '';
+/** 把后端小数比例(如 '0.07')转成百分数字符串('7'),避免浮点尾巴。@param {string|number|null} fraction @returns {string} */
+function btFractionToPercent(fraction) {
+  if (fraction == null || fraction === '') return '';
+  const n = Number(fraction);
+  if (!Number.isFinite(n)) return '';
+  return String(parseFloat((n * 100).toFixed(6)));
 }
 
 /** @returns {void} */
@@ -1291,11 +1295,6 @@ function renderBtTiers() {
     container.innerHTML = '<p class="panel__hint">未设置止盈档：按各退出政策整仓退出（历史默认行为）。</p>';
     return;
   }
-  const displayPercent = (value) => {
-    if (value == null || value === '') return '';
-    const n = Number(value);
-    return Number.isNaN(n) ? '' : String(n * 100);
-  };
   btEditor.tiers.forEach((tier, index) => {
     const card = document.createElement('div');
     card.className = 'bt-policy-card';
@@ -1323,7 +1322,7 @@ function renderBtTiers() {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'input';
-      input.value = displayPercent(value);
+      input.value = value == null ? '' : String(value);
       input.dataset.tierIndex = String(index);
       input.dataset.tierField = id;
       label.appendChild(span);
@@ -3757,7 +3756,8 @@ function bindEvents() {
       if (tierInput) {
         const index = Number(tierInput.dataset.tierIndex);
         const field = tierInput.dataset.tierField;
-        btEditor.tiers[index][field] = btPercentToFraction(tierInput.value);
+        // 状态直接保存用户输入的百分数原文;仅在提交载荷 collectBtPolicies 时 ÷100。
+        btEditor.tiers[index][field] = tierInput.value;
         markBtDirty(true);
         return;
       }
