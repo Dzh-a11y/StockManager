@@ -17,10 +17,19 @@ goto :without_venv
 
 :with_venv
 echo 使用解释器: %VENVPY%
+rem 校验关键运行时依赖(含 backtrader 回测引擎)可导入;缺失则先装整套依赖。
+"%VENVPY%" -c "import backtrader, baostock, tzdata" >nul 2>nul
+if not errorlevel 1 goto :install_pyinstaller
+echo 检测到依赖缺失(如 backtrader),正在安装项目依赖...
+"%VENVPY%" -m pip install -e .
+if errorlevel 1 goto :fail
+:install_pyinstaller
 "%VENVPY%" -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 echo 正在打包(onefile, 无控制台窗口)...
-"%VENVPY%" -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
+rem --collect-submodules backtrader:强制收集 backtrader 全部子模块,
+rem 避免其 from ... import * 通配导入在 PyInstaller 静态分析里被漏掉。
+"%VENVPY%" -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --collect-submodules backtrader --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
 if errorlevel 1 goto :fail
 goto :built
 
@@ -30,10 +39,13 @@ echo baostock 核心依赖 pandas 且只能在 Python 3.11 用轮子安装,
 echo 这里用 --only-binary 强制轮子,绝不触发源码编译...
 py -3 -m pip install --only-binary=:all: "pandas<3" baostock tzdata
 if errorlevel 1 goto :fail
+echo 安装回测引擎依赖 backtrader(纯 Python,不触发编译)...
+py -3 -m pip install "backtrader>=1.9.78.123"
+if errorlevel 1 goto :fail
 py -3 -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :fail
 echo 正在打包(onefile, 无控制台窗口)...
-py -3 -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
+py -3 -m PyInstaller --noconfirm --clean --onefile --noconsole --name StockManager --paths "src" --collect-submodules backtrader --add-data "config\rule_templates;config\rule_templates" --add-data "config\sync.json;config" --add-data "src\stock_manager\web\static;src\stock_manager\web\static" scripts\exe_entry.py
 if errorlevel 1 goto :fail
 goto :built
 

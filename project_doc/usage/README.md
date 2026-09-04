@@ -1,5 +1,5 @@
 ---
-date: 2026-09-03
+date: 2026-09-04
 purpose: StockManager 使用手册：说明功能、内置筛选规则、回测策略以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
 project: StockManager
 status: active
@@ -113,7 +113,7 @@ cd /Users/douzihao/StockManager/code
 
 - **双击启动（推荐，最傻瓜）**：把项目拷到 Windows 后，直接双击 `scripts\StockManager.bat`。首次会自动查找 Python 3.11+、创建 `.venv`、安装依赖、启动服务、打开浏览器，并**自动在桌面生成带图标的 StockManager 快捷方式**；之后双击桌面图标即可。
 - **快捷方式补救**：若桌面图标缺失，双击 `scripts\setup_windows.bat` 重新生成（快捷方式指向 `StockManager.bat`）。
-- **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。
+- **单文件 exe（可选，免装 Python）**：在 Windows 上双击 `scripts\build_windows_exe.bat` 打包，产物为 `dist\StockManager.exe`；把它复制到任意文件夹双击即可运行，数据存放在 exe 所在目录。打包脚本会自动安装并嵌入全部运行时依赖（含 backtrader 回测引擎），若检测到依赖缺失会先执行安装，无需手动补装。
 - **命令行方式**（在代码仓库根执行）：
 
   ```bat
@@ -188,5 +188,10 @@ stock-manager web \
 - **右栏 · 回测结果与历史**：运行结束展示指标卡（初始/期末资金、总/年化收益、最大回撤、夏普、交易次数、累计费用）、逐点净值曲线与分页成交明细；历史运行列表可回看任意一次运行（含当时快照：资格模式、代码集、窗口、费用与策略引用）。点击任一行成交，弹出该股在回测窗口内的日 K 复盘浮层：买卖点以时间戳标注在对应 K 线上（买▲在上、卖▼在下，附价格×股数），支持缩放/平移/复位。
 
 ## 更多文档
+
+研究使用文档：
+
+- [Alpha Mining的优化建模](Alpha%20Mining的优化建模.md)：记录当前讨论形成的目标函数、MDD/CVaR 硬约束、优化算法分层与待确认参数。
+- [稳健 Alpha 模板搜索](STOCK_TEMPLATE_ALPHA_SEARCH.md)：说明单截面 maximin Alpha 模板搜索的调用、边界与验证方式。
 
 开发类文档（计划手册、架构手册与架构图、实现手册）见 `../README.md` 中的目录说明；规则与接口明细见 `../development/implementation/P3_WEB_API.md`。

@@ -17,7 +17,7 @@ project_doc/
 │   ├── plan/                #   计划手册：阶段计划、迁移计划、删除清单
 │   ├── architecture/        #   架构手册与架构图（同属一个文件夹）
 │   └── implementation/      #   实现手册：各阶段设计、验收与接口明细
-└── usage/                   # 使用手册：安装、启动、规则与操作说明
+└── usage/                   # 使用文档：安装、启动、规则、操作与研究建模说明
 ```
 
 ## 开始讨论或开发前
@@ -90,10 +90,11 @@ project_doc/
 - [CAPM数据处理](development/implementation/CAPM数据处理.md)（active）：P5B 指数与利率数据、前复权简单收益、CAPM 回归及线性年化处理手册；包含来源缺口验收、独立个股研究 UI、可切换参数、实际覆盖、接口和离线测试证据。
 - `AMBIGUITY_LOG.md`：P1-3 旧规则行为歧义清单。
 
-## usage（使用手册）
+## usage（使用文档）
 
 - `README.md`：用户使用手册，说明功能、内置筛选规则、回测策略（P5A）以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
 - [STOCK_TEMPLATE_ALPHA_SEARCH.md](usage/STOCK_TEMPLATE_ALPHA_SEARCH.md)：个人稳健 Alpha 模板搜索技能的调用、maximin 目标、代码只读边界与辅助脚本验证记录；先不用回测系统。
+- [Alpha Mining的优化建模.md](usage/Alpha%20Mining的优化建模.md)：记录 Alpha Mining 的候选目标函数、MDD/CVaR 硬约束、优化算法分层与待确认参数。
 
 ## 元数据要求
 
