@@ -294,6 +294,21 @@ class ResearchBacktestService:
         plus optional top-level ``take_profit_tiers``). Both are normalized to
         the canonical group payload and validated against the policy registry.
         """
+        payload = dict(policies)
+        alloc_raw = payload.get("allocation")
+        if isinstance(alloc_raw, Mapping):
+            alloc = dict(alloc_raw)
+            params = dict(alloc.get("parameters") or {})
+            if alloc.get("policy_id") in (
+                "equal_weight_v1",
+                "add_position_on_dip_v1",
+            ) and "max_positions" not in params:
+                # 基础数据“最大持仓”为唯一入口:参数缺省时先注入占位,
+                # 随后由 _apply_run_level 以运行级数值统一覆盖。
+                params["max_positions"] = 20
+            alloc["parameters"] = params
+            payload["allocation"] = alloc
+        policies = payload
         try:
             canonical = _normalize_submit_policies(policies)
         except (StrategyTemplateError, TypeError, ValueError) as error:
