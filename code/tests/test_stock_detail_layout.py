@@ -49,8 +49,11 @@ def test_every_main_module_has_an_accessible_independent_collapse_control() -> N
     layout = parse_layout()
     panels = {identity for identity, (_, attrs, _) in layout.nodes.items() if "data-panel-id" in attrs}
     assert panels == {
-        "screen-panel", "backtest-panel", "template-panel", "strategy-panel",
-        "results-panel", "backtest-results-panel", "stock-detail-panel", "maintenance-panel",
+        # 工作台(P5):筛选运行、筛选模版、筛选结果、个股研究、维护
+        "screen-panel", "template-panel", "results-panel",
+        "stock-detail-panel", "maintenance-panel",
+        # 回测系统(P5C):基础数据、策略模版、回测结果、历史运行
+        "bt-basic-panel", "bt-strategy-panel", "bt-result-panel", "bt-history-panel",
     }
     assert len(layout.toggles) == len(panels)
     for attrs, ancestors in layout.toggles:
@@ -60,6 +63,19 @@ def test_every_main_module_has_an_accessible_independent_collapse_control() -> N
         assert attrs["aria-expanded"] == "true"
         target = str(attrs["aria-controls"])
         assert panel in layout.nodes[target][2]
+
+
+def test_backtest_view_has_own_navigation_and_unique_panel_ids() -> None:
+    layout = parse_layout()
+    for identity in (
+        "backtest-view", "bt-back-workbench", "bt-open-data",
+        "bt-run", "bt-cancel", "bt-codes", "bt-window-preset",
+        "bt-strategy-select", "bt-entry-items", "bt-exit-items", "bt-tp-items",
+        "bt-singles", "bt-result-content", "bt-history-list",
+        "bt-replay-overlay", "bt-replay-canvas",
+    ):
+        assert identity in layout.nodes, f"missing backtest-view node: {identity}"
+    assert layout.nodes["bt-back-workbench"][2][-1] == "backtest-view"
 
 
 def test_stock_research_is_independent_and_ordered_before_maintenance() -> None:

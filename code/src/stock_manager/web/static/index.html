@@ -127,6 +127,7 @@
       <!-- 数据库条(顶部,全宽):数据同步入口 + 数据状态 + 当前库 -->
       <div class="db-bar">
         <button id="open-data-ui" class="btn btn--ghost" type="button">← 数据同步</button>
+        <button id="backtest-open" class="btn btn--ghost" type="button">回测系统 →</button>
         <p id="sync-status-title" class="panel__hint" hidden></p>
         <span id="wb-active-gen" class="panel__hint"></span>
       </div>
@@ -175,39 +176,7 @@
           </div>
         </section>
 
-        <!-- 左列下:回测基础数据(资金/窗口/持仓+运行) -->
-        <section id="backtest-panel" class="panel panel--conditions" data-panel-id="backtest-panel" aria-label="回测基础数据">
-          <div class="panel__head">
-            <h2 class="panel__title">回测基础数据</h2>
-            <button class="panel-toggle" data-panel-toggle="backtest-panel" aria-controls="backtest-panel-content" aria-expanded="true" type="button">收起</button>
-          </div>
-          <div id="backtest-panel-content" class="panel__body">
-            <label class="field">
-              <span class="field__label">回测窗口（年,1-8）<span class="term__help" data-tip="回测区间长度,终点为本地数据最新已完成交易日,起点按 N×260 个交易日向前。">?</span></span>
-              <input id="bt-window" class="input" type="number" min="1" max="8" step="1" value="5" inputmode="numeric">
-              <span class="field__hint">终点 = 最新已完成交易日；起点 = 终点向前 N×260 个交易日</span>
-            </label>
-            <label class="field">
-              <span class="field__label">初始资金（元）</span>
-              <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
-              <span class="field__hint">金额为十进制字符串,如 1000000</span>
-            </label>
-            <label class="field">
-              <span class="field__label">最大持仓数</span>
-              <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
-            </label>
-            <label class="field">
-              <span class="field__label">回测并发数（Worker 数，1-16）<span class="term__help" data-tip="回测信号构建(每日入选池)同时启动的 worker 进程数：数量越多越快，但内存占用与 CPU 占用越高。">?</span></span>
-              <input id="bt-workers" class="input" type="number" min="1" max="16" step="1" value="2" inputmode="numeric">
-              <span class="field__hint">worker 越多越快，但内存占用越多、CPU 要求越高；默认 2</span>
-            </label>
-            <button id="run-backtest" class="btn btn--primary btn--block" type="button">
-              <span class="btn__label">用此模板回测</span>
-            </button>
-            <p class="panel__hint">⚠️ 如果要进行回测，必须把模板里的 <strong>PE（市盈率）</strong>选项关掉：本地基本面只有最新交易日一份快照，开着它历史窗口会无入选、回测不产生交易。</p>
-            <p id="bt-progress" class="panel__hint" hidden></p>
-          </div>
-        </section>
+        <!-- 回测已迁移至独立「回测系统」视图(见 #backtest-view) -->
       </div>
 
       <!-- 中列:筛选模版 + 策略模版 -->
@@ -251,17 +220,7 @@
           </div>
         </section>
 
-        <!-- 中列下:策略模版(回测策略/六类政策) -->
-        <section id="strategy-panel" class="panel panel--editor" data-panel-id="strategy-panel" aria-label="策略模版">
-          <div class="panel__head">
-            <h2 class="panel__title">策略模版</h2>
-            <button class="panel-toggle" data-panel-toggle="strategy-panel" aria-controls="strategy-panel-content" aria-expanded="true" type="button">收起</button>
-          </div>
-          <div id="strategy-panel-content" class="panel__body">
-            <p class="panel__hint">六类政策各选其一并填写参数（参数白名单校验,禁止任意代码）</p>
-            <div id="strategy-policies" class="editor-rules"></div>
-          </div>
-        </section>
+        <!-- 回测策略已迁移至独立「回测系统」视图(见 #backtest-view) -->
       </div>
 
       <!-- 右列:筛选结果 + 回测结果 -->
@@ -282,15 +241,7 @@
           </div>
         </section>
 
-        <section id="backtest-results-panel" class="panel panel--results" data-panel-id="backtest-results-panel" aria-label="回测结果">
-          <div class="panel__head">
-            <h2 class="panel__title">回测结果</h2>
-            <button class="panel-toggle" data-panel-toggle="backtest-results-panel" aria-controls="backtest-results-panel-content" aria-expanded="true" type="button">收起</button>
-          </div>
-          <div id="backtest-results-panel-content">
-          <div id="bt-result" class="panel__body" hidden></div>
-          </div>
-        </section>
+        <!-- 回测结果已迁移至独立「回测系统」视图(见 #backtest-view) -->
       </div>
 
       <!-- 个股研究：独立于筛选结果，位于维护区上方 -->
@@ -429,6 +380,258 @@
         </div>
       </section>
     </div><!-- /#workbench-view -->
+
+    <!-- 回测系统(P5C):第三个整页视图,切换方式与数据同步一致 -->
+    <div id="backtest-view" class="bt-view" hidden aria-label="回测系统">
+      <div class="db-bar bt-topbar">
+        <button id="bt-back-workbench" class="btn btn--ghost" type="button">→ 筛选工作台</button>
+        <button id="bt-open-data" class="btn btn--ghost" type="button">数据同步</button>
+        <span class="bt-view-title">回测系统</span>
+        <p id="bt-top-hint" class="panel__hint" hidden></p>
+      </div>
+
+      <div class="bt-columns">
+        <!-- 左列:回测基础数据(运行环境,每次现填) -->
+        <div class="bt-col bt-col--left">
+          <section id="bt-basic-panel" class="panel panel--conditions" data-panel-id="bt-basic-panel" aria-label="回测基础数据">
+            <div class="panel__head">
+              <h2 class="panel__title">回测基础数据</h2>
+              <button class="panel-toggle" data-panel-toggle="bt-basic-panel" aria-controls="bt-basic-content" aria-expanded="true" type="button">收起</button>
+            </div>
+            <div id="bt-basic-content" class="panel__body">
+              <div class="segmented segmented--full" role="group" aria-label="资格模式">
+                <button class="segment" data-bt-mode="eligibility" type="button">套用模板资格</button>
+                <button class="segment" data-bt-mode="ignore" type="button">忽略资格纯政策</button>
+              </div>
+              <label class="field">
+                <span class="field__label">股票代码（可多只，逗号分隔）<span class="term__help" data-tip="留空=按资格名单全池回测；填 1 只进入单股模式；「忽略资格」必须至少填 1 只。">?</span></span>
+                <input id="bt-codes" class="input" type="text" placeholder="如 sh.600000,sz.000001" autocomplete="off">
+              </label>
+              <p id="bt-mode-hint" class="panel__hint">忽略资格模式：整段窗口标的始终可交易，买卖由入场/退出/止盈政策决定。</p>
+
+              <div class="section-divider"></div>
+              <label class="field">
+                <span class="field__label">回测窗口</span>
+                <select id="bt-window-preset" class="select">
+                  <option value="y1" selected>近 1 年（至最新已完成交易日）</option>
+                  <option value="y3">近 3 年</option>
+                  <option value="y5">近 5 年</option>
+                  <option value="y8">近 8 年</option>
+                  <option value="custom">自定义起止日期</option>
+                </select>
+              </label>
+              <div id="bt-window-custom" class="bt-window-custom" hidden>
+                <label class="field">
+                  <span class="field__label">开始日期</span>
+                  <input id="bt-start" class="input" type="date">
+                </label>
+                <label class="field">
+                  <span class="field__label">结束日期</span>
+                  <input id="bt-end" class="input" type="date">
+                  <span class="field__hint">终点 ≤ 本地最新已完成交易日；起点 ≥ 本地数据覆盖起点</span>
+                </label>
+              </div>
+
+              <label class="field">
+                <span class="field__label">初始资金（元）</span>
+                <input id="bt-cash" class="input" type="text" value="1000000" inputmode="decimal">
+              </label>
+              <label class="field">
+                <span class="field__label">最大持仓数（唯一入口，覆盖分配政策）</span>
+                <input id="bt-positions" class="input" type="number" min="1" max="500" step="1" value="20">
+              </label>
+              <label class="field">
+                <span class="field__label">回测并发数（Worker 数，1-16）</span>
+                <input id="bt-workers" class="input" type="number" min="1" max="16" step="1" value="2" inputmode="numeric">
+              </label>
+
+              <div class="section-divider"></div>
+              <p class="panel__label">费用与整手（本次运行设置，不进策略模板）</p>
+              <div class="bt-fees">
+                <label class="field">
+                  <span class="field__label">佣金费率</span>
+                  <input id="bt-fee-commission" class="input" type="text" value="0.0003" inputmode="decimal">
+                </label>
+                <label class="field">
+                  <span class="field__label">印花税率</span>
+                  <input id="bt-fee-stamp" class="input" type="text" value="0.0005" inputmode="decimal">
+                </label>
+                <label class="field">
+                  <span class="field__label">过户费率</span>
+                  <input id="bt-fee-transfer" class="input" type="text" value="0.00001" inputmode="decimal">
+                </label>
+                <label class="field">
+                  <span class="field__label">最低佣金（元）</span>
+                  <input id="bt-fee-min" class="input" type="text" value="5" inputmode="decimal">
+                </label>
+                <label class="field">
+                  <span class="field__label">整手股数</span>
+                  <input id="bt-fee-lot" class="input" type="number" min="1" max="10000" step="1" value="100">
+                </label>
+                <button id="bt-fee-reset" class="btn btn--ghost btn--sm" type="button">恢复默认</button>
+              </div>
+
+              <div class="section-divider"></div>
+              <div class="bt-run-row">
+                <button id="bt-run" class="btn btn--primary btn--block" type="button">
+                  <span class="btn__label">运行回测</span>
+                </button>
+                <button id="bt-cancel" class="btn btn--danger btn--sm" type="button" hidden>取消任务</button>
+              </div>
+              <p id="bt-progress" class="panel__hint" role="status" hidden></p>
+              <div class="progress-track" id="bt-progress-track" hidden>
+                <div class="progress-fill" id="bt-progress-fill"></div>
+              </div>
+              <p id="bt-current" class="panel__hint" hidden></p>
+            </div>
+          </section>
+        </div>
+
+        <!-- 中列:筛选模板选择 + 策略模版编辑器 -->
+        <div class="bt-col bt-col--mid">
+          <section id="bt-screening-panel" class="panel panel--editor" aria-label="筛选模板">
+            <div class="panel__head">
+              <div class="panel__title-group">
+                <h2 class="panel__title">筛选模板（资格池）</h2>
+              </div>
+            </div>
+            <div class="panel__body">
+              <label class="field">
+                <span class="field__label">模板</span>
+                <select id="bt-screening-template" class="select"></select>
+                <span class="field__hint">规则启停与参数编辑请在「筛选工作台」完成；此处只选择资格模板。</span>
+              </label>
+            </div>
+          </section>
+
+          <section id="bt-strategy-panel" class="panel panel--editor" data-panel-id="bt-strategy-panel" aria-label="策略模版">
+            <div class="panel__head">
+              <div class="panel__title-group">
+                <h2 class="panel__title">策略模版</h2>
+                <span id="bt-strategy-dirty" class="badge badge--warn" hidden>未保存</span>
+              </div>
+              <button class="panel-toggle" data-panel-toggle="bt-strategy-panel" aria-controls="bt-strategy-content" aria-expanded="true" type="button">收起</button>
+            </div>
+            <div id="bt-strategy-content" class="panel__body">
+              <label class="field">
+                <span class="field__label">命名策略</span>
+                <select id="bt-strategy-select" class="select"></select>
+              </label>
+              <div class="bt-strategy-name-row">
+                <input id="bt-strategy-name" class="input" type="text" placeholder="策略名称">
+                <input id="bt-strategy-description" class="input" type="text" placeholder="一句话描述">
+              </div>
+              <div class="bt-strategy-actions">
+                <button id="bt-strategy-save" class="btn btn--secondary btn--sm" type="button">保存</button>
+                <button id="bt-strategy-saveas" class="btn btn--primary btn--sm" type="button">另存为…</button>
+                <button id="bt-strategy-validate" class="btn btn--ghost btn--sm" type="button">校验</button>
+                <button id="bt-strategy-delete" class="btn btn--danger btn--sm" type="button">删除</button>
+                <button id="bt-strategy-new" class="btn btn--ghost btn--sm" type="button">新建（默认）</button>
+              </div>
+              <p id="bt-strategy-status" class="panel__hint" role="status" hidden></p>
+
+              <div class="section-divider"></div>
+              <h3 class="bt-group-title">入场组（≤5，可同名不同参）</h3>
+              <div class="bt-group-op" role="group" aria-label="入场组合逻辑">
+                <button class="segment" data-bt-op-kind="entry" data-bt-op-value="any" type="button">任一满足 (OR)</button>
+                <button class="segment" data-bt-op-kind="entry" data-bt-op-value="all" type="button">全部满足 (AND)</button>
+              </div>
+              <div id="bt-entry-items" class="bt-policy-items"></div>
+              <button id="bt-entry-add" class="btn btn--ghost btn--sm" type="button">+ 添加入场政策</button>
+
+              <div class="section-divider"></div>
+              <h3 class="bt-group-title">退出组（全额退出型，≤5）</h3>
+              <div class="bt-group-op" role="group" aria-label="退出组合逻辑">
+                <button class="segment" data-bt-op-kind="exit" data-bt-op-value="any" type="button">任一满足 (OR)</button>
+                <button class="segment" data-bt-op-kind="exit" data-bt-op-value="all" type="button">全部满足 (AND)</button>
+              </div>
+              <div id="bt-exit-items" class="bt-policy-items"></div>
+              <button id="bt-exit-add" class="btn btn--ghost btn--sm" type="button">+ 添加退出政策</button>
+
+              <div class="section-divider"></div>
+              <h3 class="bt-group-title">止盈减仓（独立多档，≤5，全额退出优先）</h3>
+              <p class="panel__hint">与退出组独立：同一天有全额退出信号时不减仓（只整仓退出）；否则按低档→高档逐档减仓。</p>
+              <div id="bt-tp-items" class="bt-policy-items"></div>
+              <button id="bt-tp-add" class="btn btn--ghost btn--sm" type="button">+ 添加止盈档</button>
+
+              <div class="section-divider"></div>
+              <h3 class="bt-group-title">其它政策（各单选一种）</h3>
+              <p id="bt-single-note" class="panel__hint" hidden></p>
+              <div id="bt-singles"></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 右列:本次回测结果 + 历史运行列表 -->
+        <div class="bt-col bt-col--right">
+          <section id="bt-result-panel" class="panel panel--results" data-panel-id="bt-result-panel" aria-label="回测结果">
+            <div class="panel__head">
+              <div class="panel__title-group">
+                <h2 class="panel__title">回测结果</h2>
+                <span id="bt-result-subtitle" class="panel__subtitle"></span>
+              </div>
+              <button class="panel-toggle" data-panel-toggle="bt-result-panel" aria-controls="bt-result-content" aria-expanded="true" type="button">收起</button>
+            </div>
+            <div id="bt-result-content" class="panel__body">
+              <div id="bt-result-empty" class="empty-state">
+                <p class="empty-state__title">尚未运行回测</p>
+                <p class="empty-state__hint">配置基础数据与策略后点击「运行回测」；也可从下方历史列表回看任意一次运行。</p>
+              </div>
+              <div id="bt-result-metrics" class="bt-metrics" hidden></div>
+              <div id="bt-equity-chart" class="bt-equity-chart" hidden>
+                <canvas id="bt-equity-canvas" class="bt-equity-canvas" role="img" aria-label="回测净值曲线"></canvas>
+              </div>
+              <div id="bt-orders-head" class="bt-orders-head" hidden>
+                <h3 class="stock-analysis-heading"><span>成交明细</span>（点击行可看该股买卖点日K复盘）</h3>
+              </div>
+              <div id="bt-orders" class="bt-orders" hidden></div>
+              <div id="bt-orders-more" class="bt-orders-more" hidden>
+                <button id="bt-orders-more-btn" class="btn btn--ghost btn--sm" type="button">加载更多成交</button>
+              </div>
+              <div id="bt-warnings" class="panel__hint" hidden></div>
+            </div>
+          </section>
+
+          <section id="bt-history-panel" class="panel panel--results" data-panel-id="bt-history-panel" aria-label="历史运行列表">
+            <div class="panel__head">
+              <div class="panel__title-group">
+                <h2 class="panel__title">历史运行</h2>
+                <span id="bt-history-count" class="panel__subtitle"></span>
+              </div>
+              <button class="panel-toggle" data-panel-toggle="bt-history-panel" aria-controls="bt-history-content" aria-expanded="true" type="button">收起</button>
+            </div>
+            <div id="bt-history-content" class="panel__body">
+              <div id="bt-history-list" class="bt-history-list"></div>
+              <p id="bt-history-status" class="panel__hint" hidden></p>
+              <button id="bt-history-refresh" class="btn btn--ghost btn--sm" type="button">刷新列表</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div><!-- /#backtest-view -->
+
+    <!-- 买卖点日K复盘浮层(P5C D29):复用现有日K渲染 -->
+    <div id="bt-replay-overlay" class="bt-replay-overlay" hidden aria-modal="true" role="dialog" aria-label="买卖点日K复盘">
+      <div class="bt-replay-panel">
+        <div class="panel__head bt-replay-head">
+          <div class="panel__title-group">
+            <h2 class="panel__title" id="bt-replay-title">买卖点日K复盘</h2>
+            <span id="bt-replay-subtitle" class="panel__subtitle"></span>
+          </div>
+          <button id="bt-replay-close" class="btn btn--ghost btn--sm" type="button">关闭</button>
+        </div>
+        <div class="bt-replay-toolbar" role="group" aria-label="K 线缩放与平移">
+          <button class="kline-btn" data-kline-action="zoom-out" type="button" title="缩小 K 线" aria-label="缩小 K 线">−</button>
+          <button class="kline-btn" data-kline-action="pan-left" type="button" title="左移 K 线" aria-label="左移 K 线">←</button>
+          <button class="kline-btn" data-kline-action="pan-right" type="button" title="右移 K 线" aria-label="右移 K 线">→</button>
+          <button class="kline-btn" data-kline-action="zoom-in" type="button" title="放大 K 线" aria-label="放大 K 线">＋</button>
+          <button class="kline-btn" data-kline-action="reset" type="button" title="复位 K 线">复位</button>
+        </div>
+        <p id="bt-replay-info" class="kline-panel__info" aria-live="polite">加载本地日K…</p>
+        <canvas id="bt-replay-canvas" class="kline-canvas bt-replay-canvas" role="img" aria-label="回测买卖点在日 K 上的复盘图"></canvas>
+        <p class="panel__hint">买▲在 K 线上方、卖▼在下方，标注价格与股数；悬停看详情；成交日为回测执行模型的成交日。</p>
+      </div>
+    </div>
   </main>
 
   <footer class="footer">

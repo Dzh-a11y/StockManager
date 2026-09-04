@@ -48,6 +48,17 @@ from stock_manager.web.errors import (
     map_exception,
 )
 from stock_manager.services.research_backtest_service import ResearchBacktestService
+from stock_manager.research import build_default_policy_registry
+from stock_manager.research.strategies import (
+    DEFAULT_STRATEGY_ID,
+    StrategyTemplate,
+    StrategyTemplateError,
+    StrategyTemplateRepository,
+    StrategyTemplateRevisionConflictError,
+    StrategyTemplateService,
+    parse_strategy_template,
+    validate_and_normalize_policies,
+)
 from stock_manager.web.screen import screen_response
 from stock_manager.web.serialization import to_jsonable
 from stock_manager.web.templates import (
@@ -101,6 +112,7 @@ class WebApp:
         )
         self._screen_progress: dict[str, object] = {"status": "idle"}
         self._research: ResearchBacktestService | None = None
+        self._strategy_templates: StrategyTemplateService | None = None
         repository = SQLiteRepository(config.database_path)
         registry = registry if registry is not None else build_default_registry()
         compiler = TemplateCompiler(registry)
@@ -128,6 +140,10 @@ class WebApp:
             # 进程内回测 runner 随进程消亡:启动时把上一次进程遗留的
             # QUEUED/进行中任务标记为 INTERRUPTED,避免孤儿任务堵住 UI 队列。
             self._research.recover_interrupted_runs()
+        self._strategy_templates = StrategyTemplateService(
+            StrategyTemplateRepository(config.user_template_root),
+            build_default_policy_registry(),
+        )
         self._start_backfill_if_needed()
 
     def _start_backfill_if_needed(self) -> None:
@@ -249,6 +265,11 @@ class WebApp:
                 return self._json(200, {"instances": self._list_instances()})
             if path == "/api/research/policies":
                 return self._json(200, self._research_policies())
+            if path == "/api/research/strategies":
+                return self._json(200, self._strategy_template_list())
+            strategy_match = self._strategy_id_from_path(path)
+            if strategy_match is not None:
+                return self._json(200, self._strategy_template_full(strategy_match))
             if path == "/api/research/backtests":
                 if self._research is None:
                     return self._error(NotFoundError("research service unavailable"))
@@ -257,7 +278,7 @@ class WebApp:
             research_match = self._research_run_id_from_path(path)
             if research_match is not None:
                 run_id, suffix = research_match
-                return self._handle_research_get(run_id, suffix)
+                return self._handle_research_get(run_id, suffix, query)
             if path == "/api/bars":
                 return self._handle_bars(query)
             match = self._template_id_from_path(path)
@@ -305,6 +326,16 @@ class WebApp:
             if suffix == "cancel":
                 return self._handle_research_cancel(run_id)
 
+        if path == "/api/research/strategies/validate" and method == "POST":
+            return self._handle_strategy_validate(body)
+
+        if path == "/api/research/strategies" and method == "POST":
+            return self._handle_strategy_create(body)
+
+        strategy_match = self._strategy_id_from_path(path)
+        if strategy_match is not None and method in ("PUT", "DELETE"):
+            return self._handle_strategy_mutation(strategy_match, method, body)
+
         if method == "POST" and path == "/api/shutdown":
             return self._handle_shutdown(body)
 
@@ -330,6 +361,123 @@ class WebApp:
         if match is None:
             return None
         return match.group(1), match.group(2)
+
+    @staticmethod
+    def _strategy_id_from_path(path: str) -> str | None:
+        match = re.fullmatch(r"/api/research/strategies/([^/]+)", path)
+        if match is None:
+            return None
+        return match.group(1)
+
+    def _strategy_service(self) -> StrategyTemplateService:
+        if self._strategy_templates is None:
+            raise NotFoundError("strategy template service unavailable")
+        return self._strategy_templates
+
+    def _strategy_template_list(self) -> dict[str, object]:
+        service = self._strategy_service()
+        items: list[dict[str, object]] = []
+        for template_id in service.list_ids():
+            try:
+                template = service.get(template_id)
+            except (FileNotFoundError, StrategyTemplateError):
+                continue
+            items.append(
+                {
+                    "strategy_template_id": template.strategy_template_id,
+                    "revision": template.revision,
+                    "name": template.name,
+                    "description": template.description,
+                    "is_system": service.is_system(template.strategy_template_id),
+                }
+            )
+        return {"strategies": items}
+
+    def _strategy_template_full(self, strategy_template_id: str) -> dict[str, object]:
+        service = self._strategy_service()
+        try:
+            template = service.get(strategy_template_id)
+        except FileNotFoundError as error:
+            raise NotFoundError(str(error)) from error
+        except StrategyTemplateError as error:
+            raise BadRequestError(str(error)) from error
+        return {
+            "strategy_template_id": template.strategy_template_id,
+            "revision": template.revision,
+            "name": template.name,
+            "description": template.description,
+            "is_system": service.is_system(template.strategy_template_id),
+            "policies": dict(template.policies),
+        }
+
+    def _handle_strategy_validate(self, body: object) -> Response:
+        service = self._strategy_service()
+        data = self._object(body, "body")
+        raw_policies = data.get("policies", data)
+        if not isinstance(raw_policies, Mapping):
+            raise BadRequestError("policies must be an object")
+        try:
+            normalized = validate_and_normalize_policies(
+                raw_policies, service._registry  # noqa: SLF001
+            )
+        except StrategyTemplateError as error:
+            raise BadRequestError(str(error)) from error
+        return self._json(200, {"valid": True, "policies": normalized})
+
+    def _handle_strategy_create(self, body: object) -> Response:
+        service = self._strategy_service()
+        data = self._object(body, "body")
+        try:
+            template = StrategyTemplate(
+                strategy_template_id=str(data["strategy_template_id"]).strip(),
+                revision=1,
+                name=str(data.get("name", "")).strip(),
+                description=str(data.get("description", "")).strip(),
+                policies=data.get("policies") or {},
+            )
+            created = service.create(template)
+        except (StrategyTemplateError, KeyError, TypeError, ValueError) as error:
+            raise BadRequestError(str(error)) from error
+        return self._json(
+            201,
+            {
+                "strategy_template_id": created.strategy_template_id,
+                "revision": created.revision,
+            },
+        )
+
+    def _handle_strategy_mutation(
+        self, strategy_template_id: str, method: str, body: object
+    ) -> Response:
+        service = self._strategy_service()
+        data = self._object(body, "body")
+        expected = data.get("expected_revision")
+        if expected is None:
+            raise BadRequestError("expected_revision is required")
+        try:
+            expected_revision = int(expected)
+            if method == "DELETE":
+                service.delete(strategy_template_id, expected_revision=expected_revision)
+                return 204, "", b""
+            template = StrategyTemplate(
+                strategy_template_id=strategy_template_id,
+                revision=expected_revision,
+                name=str(data.get("name", "")).strip(),
+                description=str(data.get("description", "")).strip(),
+                policies=data.get("policies") or {},
+            )
+            updated = service.update(template, expected_revision=expected_revision)
+        except StrategyTemplateRevisionConflictError as error:
+            raise ApiError(409, "REVISION_CONFLICT", str(error)) from error
+        except (StrategyTemplateError, KeyError, TypeError, ValueError) as error:
+            raise BadRequestError(str(error)) from error
+        return self._json(
+            200,
+            {
+                "strategy_template_id": updated.strategy_template_id,
+                "revision": updated.revision,
+            },
+        )
 
     @staticmethod
     def _research_policies() -> dict[str, object]:
@@ -393,6 +541,22 @@ class WebApp:
             max_positions = int(data.get("max_positions", 20))
             raw_workers = data.get("max_workers")
             max_workers = None if raw_workers is None else int(raw_workers)
+            codes = self._codes_value(data.get("codes"))
+            ignore_eligibility = bool(data.get("ignore_eligibility", False))
+            commission_rate = self._decimal_or_none(data.get("commission_rate"))
+            stamp_duty_rate = self._decimal_or_none(data.get("stamp_duty_rate"))
+            transfer_fee_rate = self._decimal_or_none(data.get("transfer_fee_rate"))
+            min_commission = self._decimal_or_none(data.get("min_commission"))
+            raw_lot = data.get("lot_size")
+            lot_size = None if raw_lot is None else int(raw_lot)
+            strategy_template_id = data.get("strategy_template_id")
+            strategy_template_id = (
+                str(strategy_template_id).strip() if strategy_template_id else None
+            )
+            raw_tpl_revision = data.get("strategy_template_revision")
+            strategy_template_revision = (
+                None if raw_tpl_revision is None else int(raw_tpl_revision)
+            )
         except (KeyError, ValueError, TypeError) as error:
             return self._error(BadRequestError("invalid research request: " + str(error)))
         if max_workers is not None and not 1 <= max_workers <= 16:
@@ -411,19 +575,53 @@ class WebApp:
                 initial_cash=initial_cash,
                 max_positions=max_positions,
                 max_workers=max_workers,
+                stock_codes=codes,
+                ignore_eligibility=ignore_eligibility,
+                commission_rate=commission_rate,
+                stamp_duty_rate=stamp_duty_rate,
+                transfer_fee_rate=transfer_fee_rate,
+                min_commission=min_commission,
+                lot_size=lot_size,
+                strategy_template_id=strategy_template_id,
+                strategy_template_revision=strategy_template_revision,
             )
         except Exception as error:
             return self._error(BadRequestError(str(error)))
         return self._json(202, {"run_id": run_id})
 
-    def _handle_research_get(self, run_id: str, suffix: str | None) -> Response:
+    @staticmethod
+    def _codes_value(value: object) -> tuple[str, ...]:
+        """Accept a comma/space separated string or a list of codes."""
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            parts = re.split(r"[,，;；\s]+", value)
+        elif isinstance(value, (list, tuple)):
+            parts = [str(item) for item in value]
+        else:
+            raise BadRequestError("codes must be a string or list")
+        return tuple(item.strip() for item in parts if item.strip())
+
+    @staticmethod
+    def _decimal_or_none(value: object) -> Decimal | None:
+        if value is None:
+            return None
+        return Decimal(str(value))
+
+    def _handle_research_get(
+        self, run_id: str, suffix: str | None, query: Mapping[str, list[str]]
+    ) -> Response:
         if self._research is None:
             return self._error(NotFoundError("research service unavailable"))
         if suffix == "equity":
-            points = self._research.equity(run_id)
+            offset = self._query_integer(query, "offset", default=0, minimum=0, maximum=100000)
+            limit = self._query_integer(query, "limit", default=500, minimum=1, maximum=5000)
+            points = self._research.equity(run_id, offset=offset, limit=limit)
             return self._json(200, {"run_id": run_id, "points": points, "count": len(points)})
         if suffix == "orders":
-            orders = self._research.orders(run_id)
+            offset = self._query_integer(query, "offset", default=0, minimum=0, maximum=100000)
+            limit = self._query_integer(query, "limit", default=100, minimum=1, maximum=5000)
+            orders = self._research.orders(run_id, offset=offset, limit=limit)
             return self._json(200, {"run_id": run_id, "orders": orders, "count": len(orders)})
         if suffix == "provenance":
             result = self._research.result(run_id)
@@ -438,6 +636,9 @@ class WebApp:
         if result is not None:
             payload["metrics"] = json.loads(result["metrics_json"])
             payload["warnings"] = json.loads(result["warnings_json"] or "[]")
+            payload["settings"] = json.loads(
+                result.get("run_settings_json") or "{}"
+            )
         return self._json(200, payload)
 
     def _handle_research_cancel(self, run_id: str) -> Response:
@@ -861,13 +1062,16 @@ class WebApp:
         """Return recent local daily bars for one stock (K-line + volume source).
 
         Query params: ``code`` (required), ``adjustment`` (required),
-        ``end`` (optional ISO date, defaults to the latest synced trading day)
-        and ``days`` (optional 1..500, defaults to 250). Only reads the local
-        SQLite database; never touches a provider.
+        ``end`` (optional ISO date, defaults to the latest synced trading day),
+        ``days`` (optional 1..500, defaults to 250) and, for P5C backtest
+        replay, ``start`` (optional ISO date): when ``start`` is given the
+        whole range [start, end] is returned instead of the last ``days``.
+        Only reads the local SQLite database; never touches a provider.
         """
         code = self._query_text(query, "code")
         adjustment = self._adjustment(self._query_text(query, "adjustment"))
         end = self._query_date(query, "end")
+        start_param = self._query_date(query, "start")
         days = self._query_integer(query, "days", default=250, minimum=1, maximum=500)
         if end is None:
             latest = self._services.repository.get_latest_dataset_metadata(
@@ -876,6 +1080,22 @@ class WebApp:
             if latest is None:
                 raise NotFoundError("local dataset is unavailable")
             end = latest.trading_day
+        if start_param is not None:
+            if start_param > end:
+                raise BadRequestError("start must not be after end")
+            bars = self._services.repository.get_daily_bars(
+                (code,), start_param, end, adjustment
+            )
+            return self._json(
+                200,
+                {
+                    "code": code,
+                    "adjustment": adjustment.value,
+                    "start": start_param.isoformat(),
+                    "end": end.isoformat(),
+                    "bars": list(bars),
+                },
+            )
         start = end - timedelta(days=max(days * 2, 60))
         bars = self._services.repository.get_daily_bars((code,), start, end, adjustment)
         return self._json(

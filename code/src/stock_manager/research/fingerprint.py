@@ -94,7 +94,25 @@ def policy_fingerprint(policy: PolicySpec) -> str:
 
 
 def spec_fingerprint(spec: ResearchStrategySpec) -> str:
-    """Fingerprint of the whole strategy spec (stable for identical input)."""
+    """Fingerprint of the whole strategy spec (stable for identical input).
+
+    P5C: entry/exit are fingerprinted as groups (operator + member policies);
+    the four single-policy kinds stay as before; take-profit tiers and the
+    group structure participate so any strategy change alters the digest.
+    """
+    policies: dict[str, object] = {
+        kind.value: policy_fingerprint(getattr(spec, f"{kind.value}_policy"))
+        for kind in PolicyKind
+        if kind not in (PolicyKind.ENTRY, PolicyKind.EXIT)
+    }
+    policies["entry"] = {
+        "operator": spec.entry_operator.value,
+        "items": tuple(policy_fingerprint(item) for item in spec.entry_policies),
+    }
+    policies["exit"] = {
+        "operator": spec.exit_operator.value,
+        "items": tuple(policy_fingerprint(item) for item in spec.exit_policies),
+    }
     payload = canonical_json(
         {
             "strategy_spec_id": spec.strategy_spec_id,
@@ -106,10 +124,11 @@ def spec_fingerprint(spec: ResearchStrategySpec) -> str:
             "initial_cash": spec.initial_cash,
             "backtest_start": spec.backtest_start.isoformat(),
             "backtest_end": spec.backtest_end.isoformat(),
-            "policies": {
-                kind.value: policy_fingerprint(getattr(spec, f"{kind.value}_policy"))
-                for kind in PolicyKind
-            },
+            "policies": policies,
+            "take_profit_tiers": tuple(
+                (str(tier.take_profit_ratio), str(tier.partial_ratio))
+                for tier in spec.take_profit_tiers
+            ),
         }
     )
     return _digest(payload)

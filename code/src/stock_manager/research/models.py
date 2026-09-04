@@ -25,6 +25,13 @@ class PolicyKind(str, Enum):
     EXECUTION = "execution"
 
 
+class PolicyOperator(str, Enum):
+    """Group-level combination operator for entry/exit policy groups (P5C)."""
+
+    ANY = "any"
+    ALL = "all"
+
+
 class EvaluationSchedule(str, Enum):
     DAILY = "daily"
 
@@ -77,8 +84,40 @@ class PolicySpec:
 
 
 @dataclass(frozen=True, slots=True)
+class TakeProfitTierSpec:
+    """One take-profit reduction tier: profit threshold + sell fraction (P5C).
+
+    Fraction semantics mirror ``take_profit_partial_v1.partial_ratio``: the
+    fraction of the *current* holding sold when the close reaches the ratio.
+    Tiers are held sorted by ascending take_profit_ratio.
+    """
+
+    take_profit_ratio: Decimal
+    partial_ratio: Decimal
+
+    def __post_init__(self) -> None:
+        ratio = Decimal(str(self.take_profit_ratio))
+        partial = Decimal(str(self.partial_ratio))
+        if ratio <= 0:
+            raise ValueError("take_profit_ratio must be positive")
+        if not Decimal("0") < partial <= Decimal("1"):
+            raise ValueError("partial_ratio must be in (0, 1]")
+        object.__setattr__(self, "take_profit_ratio", ratio)
+        object.__setattr__(self, "partial_ratio", partial)
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchStrategySpec:
-    """Immutable research backtest specification (P5A_PLAN 6.1)."""
+    """Immutable research backtest specification (P5A_PLAN 6.1).
+
+    P5C extension: entry/exit may carry multiple parallel policies with an
+    operator; take-profit tiers run independently of the exit group; run-level
+    settings (codes, eligibility mode, fees, lot size) live on the spec instead
+    of the execution policy parameters. ``entry_policy``/``exit_policy`` remain
+    the legacy single-policy views (kept as positional-compatible fields);
+    ``entry_policies``/``exit_policies`` default to singletons derived from them
+    so legacy construction keeps identical semantics.
+    """
 
     strategy_spec_id: str
     screening_template_id: str
@@ -95,6 +134,20 @@ class ResearchStrategySpec:
     initial_cash: Decimal
     backtest_start: date
     backtest_end: date
+    entry_policies: tuple[PolicySpec, ...] = ()
+    exit_policies: tuple[PolicySpec, ...] = ()
+    entry_operator: PolicyOperator = PolicyOperator.ANY
+    exit_operator: PolicyOperator = PolicyOperator.ANY
+    take_profit_tiers: tuple[TakeProfitTierSpec, ...] = ()
+    stock_codes: tuple[str, ...] = ()
+    ignore_eligibility: bool = False
+    commission_rate: Decimal | None = None
+    stamp_duty_rate: Decimal | None = None
+    transfer_fee_rate: Decimal | None = None
+    min_commission: Decimal | None = None
+    lot_size: int | None = None
+    strategy_template_id: str | None = None
+    strategy_template_revision: int | None = None
 
     def __post_init__(self) -> None:
         if not self.strategy_spec_id.strip():
@@ -109,3 +162,24 @@ class ResearchStrategySpec:
             raise ValueError("initial_cash must be positive")
         if self.backtest_start > self.backtest_end:
             raise ValueError("backtest_start must not be after backtest_end")
+        entry_policies = tuple(self.entry_policies) or (self.entry_policy,)
+        exit_policies = tuple(self.exit_policies) or (self.exit_policy,)
+        if not 1 <= len(entry_policies) <= 5:
+            raise ValueError("entry policies must contain 1..5 policies")
+        if not 1 <= len(exit_policies) <= 5:
+            raise ValueError("exit policies must contain 1..5 policies")
+        if len(self.take_profit_tiers) > 5:
+            raise ValueError("take-profit tiers must contain at most 5 tiers")
+        raw_codes = tuple(self.stock_codes)
+        if any(not str(code).strip() for code in raw_codes):
+            raise ValueError("stock codes must be non-empty")
+        codes = tuple(dict.fromkeys(str(code).strip() for code in raw_codes))
+        if self.ignore_eligibility and not codes:
+            raise ValueError("ignore_eligibility requires at least one stock code")
+        tiers = tuple(
+            sorted(self.take_profit_tiers, key=lambda item: item.take_profit_ratio)
+        )
+        object.__setattr__(self, "entry_policies", entry_policies)
+        object.__setattr__(self, "exit_policies", exit_policies)
+        object.__setattr__(self, "take_profit_tiers", tiers)
+        object.__setattr__(self, "stock_codes", codes)

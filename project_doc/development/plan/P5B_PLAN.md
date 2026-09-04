@@ -559,3 +559,11 @@ alpha 是超额收益回归的截距，表达样本期内经过市场暴露调�
 依据：[NBIM 风险调整收益方法第2.1.3节](https://www.nbim.no/contentassets/fdd69abfff8445cc967c30322b2d3968/factor-and-risk-adjusted-return_2024.pdf) 使用超额收益回归截距作为alpha，并将月频alpha乘以12年化；本项目选择同类的日频线性换算。[PerformanceAnalytics年化文档](https://search.r-project.org/CRAN/refmans/PerformanceAnalytics/html/Return.annualized.html) 区分算术与几何年化，将每年观察次数作为独立参数；本项目252默认由用户单独确认。
 
 用户同时要求独立维护 [CAPM数据处理](../implementation/CAPM数据处理.md)。该手册已建为草案，涵盖指数目录/行情/历史成分/权重、利率与日历、前复权与简单收益、CAPM回归和线性年化、存储与异常处理；实现时更新真实覆盖、接口、字段、测试证据和状态，不复制成另一份阶段计划。
+
+## 17. 架构收口后的维护方向（2026-09-03，用户确认）
+
+本节已迁入独立 [PB_DOCANDMAINTANENCE 计划第 1 节](PB_DOCANDMAINTANENCE.md#1-架构收口后的维护方向2026-09-03用户确认)。后续维护范围与扩展待办以该计划为入口，本节仅保留跳转，不重复维护正文。
+
+## 18. 文档修订与管理重点（2026-09-03）
+
+本节已迁入独立 [PB_DOCANDMAINTANENCE 计划第 2 节](PB_DOCANDMAINTANENCE.md#2-文档修订与管理重点2026-09-03)，包含文档目标、初步盘点、交付与验收建议。后续在该计划维护。

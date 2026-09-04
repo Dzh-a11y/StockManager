@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     metrics_json TEXT NOT NULL,
     warnings_json TEXT NOT NULL,
     provenance_json TEXT NOT NULL,
+    run_settings_json TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS backtest_orders (
@@ -257,6 +258,18 @@ class SQLiteRepository:
             if "progress_json" not in columns:
                 connection.execute(
                     "ALTER TABLE backfill_runs_v2 ADD COLUMN progress_json TEXT"
+                )
+            # 迁移:P5C 回测运行增加 run_settings_json 快照列(幂等)
+            run_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(backtest_runs)"
+                ).fetchall()
+            }
+            if "run_settings_json" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE backtest_runs ADD COLUMN run_settings_json "
+                    "TEXT NOT NULL DEFAULT ''"
                 )
             connection.commit()
             # P5-RD-1:版本化幂等迁移(batch_id 绑定、书签表、user_version)。
@@ -1529,6 +1542,7 @@ class SQLiteRepository:
         metrics_json: str,
         warnings_json: str,
         provenance_json: str,
+        run_settings_json: str = "",
         created_at: datetime,
     ) -> None:
         with self._connect() as connection:
@@ -1536,8 +1550,8 @@ class SQLiteRepository:
                 """INSERT OR REPLACE INTO backtest_runs
                    (run_id, spec_id, plan_fingerprint, adjustment, score_start,
                     score_end, metrics_json, warnings_json, provenance_json,
-                    created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    run_settings_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
                     spec_id,
@@ -1548,6 +1562,7 @@ class SQLiteRepository:
                     metrics_json,
                     warnings_json,
                     provenance_json,
+                    run_settings_json,
                     created_at.isoformat(),
                 ),
             )
@@ -1569,8 +1584,24 @@ class SQLiteRepository:
             "metrics_json": row["metrics_json"],
             "warnings_json": row["warnings_json"],
             "provenance_json": row["provenance_json"],
+            "run_settings_json": row["run_settings_json"] or "",
             "created_at": row["created_at"],
         }
+
+    def list_backtest_results(
+        self, run_ids: Sequence[str]
+    ) -> tuple[dict[str, object], ...]:
+        """Return persisted result rows for the given run ids (order preserved)."""
+        if not run_ids:
+            return ()
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in run_ids)
+            rows = connection.execute(
+                f"SELECT * FROM backtest_runs WHERE run_id IN ({placeholders})",
+                tuple(run_ids),
+            ).fetchall()
+        by_id = {row["run_id"]: dict(row) for row in rows}
+        return tuple(by_id.get(run_id) for run_id in run_ids if run_id in by_id)
 
     def save_backtest_orders(
         self, run_id: str, orders: Sequence[object]

@@ -106,6 +106,26 @@ class PolicyRegistry:
         self.validate_spec(ranking, PolicyKind.RANKING)
         self.validate_spec(execution, PolicyKind.EXECUTION)
 
+    def validate_group(
+        self,
+        policies: Iterable[PolicySpec],
+        kind: PolicyKind,
+    ) -> None:
+        """Validate an entry/exit policy group (1..5 policies, P5C).
+
+        Every member policy is validated against the registry; group length is
+        capped at five to match the UI editor contract.
+        """
+        if kind not in (PolicyKind.ENTRY, PolicyKind.EXIT):
+            raise ValueError(f"group kind must be entry or exit, got {kind.value}")
+        items = tuple(policies)
+        if not 1 <= len(items) <= 5:
+            raise ValueError(
+                f"{kind.value} policy group must contain 1..5 policies"
+            )
+        for policy in items:
+            self.validate_spec(policy, kind)
+
     @staticmethod
     def _validate_parameters(
         definition: PolicyDefinition,

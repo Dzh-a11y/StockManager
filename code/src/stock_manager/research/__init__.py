@@ -15,10 +15,12 @@ from stock_manager.research.fingerprint import (
 from stock_manager.research.models import (
     EvaluationSchedule,
     PolicyKind,
+    PolicyOperator,
     PolicyParameterSpec,
     PolicyParameterType,
     PolicySpec,
     ResearchStrategySpec,
+    TakeProfitTierSpec,
 )
 from stock_manager.research.policies import (
     InvalidPolicyParametersError,
@@ -32,11 +34,13 @@ __all__ = [
     "InvalidPolicyParametersError",
     "PolicyDefinition",
     "PolicyKind",
+    "PolicyOperator",
     "PolicyParameterSpec",
     "PolicyParameterType",
     "PolicyRegistry",
     "PolicySpec",
     "ResearchStrategySpec",
+    "TakeProfitTierSpec",
     "UnknownPolicyError",
     "build_default_policy_registry",
     "builtin_strategy_specs",

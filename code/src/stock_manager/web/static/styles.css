@@ -599,3 +599,112 @@ body {
 #capm-reference-warnings { white-space: pre-line; }
 .capm-gap-detail { margin: 6px 0; }
 .capm-gap-detail p { margin: 4px 0 8px; }
+
+/* ============ P5C 回测系统视图 ============ */
+#backtest-view {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr) 460px;
+  gap: 14px;
+  align-items: start;
+  width: 100%;
+}
+.bt-topbar { align-items: center; grid-column: 1 / -1; }
+.bt-view-title {
+  font-weight: 700; font-size: 15px; color: var(--text, #1a2733);
+  margin: 0 4px 0 10px;
+}
+#backtest-view .db-bar { gap: 8px; display: flex; flex-wrap: wrap; }
+.bt-columns {
+  display: contents;
+}
+.bt-col { min-width: 0; }
+@media (max-width: 1360px) {
+  #backtest-view { grid-template-columns: 320px minmax(0, 1fr); }
+  #backtest-view .bt-col--right { grid-column: 1 / -1; }
+}
+@media (max-width: 1000px) {
+  #backtest-view { grid-template-columns: 1fr; }
+  #backtest-view .bt-col { grid-column: 1 / -1; }
+}
+
+.segmented--full { display: flex; margin-bottom: 10px; }
+.segmented--full .segment { flex: 1; }
+
+.bt-window-custom { display: grid; gap: 8px; margin: 8px 0; }
+.bt-fees { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; align-items: end; }
+.bt-fees .field { min-width: 0; }
+.bt-strategy-name-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.bt-strategy-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.bt-group-title { font-size: 13px; font-weight: 650; margin: 10px 0 6px; }
+.bt-group-op { display: flex; gap: 8px; margin-bottom: 8px; }
+.bt-policy-items { display: grid; gap: 8px; margin: 8px 0; }
+.bt-policy-card {
+  border: 1px solid var(--border, #d6dee6); border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px; background: var(--surface-alt, #fbfcfd);
+  display: grid; gap: 8px;
+}
+.bt-policy-card__head { display: flex; gap: 8px; align-items: center; }
+.bt-policy-card__head .select { flex: 1; }
+.bt-policy-card__params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bt-policy-card__params .field--wide { grid-column: 1 / -1; }
+.bt-remove-btn { align-self: start; }
+
+#bt-singles { display: grid; gap: 8px; }
+.bt-single-card { border: 1px solid var(--border, #d6dee6); border-radius: var(--radius-sm, 6px); padding: 8px 10px; display: grid; gap: 8px; }
+.bt-single-card__head { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; align-items: center; }
+.bt-single-card__params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.bt-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+.bt-metric { border: 1px solid var(--border, #d6dee6); border-radius: var(--radius-sm, 6px); padding: 8px 10px; background: var(--surface-alt, #fbfcfd); }
+.bt-metric__label { font-size: 11px; color: var(--text-soft, #5c6b7a); }
+.bt-metric__value { font-family: var(--mono, monospace); font-size: 14px; font-weight: 650; margin-top: 2px; }
+@media (max-width: 720px) { .bt-metrics { grid-template-columns: 1fr 1fr; } }
+
+.bt-equity-chart { margin: 6px 0 12px; }
+.bt-equity-canvas { display: block; width: 100%; height: 220px; background: var(--surface-alt, #fbfcfd); border: 1px solid var(--border, #d6dee6); border-radius: var(--radius-sm, 6px); }
+.bt-orders-head { margin-top: 6px; }
+.bt-orders { display: grid; gap: 4px; max-height: 300px; overflow: auto; }
+.bt-order-row {
+  display: grid; grid-template-columns: 90px 120px 70px 90px 90px 1fr;
+  gap: 6px; align-items: center; font-family: var(--mono, monospace); font-size: 12px;
+  border: 1px solid var(--border, #d6dee6); border-radius: 5px; padding: 5px 8px;
+  background: #fff; cursor: pointer; text-align: left;
+}
+.bt-order-row:hover { border-color: var(--accent, #1f6feb); }
+.bt-order-side-buy { color: #c0392b; font-weight: 700; }
+.bt-order-side-sell { color: #1e8449; font-weight: 700; }
+@media (max-width: 620px) { .bt-order-row { grid-template-columns: 1fr 1fr; } }
+.bt-orders-more { margin-top: 6px; }
+
+.bt-history-list { display: grid; gap: 6px; margin: 6px 0; max-height: 380px; overflow: auto; }
+.bt-history-row {
+  border: 1px solid var(--border, #d6dee6); border-radius: 6px; padding: 8px 10px; cursor: pointer; background: #fff;
+}
+.bt-history-row:hover { border-color: var(--accent, #1f6feb); }
+.bt-history-row__head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.bt-history-row__meta { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-soft, #5c6b7a); margin-top: 4px; line-height: 1.5; }
+.badge--ok { background: #e7f4ea; color: #1e8449; }
+.badge--err { background: #fdecea; color: #b33939; }
+
+/* 买卖点复盘浮层 */
+.bt-replay-overlay {
+  position: fixed; inset: 0; background: rgba(16, 26, 36, 0.55); z-index: 90;
+  display: flex; align-items: center; justify-content: center; padding: 18px;
+}
+.bt-replay-overlay[hidden] { display: none; }
+.bt-replay-panel {
+  width: min(1180px, 96vw); max-height: 92vh; overflow: auto;
+  background: var(--surface, #fff); border-radius: var(--radius, 10px);
+  box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35); padding: 14px 16px;
+}
+.bt-replay-head { display: flex; align-items: center; justify-content: space-between; }
+.bt-replay-toolbar { display: flex; gap: 6px; align-items: center; margin: 8px 0; }
+.bt-replay-canvas { height: 56vh; min-height: 320px; }
+.bt-run-row { display: flex; gap: 8px; align-items: stretch; }
+.bt-run-row .btn--block { flex: 1; }
+.bt-replay-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-soft, #5c6b7a); flex-wrap: wrap; }
+.bt-legend-buy::before { content: "▲"; color: #c0392b; margin-right: 3px; }
+.bt-legend-sell::before { content: "▼"; color: #1e8449; margin-right: 3px; }
+.bt-policy-desc { font-size: 12px; line-height: 1.5; color: var(--text-soft, #5c6b7a); margin: 0; }
+.bt-policy-card .bt-policy-desc { border-left: 2px solid var(--border, #d6dee6); padding-left: 8px; }

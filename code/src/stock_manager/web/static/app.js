@@ -465,240 +465,21 @@ async function deleteTemplate() {
 }
 
 /* ---------- run screen ---------- */
-/* ---------- research backtest (P5A-8) ---------- */
+/* ---------- P5C 回测系统:共享状态与政策目录 ---------- */
 let btPollTimer = null;
 let btRunId = null;
-
-
-/* ---------- research strategy editor (P5A-8c) ---------- */
 let btPolicyCatalog = null;
-
-/** @returns {Promise<void>} */
-async function loadResearchPolicies() {
-  const data = await api('GET', '/api/research/policies');
-  btPolicyCatalog = data.policies;
-  renderStrategyPolicies();
-}
-
-const BT_KIND_LABELS = {
-  entry: '入场（Entry）', exit: '退出（Exit）', rebalance: '调仓（Rebalance）',
-  allocation: '仓位（Allocation）', ranking: '排名（Ranking）', execution: '执行（Execution）',
-};
-const BT_KIND_DEFAULTS = {
-  entry: 'eligibility_enter_v1', exit: 'eligibility_exit_v1',
-  rebalance: 'daily_v1', allocation: 'equal_weight_v1',
-  ranking: 'turnover_20d_desc_v1', execution: 'ashare_execution_v1',
-};
-const BT_KINDS = ['entry', 'exit', 'rebalance', 'allocation', 'ranking', 'execution'];
 
 function btFindPolicy(kind, policyId) {
   const items = (btPolicyCatalog && btPolicyCatalog[kind]) || [];
   return items.find(function (p) { return p.policy_id === policyId; }) || null;
 }
 
-function renderStrategyPolicies() {
-  const container = $('#strategy-policies');
-  if (!container || !btPolicyCatalog) return;
-  container.innerHTML = '';
-  BT_KINDS.forEach(function (kind) {
-    const items = btPolicyCatalog[kind] || [];
-    if (!items.length) return;
-    const block = document.createElement('div');
-    block.className = 'policy-block';
-    const label = document.createElement('label');
-    label.className = 'field';
-    const span = document.createElement('span');
-    span.className = 'field__label';
-    span.textContent = BT_KIND_LABELS[kind] || kind;
-    // 机制说明:问号悬停显示当前所选政策的中文机制(随选择更新)
-    const tip = termHelp('');
-    const select = document.createElement('select');
-    select.className = 'select';
-    select.id = 'bt-policy-' + kind;
-    items.forEach(function (p) {
-      const opt = document.createElement('option');
-      opt.value = p.policy_id;
-      opt.textContent = p.policy_id + ' (v' + p.version + ')';
-      select.appendChild(opt);
-    });
-    if (BT_KIND_DEFAULTS[kind]) { select.value = BT_KIND_DEFAULTS[kind]; }
-    const updateTip = function () {
-      const policy = btFindPolicy(kind, select.value);
-      tip.dataset.tip = policy ? policy.description : '';
-    };
-    updateTip();
-    // 问号放入标题 span 内,与标题同一行紧挨(避免换行显示不全)
-    span.appendChild(tip);
-    label.appendChild(span);
-    label.appendChild(select);
-    block.appendChild(label);
-    const params = document.createElement('div');
-    params.className = 'policy-params';
-    params.id = 'bt-policy-params-' + kind;
-    block.appendChild(params);
-    select.addEventListener('change', function () { renderPolicyParams(kind); updateTip(); });
-    container.appendChild(block);
-    renderPolicyParams(kind);
-  });
-}
 
-function renderPolicyParams(kind) {
-  const select = document.getElementById('bt-policy-' + kind);
-  const container = document.getElementById('bt-policy-params-' + kind);
-  if (!select || !container) return;
-  const policy = btFindPolicy(kind, select.value);
-  container.innerHTML = '';
-  if (!policy || !policy.parameters || !policy.parameters.length) return;
-  policy.parameters.forEach(function (param) {
-    const label = document.createElement('label');
-    label.className = 'field';
-    const span = document.createElement('span');
-    span.className = 'field__label';
-    span.textContent = param.label + (param.required ? ' *' : '');
-    if (param.description) { span.title = param.description; }
-    let input;
-    if (param.value_type === 'boolean') {
-      input = document.createElement('input');
-      input.type = 'checkbox';
-      input.checked = param.default_value === 'True' || param.default_value === 'true';
-      input.className = 'input';
-    } else {
-      input = document.createElement('input');
-      input.type = param.value_type === 'integer' ? 'number' : 'text';
-      input.className = 'input';
-      input.value = param.default_value == null ? '' : param.default_value;
-      if (param.minimum != null && param.value_type === 'integer') { input.min = param.minimum; }
-      if (param.maximum != null && param.value_type === 'integer') { input.max = param.maximum; }
-      input.step = param.value_type === 'integer' ? '1' : 'any';
-    }
-    input.dataset.paramKind = kind;
-    input.dataset.paramId = param.parameter_id;
-    input.dataset.paramType = param.value_type;
-    label.appendChild(span);
-    label.appendChild(input);
-    container.appendChild(label);
-  });
-}
-
-function collectPolicies() {
-  const policies = {};
-  BT_KINDS.forEach(function (kind) {
-    const select = document.getElementById('bt-policy-' + kind);
-    if (!select) return;
-    const policy = btFindPolicy(kind, select.value);
-    if (!policy) return;
-    const parameters = {};
-    const container = document.getElementById('bt-policy-params-' + kind);
-    if (container) {
-      container.querySelectorAll('[data-param-id]').forEach(function (input) {
-        const id = input.dataset.paramId;
-        const type = input.dataset.paramType;
-        if (type === 'boolean') { parameters[id] = input.checked; }
-        else if (type === 'integer') {
-          const raw = input.value === '' ? null : Number(input.value);
-          parameters[id] = raw == null ? null : raw;
-        } else { parameters[id] = input.value; }
-      });
-    }
-    policies[kind] = { policy_id: select.value, version: policy.version, parameters: parameters };
-  });
-  return policies;
-}
-
-
-async function submitBacktest() {
-  const progress = $('#bt-progress');
-  const result = $('#bt-result');
-  const btn = $('#run-backtest');
-  if (!state.currentId) { progress.hidden = false; progress.textContent = '请先选择一个模板。'; return; }
-  const windowYears = Math.min(8, Math.max(1, Math.floor(Number($('#bt-window').value) || 5)));
-  const policies = collectPolicies();
-  if (!policies.entry || !policies.exit || !policies.rebalance || !policies.allocation || !policies.ranking || !policies.execution) {
-    progress.hidden = false;
-    progress.textContent = '请完整选择六类回测政策。';
-    return;
-  }
-  const body = {
-    template_id: state.currentId,
-    template_revision: state.template.template.metadata.revision,
-    policies: policies,
-    window_years: windowYears,
-    initial_cash: $('#bt-cash').value.trim() || '1000000',
-    max_positions: Math.min(500, Math.max(1, Math.floor(Number($('#bt-positions').value) || 20))),
-    max_workers: Math.min(16, Math.max(1, Math.floor(Number($('#bt-workers').value) || 2))),
-  };
-  btn.disabled = true;
-  result.hidden = true;
-  progress.hidden = false;
-  progress.textContent = '正在提交回测任务…';
-  try {
-    const data = await api('POST', '/api/research/backtests', body);
-    btRunId = data.run_id;
-    if (btPollTimer) clearInterval(btPollTimer);
-    btPollTimer = setInterval(pollBacktest, 800);
-  } catch (e) {
-    progress.textContent = '提交失败：' + (e && e.message ? e.message : String(e));
-    btn.disabled = false;
-  }
-}
-
-async function pollBacktest() {
-  if (!btRunId) return;
-  const progress = $('#bt-progress');
-  const result = $('#bt-result');
-  try {
-    const data = await api('GET', '/api/research/backtests/' + btRunId);
-    progress.textContent = '任务状态：' + data.status
-      + (data.progress_total ? '（' + data.progress_completed + '/' + data.progress_total + '）' : '');
-    if (data.status === 'SUCCEEDED') {
-      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
-      renderBacktestResult(data, result);
-      progress.hidden = true;
-      $('#run-backtest').disabled = false;
-    } else if (data.status === 'FAILED') {
-      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
-      progress.textContent = '回测失败：' + (data.error_message || '未知错误');
-      $('#run-backtest').disabled = false;
-    } else if (data.status === 'CANCELLED') {
-      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
-      progress.textContent = '任务已取消。';
-      $('#run-backtest').disabled = false;
-    }
-  } catch (e) {
-    progress.textContent = '查询状态失败：' + String(e);
-  }
-}
-
-function renderBacktestResult(data, container) {
-  const m = data.metrics || {};
-  const lines = [
-    '初始资金 ' + (m.initial_cash || '-'),
-    '期末净值 ' + (m.final_value || '-'),
-    '总收益 ' + (m.total_return == null ? '不可用' : (Number(m.total_return) * 100).toFixed(2) + '%'),
-    '最大回撤 ' + (m.max_drawdown == null ? '不可用' : (Number(m.max_drawdown) * 100).toFixed(2) + '%'),
-    'Sharpe ' + (m.sharpe == null ? '不可用' : Number(m.sharpe).toFixed(3)),
-    '成交 ' + (m.trade_count || 0) + ' 笔（胜 ' + (m.win_count || 0) + ' / 负 ' + (m.loss_count || 0) + '）',
-    '总费用 ' + (m.total_fees || '0'),
-  ];
-  let warnings = '';
-  const ws = data.warnings || [];
-  if (ws.length) {
-    warnings = '<br><span class="badge badge--warn">' + ws.length + ' 条执行限制警告</span><br>' + ws.slice(0, 8).map(esc).join('<br>');
-  }
-  container.innerHTML = '<strong>回测结果</strong><br>' + lines.join('<br>') + warnings
-    + '<br><a href="#" data-bt-equity="' + btRunId + '" class="btn btn--ghost">查看净值与订单</a>';
-  container.hidden = false;
-  container.querySelector('[data-bt-equity]').addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    const runId = ev.currentTarget.getAttribute('data-bt-equity');
-    const eq = await api('GET', '/api/research/backtests/' + runId + '/equity');
-    const od = await api('GET', '/api/research/backtests/' + runId + '/orders');
-    let html = '<strong>净值序列</strong><br>' + (eq.points || []).slice(-10).map((p) => esc(p.trading_day) + ' ' + esc(p.equity)).join('<br>');
-    html += '<br><strong>订单</strong><br>';
-    html += (od.orders || []).slice(0, 20).map((o) => esc(o.trading_day) + ' ' + esc(o.code) + ' ' + esc(o.side) + ' ' + esc(o.shares) + '股 @' + esc(o.price) + ' ' + esc(o.status)).join('<br>') || '（无订单）';
-    container.innerHTML = html + '<br><a href="#" id="bt-back" class="btn btn--ghost">返回摘要</a>';
-    container.querySelector('#bt-back').addEventListener('click', (e2) => { e2.preventDefault(); renderBacktestResult(data, container); });
-  });
+/** @returns {Promise<void>} */
+async function loadResearchPolicies() {
+  const data = await api('GET', '/api/research/policies');
+  btPolicyCatalog = data.policies;
 }
 
 function runtimeConditions() {
@@ -986,17 +767,21 @@ const STATUS_COLORS = {
   nontrading: '#ecf0f1',
 };
 
-/* ---------- 视图切换(数据 UI ↔ 工作台)与本地库选择 ---------- */
+/* ---------- 视图切换(数据 UI / 筛选工作台 / 回测系统)与本地库选择 ---------- */
 function applyView() {
   const gate = $('#gate-view');
   const workbench = $('#workbench-view');
+  const backtest = $('#backtest-view');
   if (!gate || !workbench) return;
-  if (state.uiView === 'workbench') {
-    gate.hidden = true;
-    workbench.hidden = false;
-  } else if (state.uiView === 'gate') {
-    gate.hidden = false;
-    workbench.hidden = true;
+  const show = (view) => {
+    gate.hidden = view !== 'gate';
+    workbench.hidden = view !== 'workbench';
+    if (backtest) backtest.hidden = view !== 'backtest';
+  };
+  if (state.uiView === 'workbench' || state.uiView === 'gate' || state.uiView === 'backtest') {
+    show(state.uiView);
+  } else {
+    show('gate');
   }
 }
 
@@ -1007,6 +792,1082 @@ function setView(view) {
     loadInstances();   // 刷新 runner 状态
     loadSyncStatus();  // 刷新数据状态与版本区
   }
+  if (view === 'backtest') {
+    ensureBacktestView();
+    loadSyncStatus();
+  }
+}
+
+/** 回测系统视图就绪后加载其基础数据(策略目录/策略模板/筛选模板/历史)。@returns {void} */
+let _backtestReady = false;
+function ensureBacktestView() {
+  if (_backtestReady) return;
+  _backtestReady = true;
+  loadBacktestWorkspace().catch((error) => {
+    _backtestReady = false;
+    toast('回测系统加载失败：' + (error && error.message ? error.message : String(error)), 'err');
+  });
+}
+
+/* ---------- 回测系统：基础数据加载与历史列表 ---------- */
+let btStrategies = [];
+let btCurrentStrategy = null;   // {strategy_template_id, revision, name, description, policies}
+let btEditorDirty = false;
+
+/** @returns {Promise<void>} */
+async function loadBacktestWorkspace() {
+  const [policies, strategies] = await Promise.all([
+    api('GET', '/api/research/policies'),
+    api('GET', '/api/research/strategies'),
+  ]);
+  btPolicyCatalog = policies.policies;
+  btStrategies = strategies.strategies;
+  populateBtScreeningSelect();
+  renderBtStrategySelect();
+  setBtMode('eligibility');
+  btUseDefaultEditor();
+  await loadBacktestHistory();
+  markBtDirty(false);
+}
+
+/** @returns {void} */
+function populateBtScreeningSelect() {
+  const select = $('#bt-screening-template');
+  if (!select) return;
+  select.innerHTML = '';
+  const templates = state.templates || [];
+  templates.forEach((item) => {
+    const option = document.createElement('option');
+    option.value = item.template_id;
+    option.textContent = item.name + ' (rev ' + item.revision + ')';
+    if (item.is_system) option.selected = true;
+    select.appendChild(option);
+  });
+  if (!select.value && templates.length) select.value = templates[0].template_id;
+}
+
+/** @returns {void} */
+function renderBtStrategySelect() {
+  const select = $('#bt-strategy-select');
+  const name = $('#bt-strategy-name');
+  const description = $('#bt-strategy-description');
+  if (!select) return;
+  select.innerHTML = '';
+  const items = btStrategies.length ? btStrategies
+    : [{ strategy_template_id: 'default-backtest-v1', name: '默认策略', revision: 1, is_system: true }];
+  items.forEach((item) => {
+    const option = document.createElement('option');
+    option.value = item.strategy_template_id;
+    option.textContent = (item.is_system ? '内置 · ' : '') + item.name + ' (rev ' + item.revision + ')';
+    select.appendChild(option);
+  });
+  const current = select.value || items[0].strategy_template_id;
+  select.value = current;
+  if (name) name.value = items.find((i) => i.strategy_template_id === current)?.name || '';
+  if (description) description.value = '';
+}
+
+/** @param {boolean} dirty @returns {void} */
+function markBtDirty(dirty) {
+  btEditorDirty = dirty;
+  const badge = $('#bt-strategy-dirty');
+  if (badge) badge.hidden = !dirty;
+}
+
+/* ---------- P5C 策略编辑器(入场组/退出组/止盈档/其它政策) ---------- */
+const BT_SINGLE_KINDS = ['rebalance', 'allocation', 'ranking', 'execution'];
+const BT_SINGLE_LABELS = {
+  rebalance: '调仓', allocation: '分配', ranking: '排名', execution: '执行',
+};
+const btEditor = {
+  entryOperator: 'any', exitOperator: 'any',
+  entry: [], exit: [], tiers: [], singles: {},
+};
+
+/** @returns {void} */
+function resetBtEditor() {
+  btEditor.entry = [];
+  btEditor.exit = [];
+  btEditor.tiers = [];
+  btEditor.entryOperator = 'any';
+  btEditor.exitOperator = 'any';
+  btEditor.singles = {};
+  BT_SINGLE_KINDS.forEach((kind) => {
+    const first = (btPolicyCatalog && btPolicyCatalog[kind] && btPolicyCatalog[kind][0]);
+    btEditor.singles[kind] = first ? { policy_id: first.policy_id, parameters: {} } : null;
+  });
+}
+
+/** @param {object} def @returns {string} 首个政策 id */
+function btFirstPolicyId(kind) {
+  const items = (btPolicyCatalog && btPolicyCatalog[kind]) || [];
+  return items.length ? items[0].policy_id : '';
+}
+
+/**
+ * 用 canonical policies(payload 结构)填充编辑器。
+ * @param {object} policies
+ * @returns {void}
+ */
+function btEditorFromPolicies(policies) {
+  resetBtEditor();
+  const fill = (kind) => {
+    const raw = policies[kind];
+    if (!raw) return;
+    if (Array.isArray(raw)) { btEditor[kind] = raw.map((item) => ({ policy_id: item.policy_id, parameters: item.parameters || {} })); return; }
+    if (typeof raw === 'object' && raw.items) {
+      if (kind === 'entry' || kind === 'exit') {
+        btEditor[kind] = raw.items.map((item) => ({ policy_id: item.policy_id, parameters: item.parameters || {} }));
+        if (raw.operator === 'all') btEditor[kind + 'Operator'] = 'all';
+      } else {
+        btEditor.singles[kind] = { policy_id: raw.policy_id || (raw.items && raw.items[0] && raw.items[0].policy_id), parameters: (raw.parameters || {}) };
+      }
+      return;
+    }
+    // 旧式单对象
+    if (kind === 'entry' || kind === 'exit') {
+      btEditor[kind] = [{ policy_id: raw.policy_id, parameters: raw.parameters || {} }];
+    } else {
+      btEditor.singles[kind] = { policy_id: raw.policy_id, parameters: raw.parameters || {} };
+    }
+  };
+  ['entry', 'exit'].forEach(fill);
+  BT_SINGLE_KINDS.forEach(fill);
+  btEditor.tiers = (policies.take_profit_tiers || []).map((t) => ({
+    take_profit_ratio: t.take_profit_ratio == null ? '' : String(t.take_profit_ratio),
+    partial_ratio: t.partial_ratio == null ? '' : String(t.partial_ratio),
+  }));
+}
+
+/** @returns {void} */
+function renderBtEditor() {
+  renderBtGroupItems('entry');
+  renderBtGroupItems('exit');
+  renderBtOperatorButtons();
+  renderBtTiers();
+  renderBtSingles();
+}
+
+/** @param {string} kind @returns {void} */
+function renderBtGroupItems(kind) {
+  const container = document.getElementById('bt-' + kind + '-items');
+  if (!container) return;
+  container.innerHTML = '';
+  const catalog = (btPolicyCatalog && btPolicyCatalog[kind]) || [];
+  if (!catalog.length) { container.innerHTML = '<p class="panel__hint">该组暂无可用政策。</p>'; return; }
+  btEditor[kind].forEach((item, index) => {
+    const policy = btFindPolicy(kind, item.policy_id) || catalog[0];
+    const card = document.createElement('div');
+    card.className = 'bt-policy-card';
+    const head = document.createElement('div');
+    head.className = 'bt-policy-card__head';
+    const select = document.createElement('select');
+    select.className = 'select';
+    select.setAttribute('data-kind', kind);
+    select.setAttribute('data-index', String(index));
+    catalog.forEach((p) => {
+      const option = document.createElement('option');
+      option.value = p.policy_id;
+      option.textContent = p.policy_id + ' (v' + p.version + ')';
+      select.appendChild(option);
+    });
+    select.value = policy.policy_id;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn--danger btn--sm bt-remove-btn';
+    remove.textContent = '删除';
+    remove.setAttribute('data-bt-remove', kind + ':' + index);
+    head.appendChild(select);
+    head.appendChild(remove);
+    card.appendChild(head);
+    const desc = document.createElement('p');
+    desc.className = 'bt-policy-desc';
+    desc.dataset.policyDesc = kind + ':' + index;
+    desc.textContent = policy.description || '';
+    card.appendChild(desc);
+    const params = document.createElement('div');
+    params.className = 'bt-policy-card__params';
+    params.dataset.params = kind + ':' + index;
+    card.appendChild(params);
+    container.appendChild(card);
+    renderBtPolicyParams(kind, index);
+  });
+}
+
+/** @param {string} kind @param {number} index @returns {void} 更新政策卡的中文机制说明 */
+function refreshBtPolicyDesc(kind, index) {
+  const el = document.querySelector('#bt-' + kind + '-items [data-policy-desc="' + kind + ':' + index + '"]');
+  if (!el) return;
+  const item = btEditor[kind][index];
+  if (!item) return;
+  const policy = btFindPolicy(kind, item.policy_id);
+  el.textContent = policy ? policy.description || '' : '';
+}
+
+/**
+ * @param {string} kind @param {number} index @param {boolean} wide
+ * @returns {void}
+ */
+function renderBtPolicyParams(kind, index) {
+  const holder = document.querySelector('#bt-' + kind + '-items [data-params="' + kind + ':' + index + '"]');
+  if (!holder) return;
+  holder.innerHTML = '';
+  const item = btEditor[kind][index];
+  if (!item) return;
+  const policy = btFindPolicy(kind, item.policy_id);
+  if (!policy || !policy.parameters || !policy.parameters.length) return;
+  policy.parameters.forEach((param) => {
+    if (kind === 'singles' || kind === 'allocation') {
+      if (param.parameter_id === 'max_positions') return; // 由基础数据唯一覆盖
+    }
+    const label = document.createElement('label');
+    label.className = 'field' + (param.parameter_id === 'cash_reserve_ratio' ? ' field--wide' : '');
+    const span = document.createElement('span');
+    span.className = 'field__label';
+    span.textContent = param.label + (param.required ? ' *' : '');
+    if (param.description) span.title = param.description;
+    let input;
+    if (param.value_type === 'boolean') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.className = 'input';
+    } else {
+      input = document.createElement('input');
+      input.type = param.value_type === 'integer' ? 'number' : 'text';
+      input.className = 'input';
+      input.step = param.value_type === 'integer' ? '1' : 'any';
+      if (param.minimum != null && param.value_type === 'integer') input.min = param.minimum;
+      if (param.maximum != null && param.value_type === 'integer') input.max = param.maximum;
+    }
+    input.dataset.policyKind = kind;
+    input.dataset.policyIndex = String(index);
+    input.dataset.paramId = param.parameter_id;
+    input.dataset.paramType = param.value_type;
+    input.dataset.default = param.default_value == null ? '' : param.default_value;
+    const existing = item.parameters && item.parameters[param.parameter_id];
+    if (param.value_type === 'boolean') {
+      input.checked = existing != null ? Boolean(existing) : (param.default_value === 'True' || param.default_value === 'true');
+    } else {
+      input.value = existing != null ? existing : (param.default_value == null ? '' : param.default_value);
+    }
+    label.appendChild(span);
+    label.appendChild(input);
+    holder.appendChild(label);
+  });
+  if (kind === 'allocation') {
+    const note = document.createElement('p');
+    note.className = 'panel__hint field--wide';
+    note.textContent = '最大持仓数不在此设置：由左侧「回测基础数据」统一覆盖。';
+    holder.appendChild(note);
+  }
+}
+
+/** @returns {void} */
+function renderBtOperatorButtons() {
+  [['entry', 'btEditor.entryOperator'], ['exit', 'btEditor.exitOperator']].forEach(([kind]) => {
+    document.querySelectorAll('[data-bt-op-kind="' + kind + '"]').forEach((button) => {
+      const value = button.dataset.btOpValue;
+      const active = btEditor[kind + 'Operator'] === value;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  });
+}
+
+/** 渲染止盈档(小数比例,与后端同一口径:0.02=2%),不做任何百分制换算。@returns {void} */
+function renderBtTiers() {
+  const container = $('#bt-tp-items');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!btEditor.tiers.length) {
+    container.innerHTML = '<p class="panel__hint">未设置止盈档：按各退出政策整仓退出（历史默认行为）。</p>';
+    return;
+  }
+  btEditor.tiers.forEach((tier, index) => {
+    const card = document.createElement('div');
+    card.className = 'bt-policy-card';
+    const head = document.createElement('div');
+    head.className = 'bt-policy-card__head';
+    const title = document.createElement('span');
+    title.className = 'field__label';
+    title.textContent = '第 ' + (index + 1) + ' 档（低档优先触发）';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn--danger btn--sm bt-remove-btn';
+    remove.textContent = '删除';
+    remove.setAttribute('data-bt-remove-tier', String(index));
+    head.appendChild(title);
+    head.appendChild(remove);
+    card.appendChild(head);
+    const params = document.createElement('div');
+    params.className = 'bt-policy-card__params';
+    const addInput = (id, labelText, placeholderText) => {
+      const label = document.createElement('label');
+      label.className = 'field';
+      const span = document.createElement('span');
+      span.className = 'field__label';
+      span.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'input';
+      input.value = valueOf(id);
+      input.placeholder = placeholderText;
+      input.dataset.tierIndex = String(index);
+      input.dataset.tierField = id;
+      label.appendChild(span);
+      label.appendChild(input);
+      params.appendChild(label);
+      return input;
+    };
+    const valueOf = (id) => {
+      const v = tier[id];
+      return v == null || v === '' ? '' : String(v);
+    };
+    addInput('take_profit_ratio', '触发涨幅比例（小数）', '如 0.02 = 2%');
+    addInput('partial_ratio', '减仓比例（小数）', '如 0.1 = 10%');
+    card.appendChild(params);
+    container.appendChild(card);
+  });
+}
+
+/** @returns {void} */
+function renderBtSingles() {
+  const container = $('#bt-singles');
+  if (!container) return;
+  container.innerHTML = '';
+  BT_SINGLE_KINDS.forEach((kind) => {
+    const items = (btPolicyCatalog && btPolicyCatalog[kind]) || [];
+    if (!items.length) return;
+    const chosen = btEditor.singles[kind] || {};
+    const policy = btFindPolicy(kind, chosen.policy_id) || items[0];
+    const card = document.createElement('div');
+    card.className = 'bt-single-card';
+    const head = document.createElement('div');
+    head.className = 'bt-single-card__head';
+    const kindLabel = document.createElement('span');
+    kindLabel.className = 'field__label';
+    kindLabel.textContent = BT_SINGLE_LABELS[kind] || kind;
+    const select = document.createElement('select');
+    select.className = 'select';
+    select.dataset.singleKind = kind;
+    items.forEach((p) => {
+      const option = document.createElement('option');
+      option.value = p.policy_id;
+      option.textContent = p.policy_id + ' (v' + p.version + ')';
+      select.appendChild(option);
+    });
+    select.value = policy.policy_id;
+    head.appendChild(kindLabel);
+    head.appendChild(select);
+    card.appendChild(head);
+    const desc = document.createElement('p');
+    desc.className = 'bt-policy-desc';
+    desc.dataset.singleDesc = kind;
+    desc.textContent = policy.description || '';
+    card.appendChild(desc);
+    const params = document.createElement('div');
+    params.className = 'bt-single-card__params';
+    params.dataset.singleParams = kind;
+    card.appendChild(params);
+    container.appendChild(card);
+    renderBtSingleParams(kind);
+  });
+}
+
+/** @param {string} kind @returns {void} 更新单项政策卡的中文机制说明 */
+function refreshBtSingleDesc(kind) {
+  const el = document.querySelector('#bt-singles [data-single-desc="' + kind + '"]');
+  if (!el) return;
+  const select = document.querySelector('#bt-singles select[data-single-kind="' + kind + '"]');
+  if (!select) return;
+  const policy = btFindPolicy(kind, select.value);
+  el.textContent = policy ? policy.description || '' : '';
+}
+
+/** @param {string} kind @returns {void} */
+function renderBtSingleParams(kind) {
+  const holder = document.querySelector('#bt-singles [data-single-params="' + kind + '"]');
+  if (!holder) return;
+  holder.innerHTML = '';
+  const select = document.querySelector('#bt-singles select[data-single-kind="' + kind + '"]');
+  if (!select) return;
+  const policy = btFindPolicy(kind, select.value);
+  if (!policy || !policy.parameters || !policy.parameters.length) return;
+  policy.parameters.forEach((param) => {
+    if (param.parameter_id === 'max_positions') return; // 基础数据覆盖
+    const label = document.createElement('label');
+    label.className = 'field';
+    const span = document.createElement('span');
+    span.className = 'field__label';
+    span.textContent = param.label + (param.required ? ' *' : '');
+    if (param.description) span.title = param.description;
+    const input = document.createElement('input');
+    if (param.value_type === 'boolean') {
+      input.type = 'checkbox';
+      input.className = 'input';
+    } else {
+      input.type = param.value_type === 'integer' ? 'number' : 'text';
+      input.className = 'input';
+      input.step = param.value_type === 'integer' ? '1' : 'any';
+    }
+    input.dataset.singleKind = kind;
+    input.dataset.paramId = param.parameter_id;
+    input.dataset.paramType = param.value_type;
+    const single = btEditor.singles[kind] || {};
+    const existing = single.parameters && single.parameters[param.parameter_id];
+    if (param.value_type === 'boolean') {
+      input.checked = existing != null ? Boolean(existing) : (param.default_value === 'True' || param.default_value === 'true');
+    } else {
+      input.value = existing != null ? existing : (param.default_value == null ? '' : param.default_value);
+    }
+    label.appendChild(span);
+    label.appendChild(input);
+    holder.appendChild(label);
+  });
+}
+
+/** @returns {object} 收集编辑器当前 canonical policies payload */
+function collectBtPolicies() {
+  const group = (kind) => {
+    const operator = btEditor[kind + 'Operator'] || 'any';
+    const items = (btEditor[kind] || []).map((item, index) => {
+      const select = document.querySelector('#bt-' + kind + '-items [data-kind="' + kind + '"][data-index="' + index + '"]');
+      const policyId = select ? select.value : item.policy_id;
+      const policy = btFindPolicy(kind, policyId);
+      const parameters = {};
+      const holder = document.querySelector('#bt-' + kind + '-items [data-params="' + kind + ':' + index + '"]');
+      if (holder) {
+        holder.querySelectorAll('[data-param-id]').forEach((input) => {
+          parameters[input.dataset.paramId] = btParamValue(input);
+        });
+      }
+      return { policy_id: policyId, version: policy ? policy.version : 1, parameters };
+    });
+    return { operator, items };
+  };
+  const policies = {
+    entry: group('entry'),
+    exit: group('exit'),
+    take_profit_tiers: (btEditor.tiers || []).map((tier, index) => {
+      const read = (field) => {
+        const input = document.querySelector('#bt-tp-items [data-tier-index="' + index + '"][data-tier-field="' + field + '"]');
+        return input ? Number(input.value) : null;
+      };
+      const ratio = read('take_profit_ratio');
+      const partial = read('partial_ratio');
+      return {
+        take_profit_ratio: ratio == null || Number.isNaN(ratio) ? '0' : String(ratio),
+        partial_ratio: partial == null || Number.isNaN(partial) ? '0' : String(partial),
+      };
+    }),
+  };
+  BT_SINGLE_KINDS.forEach((kind) => {
+    const select = document.querySelector('#bt-singles select[data-single-kind="' + kind + '"]');
+    const chosen = btEditor.singles[kind] || {};
+    const policyId = select ? select.value : (chosen.policy_id || '');
+    const policy = btFindPolicy(kind, policyId);
+    const parameters = {};
+    const holder = document.querySelector('#bt-singles [data-single-params="' + kind + '"]');
+    if (holder) {
+      holder.querySelectorAll('[data-param-id]').forEach((input) => {
+        parameters[input.dataset.paramId] = btParamValue(input);
+      });
+    }
+    if ((kind === 'allocation') && parameters.max_positions == null) {
+      parameters.max_positions = Math.min(500, Math.max(1, Math.floor(Number($('#bt-positions').value) || 20)));
+    }
+    policies[kind] = { policy_id: policyId, version: policy ? policy.version : 1, parameters };
+  });
+  return policies;
+}
+
+/** @param {HTMLElement} input @returns {string|number|boolean|null} */
+function btParamValue(input) {
+  const type = input.dataset.paramType;
+  if (type === 'boolean') return input.checked;
+  if (type === 'integer') {
+    const raw = input.value === '' ? null : Number(input.value);
+    return raw == null || Number.isNaN(raw) ? null : raw;
+  }
+  return input.value;
+}
+
+/** @returns {Promise<void>} 读取当前所选策略模板进编辑器 */
+async function loadBtStrategy(strategyTemplateId) {
+  try {
+    const data = await api('GET', '/api/research/strategies/' + encodeURIComponent(strategyTemplateId));
+    btCurrentStrategy = data;
+    btEditorFromPolicies(data.policies);
+    const nameInput = $('#bt-strategy-name');
+    const description = $('#bt-strategy-description');
+    if (nameInput) nameInput.value = data.name || '';
+    if (description) description.value = data.description || '';
+    renderBtEditor();
+    markBtDirty(false);
+    const status = $('#bt-strategy-status');
+    if (status) { status.hidden = true; status.textContent = ''; }
+  } catch (error) {
+    toast('读取策略模板失败：' + (error && error.message ? error.message : String(error)), 'err');
+  }
+}
+
+/** @returns {void} */
+function btUseDefaultEditor() {
+  const def = btStrategies.find((s) => s.is_system) || null;
+  if (def) { loadBtStrategy(def.strategy_template_id); return; }
+  resetBtEditor();
+  btCurrentStrategy = null;
+  renderBtEditor();
+  markBtDirty(false);
+}
+
+/** @returns {Promise<object>} 校验本地编辑结果并返回 canonical */
+async function btValidateLocal() {
+  const policies = collectBtPolicies();
+  if (!btEditor.entry.length || !btEditor.exit.length) {
+    throw new Error('入场组与退出组至少各含一个政策。');
+  }
+  if (btEditor.entry.length > 5 || btEditor.exit.length > 5 || btEditor.tiers.length > 5) {
+    throw new Error('每组政策与止盈档最多 5 个。');
+  }
+  btEditor.tiers.forEach((tier, index) => {
+    const t = policies.take_profit_tiers[index];
+    const tr = Number(t.take_profit_ratio);
+    const pr = Number(t.partial_ratio);
+    if (!(tr > 0) || !(pr > 0 && pr < 1)) {
+      throw new Error('第 ' + (index + 1) + ' 档止盈：触发涨幅需 >0（小数，如 0.02=2%）；减仓比例需在 (0,1) 区间（小数，如 0.1=10%）。');
+    }
+  });
+  const data = await api('POST', '/api/research/strategies/validate', { policies });
+  return data.policies || policies;
+}
+
+/** @returns {Promise<void>} */
+async function btSaveStrategy(saveAs) {
+  const select = $('#bt-strategy-select');
+  const nameInput = $('#bt-strategy-name');
+  const description = $('#bt-strategy-description');
+  if (!select || !nameInput) return;
+  const status = $('#bt-strategy-status');
+  const show = (text, isError) => {
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = text;
+    status.className = 'panel__hint' + (isError ? ' badge--err' : '');
+  };
+  try {
+    let normalized = await btValidateLocal();
+    let name = (nameInput.value || '').trim();
+    if (!name) { show('请填写策略名称。', true); return; }
+    if (saveAs) {
+      const result = await api('POST', '/api/research/strategies', {
+        strategy_template_id: btSlugify(name),
+        name,
+        description: (description.value || '').trim(),
+        policies: normalized,
+      });
+      await refreshBtStrategies();
+      select.value = result.strategy_template_id;
+      await loadBtStrategy(result.strategy_template_id);
+      show('已另存为「' + result.strategy_template_id + '」(rev ' + result.revision + ')。');
+      return;
+    }
+    if (!btCurrentStrategy) {
+      const id = btSlugify(name);
+      const result = await api('POST', '/api/research/strategies', {
+        strategy_template_id: id, name, description: (description.value || '').trim(), policies: normalized,
+      });
+      await refreshBtStrategies();
+      select.value = result.strategy_template_id;
+      await loadBtStrategy(result.strategy_template_id);
+      show('已创建策略「' + name + '」(rev ' + result.revision + ')。');
+      return;
+    }
+    const result = await api('PUT', '/api/research/strategies/' + encodeURIComponent(btCurrentStrategy.strategy_template_id), {
+      expected_revision: btCurrentStrategy.revision,
+      name, description: (description.value || '').trim(), policies: normalized,
+    });
+    btCurrentStrategy.revision = result.revision;
+    await refreshBtStrategies();
+    select.value = btCurrentStrategy.strategy_template_id;
+    markBtDirty(false);
+    show('已保存「' + btCurrentStrategy.name + '」(rev ' + result.revision + ')。');
+  } catch (error) {
+    if (error && error.status === 409) {
+      show('保存冲突：该模板已被他人/其它窗口修改，请重新载入后重试。', true);
+      return;
+    }
+    show('保存失败：' + (error && error.message ? error.message : String(error)), true);
+  }
+}
+
+/** @param {string} name @returns {string} */
+function btSlugify(name) {
+  const base = String(name).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-').replace(/^-+|-+$/g, '');
+  const latin = base.replace(/[\u4e00-\u9fa5]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'strategy';
+  let id = latin;
+  let n = 2;
+  while (btStrategies.some((s) => s.strategy_template_id === id)) { id = latin + '-' + n; n += 1; }
+  return id;
+}
+
+/** @returns {Promise<void>} */
+async function refreshBtStrategies() {
+  const data = await api('GET', '/api/research/strategies');
+  btStrategies = data.strategies;
+  renderBtStrategySelect();
+}
+
+/** @returns {Promise<void>} */
+async function btDeleteStrategy() {
+  if (!btCurrentStrategy) return;
+  if (btCurrentStrategy.is_system) { toast('系统内置策略不可删除。', 'warn'); return; }
+  if (!confirm('删除策略「' + btCurrentStrategy.name + '」？此操作不可撤销。')) return;
+  try {
+    await api('DELETE', '/api/research/strategies/' + encodeURIComponent(btCurrentStrategy.strategy_template_id),
+      { expected_revision: btCurrentStrategy.revision });
+    btCurrentStrategy = null;
+    await refreshBtStrategies();
+    btUseDefaultEditor();
+    const status = $('#bt-strategy-status');
+    if (status) { status.hidden = true; status.textContent = ''; }
+    toast('已删除策略。', 'ok');
+  } catch (error) {
+    toast('删除失败：' + (error && error.message ? error.message : String(error)), 'err');
+  }
+}
+
+/* ---------- P5C 回测运行与结果 ---------- */
+let btActiveRun = null;
+let btResultPayload = null;
+let btOrdersAll = [];
+let btOrdersOffset = 0;
+const BT_ORDERS_PAGE = 100;
+
+/** @param {string|null} runId @returns {void} */
+function setBtRun(runId) {
+  btRunId = runId;
+  btActiveRun = runId;
+  if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+}
+
+/** @param {boolean} busy @returns {void} */
+function setBtBusy(busy) {
+  const runBtn = $('#bt-run');
+  const cancelBtn = $('#bt-cancel');
+  if (runBtn) runBtn.disabled = busy;
+  if (cancelBtn) cancelBtn.hidden = !busy;
+}
+
+/** @param {string} text @param {number|null} percent @returns {void} */
+function setBtProgress(text, percent) {
+  const p = $('#bt-progress');
+  const track = $('#bt-progress-track');
+  const fill = $('#bt-progress-fill');
+  if (p) { p.hidden = false; p.textContent = text; }
+  if (track && fill) {
+    track.hidden = percent == null;
+    fill.style.width = (percent == null ? 0 : Math.max(0, Math.min(100, percent))) + '%';
+  }
+}
+
+/** @returns {Promise<void>} */
+async function runNewBacktest() {
+  if (!state.currentId) { toast('请先在「筛选工作台」选择一个筛选模板。', 'warn'); return; }
+  const runBtn = $('#bt-run');
+  setBtBusy(true);
+  setBtProgress('正在准备运行参数…', null);
+  try {
+    const normalized = await btValidateLocal();
+    const activeMode = document.querySelector('[data-bt-mode].is-active');
+    const mode = activeMode ? activeMode.dataset.btMode : 'eligibility';
+    const codesRaw = ($('#bt-codes') && $('#bt-codes').value.trim()) || '';
+    const codes = codesRaw.split(/[,，;；\s]+/).filter(Boolean);
+    if (mode === 'ignore' && !codes.length) throw new Error('忽略资格模式必须至少填 1 个股票代码。');
+    const windowPreset = $('#bt-window-preset').value;
+    let window_years = null; let backtest_start = null; let backtest_end = null;
+    if (windowPreset === 'custom') {
+      const start = $('#bt-start').value;
+      const end = $('#bt-end').value;
+      if (!start || !end) throw new Error('自定义窗口需要同时填写开始与结束日期。');
+      if (start > end) throw new Error('开始日期不能晚于结束日期。');
+      backtest_start = start;
+      backtest_end = end;
+    } else {
+      window_years = { y1: 1, y3: 3, y5: 5, y8: 8 }[windowPreset] || 5;
+    }
+    const readNum = (id, fallback) => {
+      const input = document.getElementById(id);
+      return input ? Math.max(1, Math.floor(Number(input.value) || fallback)) : fallback;
+    };
+    const readDec = (id) => {
+      const input = document.getElementById(id);
+      const value = input ? input.value.trim() : '';
+      return value === '' ? null : value;
+    };
+    const templateSelect = $('#bt-screening-template');
+    const selectedTemplate = state.templates.find((t) => t.template_id === templateSelect.value)
+      || state.templates.find((t) => t.is_system) || state.templates[0];
+    if (!selectedTemplate) throw new Error('没有可用的筛选模板。');
+    const body = {
+      template_id: selectedTemplate.template_id,
+      template_revision: selectedTemplate.revision,
+      policies: normalized,
+      window_years,
+      backtest_start,
+      backtest_end,
+      initial_cash: ($('#bt-cash').value.trim() || '1000000'),
+      max_positions: readNum('bt-positions', 20),
+      max_workers: Math.min(16, readNum('bt-workers', 2)),
+      codes: codes.join(','),
+      ignore_eligibility: mode === 'ignore',
+      commission_rate: readDec('bt-fee-commission'),
+      stamp_duty_rate: readDec('bt-fee-stamp'),
+      transfer_fee_rate: readDec('bt-fee-transfer'),
+      min_commission: readDec('bt-fee-min'),
+      lot_size: readNum('bt-fee-lot', 100),
+    };
+    if (btCurrentStrategy && !btCurrentStrategy.is_system) {
+      body.strategy_template_id = btCurrentStrategy.strategy_template_id;
+      body.strategy_template_revision = btCurrentStrategy.revision;
+    } else {
+      body.strategy_template_id = 'default-backtest-v1';
+      body.strategy_template_revision = 1;
+    }
+    const data = await api('POST', '/api/research/backtests', body);
+    setBtRun(data.run_id);
+    setBtProgress('任务已提交，等待运行…', 0);
+    btPollTimer = setInterval(() => { pollNewBacktest().catch(() => {}); }, 800);
+  } catch (error) {
+    setBtProgress('启动失败：' + (error && error.message ? error.message : String(error)), null);
+    setBtBusy(false);
+  }
+}
+
+/** @returns {Promise<void>} */
+async function pollNewBacktest() {
+  const runId = btRunId;
+  if (!runId) return;
+  try {
+    const payload = await api('GET', '/api/research/backtests/' + runId);
+    const done = Number(payload.progress_completed) || 0;
+    const total = Number(payload.progress_total) || 0;
+    const percent = total > 0 ? Math.round((done / total) * 100) : null;
+    setBtProgress('任务状态：' + payload.status + (total > 0 ? '（' + done + '/' + total + '）' : ''), percent);
+    if (payload.status === 'SUCCEEDED') {
+      // 先停轮询并保留 runId,再渲染结果(不能把活动 run 一起清空)
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
+      btActiveRun = runId;
+      setBtProgress('回测完成，正在汇总结果…', 100);
+      await renderBtResult(runId);
+      loadBacktestHistory();
+      return;
+    }
+    if (payload.status === 'FAILED') {
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
+      setBtProgress('回测失败：' + (payload.error_message || '未知错误'), null);
+      setBtBusy(false);
+      return;
+    }
+    if (payload.status === 'CANCELLED') {
+      if (btPollTimer) { clearInterval(btPollTimer); btPollTimer = null; }
+      btRunId = null;
+      setBtProgress('任务已取消。', null);
+      setBtBusy(false);
+    }
+  } catch (error) {
+    setBtProgress('状态查询失败：' + (error && error.message ? error.message : String(error)), null);
+  }
+}
+
+/**
+ * 展示一次运行的结果(供运行结束与历史回看共用)。
+ * 指标卡先渲染;成交与净值各自容错,失败不影响指标展示;最后统一收尾。
+ * @param {string} runId @returns {Promise<void>}
+ */
+async function renderBtResult(runId) {
+  const empty = $('#bt-result-empty');
+  const metricsBox = $('#bt-result-metrics');
+  const equityBox = $('#bt-equity-chart');
+  const ordersHead = $('#bt-orders-head');
+  const ordersBox = $('#bt-orders');
+  const moreBox = $('#bt-orders-more');
+  const warnings = $('#bt-warnings');
+  if (empty) empty.hidden = true;
+  try {
+    const status = await api('GET', '/api/research/backtests/' + runId);
+    if (status.status !== 'SUCCEEDED' || !status.metrics) {
+      toast('该运行没有可用的回测结果。', 'warn');
+      setBtBusy(false);
+      setBtProgress('回测完成（无可展示结果）。', null);
+      return;
+    }
+    btResultPayload = status;
+    btActiveRun = runId;
+    const metrics = status.metrics || {};
+    const settings = status.settings || {};
+    expandBtResultPanel();
+    const subtitle = $('#bt-result-subtitle');
+    if (subtitle) {
+      const modeLabel = settings.mode === 'ignore_eligibility' ? '忽略资格' : '套用资格';
+      subtitle.textContent = runId + ' · ' + modeLabel;
+    }
+    const fmt = (value) => {
+      if (value == null) return '—';
+      const n = Number(value);
+      return Number.isNaN(n) ? value : n.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+    };
+    const pct = (value) => {
+      if (value == null) return '—';
+      const n = Number(value);
+      return Number.isNaN(n) ? value : (n * 100).toFixed(2) + '%';
+    };
+    const metricCards = [
+      ['初始资金', fmt(metrics.initial_cash)],
+      ['期末资产', fmt(metrics.final_value)],
+      ['总收益率', pct(metrics.total_return)],
+      ['年化收益率', pct(metrics.annualized_return)],
+      ['最大回撤', pct(metrics.max_drawdown)],
+      ['夏普比率', fmt(metrics.sharpe)],
+      ['交易次数', metrics.trade_count == null ? '—' : fmt(metrics.trade_count)],
+      ['累计费用', fmt(metrics.total_fees)],
+    ];
+    metricsBox.innerHTML = metricCards.map(([label, value]) =>
+      '<div class="bt-metric"><div class="bt-metric__label">' + label + '</div>'
+      + '<div class="bt-metric__value">' + value + '</div></div>').join('');
+    metricsBox.hidden = false;
+    if (equityBox) equityBox.hidden = false;
+    if (warnings) {
+      const list = status.warnings || [];
+      warnings.hidden = !list.length;
+      warnings.textContent = list.length ? '提示：' + list.join('；') : '';
+    }
+    // 成交与净值:独立容错,不让它们阻塞指标展示
+    ordersBox.innerHTML = '';
+    btOrdersAll = [];
+    btOrdersOffset = 0;
+    if (moreBox) moreBox.hidden = true;
+    if (ordersHead) ordersHead.hidden = true;
+    try {
+      await loadBtOrders(runId, true);
+    } catch (orderError) {
+      toast('成交明细读取失败：' + (orderError && orderError.message ? orderError.message : String(orderError)), 'err');
+    }
+    try {
+      await drawBtEquity(status);
+    } catch (equityError) {
+      toast('净值曲线加载失败：' + (equityError && equityError.message ? equityError.message : String(equityError)), 'err');
+    }
+  } catch (error) {
+    if (metricsBox) metricsBox.hidden = true;
+    toast('读取结果失败：' + (error && error.message ? error.message : String(error)), 'err');
+  } finally {
+    // 无论成败,收尾:清进度、启用按钮、保留活动 run 供历史回看;若成功且右侧已显示,进度停住。
+    setBtBusy(false);
+    setBtProgress('回测完成。', null);
+    markBtDirty(btEditorDirty);
+  }
+}
+
+/** @returns {void} 展开回测结果面板(用户可能手动收起过) */
+function expandBtResultPanel() {
+  const content = $('#bt-result-content');
+  if (content) content.hidden = false;
+  const panel = $('#bt-result-panel');
+  if (!panel) return;
+  const toggle = panel.querySelector('.panel-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.textContent = '收起';
+  }
+}
+
+/**
+ * @param {string} runId @param {boolean} first
+ * @returns {Promise<void>}
+ */
+async function loadBtOrders(runId, first) {
+  const box = $('#bt-orders');
+  const head = $('#bt-orders-head');
+  const moreBox = $('#bt-orders-more');
+  if (!box) return;
+  try {
+    const data = await api('GET', '/api/research/backtests/' + runId + '/orders?offset=' + btOrdersOffset + '&limit=' + BT_ORDERS_PAGE);
+    const rows = data.orders || [];
+    if (!rows.length) {
+      if (first) { box.hidden = true; if (head) head.hidden = true; if (moreBox) moreBox.hidden = true; }
+      return;
+    }
+    if (first) box.innerHTML = '';
+    btOrdersAll = btOrdersAll.concat(rows);
+    box.hidden = false;
+    if (head) head.hidden = false;
+    rows.forEach((order, localIndex) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'bt-order-row';
+      row.dataset.run = runId;
+      row.dataset.code = order.code || '';
+      row.dataset.orderIndex = String(btOrdersAll.length - rows.length + localIndex);
+      const isBuy = order.side === 'BUY';
+      const sideCls = isBuy ? 'bt-order-side-buy' : 'bt-order-side-sell';
+      const sideText = isBuy ? '买' : '卖';
+      const price = order.price == null ? '—' : Number(order.price).toFixed(3);
+      const shares = order.shares == null ? '—' : fmtShares(Number(order.shares));
+      const amount = order.amount == null ? '—' : '¥' + Number(order.amount).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+      const note = order.note || order.reason || '';
+      const dateText = order.trading_day || order.date || '';
+      row.innerHTML = '<span>' + dateText + '</span><span>' + (order.code || '')
+        + '</span><span class="' + sideCls + '">' + sideText
+        + '</span><span>' + price + '</span><span>' + shares + '</span><span title="' + esc(note) + '">' + esc(note) + '</span>';
+      box.appendChild(row);
+    });
+    if (moreBox) {
+      moreBox.hidden = btOrdersAll.length >= Number(data.count);
+    }
+  } catch (error) {
+    toast('读取成交失败：' + (error && error.message ? error.message : String(error)), 'err');
+  }
+}
+
+/** @param {number} shares @returns {string} */
+function fmtShares(shares) {
+  if (shares >= 10000) return (shares / 10000).toFixed(2) + '万';
+  return String(shares);
+}
+
+/** @param {object} status @returns {void} 净值曲线(回测运行期的本地数据,简单折线) */
+function drawBtEquity(status) {
+  const canvas = $('#bt-equity-canvas');
+  const box = $('#bt-equity-chart');
+  if (!canvas || !box) return;
+  box.hidden = false;
+  const parent = canvas.parentNode;
+  const width = Math.max(320, parent.clientWidth || 640);
+  canvas.width = width * 2;
+  canvas.height = 440;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  ctx.clearRect(0, 0, width, 220);
+  ctx.fillStyle = '#fbfcfd';
+  ctx.fillRect(0, 0, width, 220);
+  const metrics = status.metrics || {};
+  // 无逐点序列时只画起点→终点示意线
+  const start = Number(metrics.initial_cash) || 1;
+  const end = Number(metrics.final_value) || start;
+  const up = end >= start;
+  ctx.strokeStyle = up ? '#1e8449' : '#b33939';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(10, 110);
+  ctx.lineTo(width - 10, 110 - Math.max(-90, Math.min(90, (end / start - 1) * 220)));
+  ctx.stroke();
+  ctx.fillStyle = '#5c6b7a';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('净值 ' + start.toLocaleString('zh-CN') + ' → ' + end.toLocaleString('zh-CN'), 12, 24);
+  ctx.fillText('(逐点净值曲线在历史回看中可用)', 12, 44);
+}
+
+/**
+ * 历史回看:读取运行并把结果面板切到该 run。
+ * @param {string} runId @returns {Promise<void>}
+ */
+async function viewBacktestRun(runId) {
+  const empty = $('#bt-result-empty');
+  if (empty) empty.hidden = true;
+  await renderBtResult(runId);
+  const resultPanel = $('#bt-result-panel');
+  if (resultPanel) resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** @returns {void} */
+function setBtFeeDefaults() {
+  const values = {
+    'bt-fee-commission': '0.0003', 'bt-fee-stamp': '0.0005',
+    'bt-fee-transfer': '0.00001', 'bt-fee-min': '5', 'bt-fee-lot': '100',
+  };
+  Object.keys(values).forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) input.value = values[id];
+  });
+  toast('费用与整手已恢复默认。', 'ok');
+}
+
+/** @returns {void} 单代码时分配/排名对单标的无意义:禁用并提示 */
+function updateBtSingleCodeState() {
+  const raw = ($('#bt-codes') && $('#bt-codes').value.trim()) || '';
+  const single = raw.split(/[,，;；\s]+/).filter(Boolean).length === 1;
+  ['ranking', 'allocation'].forEach((kind) => {
+    const select = document.querySelector('#bt-singles select[data-single-kind="' + kind + '"]');
+    if (select) select.disabled = single;
+  });
+  const note = $('#bt-single-note');
+  if (note) {
+    note.hidden = !single;
+    note.textContent = single ? '单股模式：排名与分配政策不参与运行（由系统直接全额买入/持仓）。' : '';
+  }
+}
+
+/** @param {string} mode @returns {void} */
+function setBtMode(mode) {
+  if (mode !== 'eligibility' && mode !== 'ignore') return;
+  document.querySelectorAll('[data-bt-mode]').forEach((segment) => {
+    const active = segment.dataset.btMode === mode;
+    segment.classList.toggle('is-active', active);
+    segment.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  const hint = $('#bt-mode-hint');
+  if (hint) {
+    hint.textContent = mode === 'ignore'
+      ? '忽略资格模式：必须至少填 1 个代码；整段窗口内标的始终可交易，买卖完全由入场/退出/止盈政策决定；排名/分配按代码数正常参与。'
+      : '套用模板资格：仅当日通过所选筛选模板的股票可入场；填代码时资格与候选都收敛到该集合（1 只即单股回测）。';
+  }
+  updateBtSingleCodeState();
+}
+
+/** @param {string} runId @returns {void} */
+function openBacktestRun(runId) {
+  if (typeof viewBacktestRun === 'function') { viewBacktestRun(runId); return; }
+  toast('结果回看功能仍在完善，请稍后再试。', 'warn');
+}
+
+/** @returns {Promise<void>} */
+async function loadBacktestHistory() {
+  const container = $('#bt-history-list');
+  const status = $('#bt-history-status');
+  if (!container) return;
+  status.hidden = false;
+  status.textContent = '正在读取历史运行…';
+  try {
+    const data = await api('GET', '/api/research/backtests');
+    const runs = data.runs || [];
+    const count = $('#bt-history-count');
+    if (count) count.textContent = runs.length + ' 次';
+    if (!runs.length) {
+      container.innerHTML = '<p class="panel__hint">暂无历史运行。</p>';
+      return;
+    }
+    container.innerHTML = runs.map((run) => {
+      const r = run.result;
+      const s = r && r.settings ? r.settings : {};
+      const summary = r && r.summary ? r.summary : {};
+      const modeLabel = s.mode === 'ignore_eligibility' ? '忽略资格' : '套用资格';
+      const codeLabel = s.codes && s.codes.length ? s.codes.join(',') : '全池';
+      const total = summary.total_return == null ? '-' : (Number(summary.total_return) * 100).toFixed(2) + '%';
+      const strategyName = s.strategy_template_id ? '策略 ' + s.strategy_template_id : '';
+      return '<div class="bt-history-row" data-run="' + esc(run.run_id) + '" tabindex="0" role="button" aria-label="回看运行 ' + esc(run.run_id) + '">'
+        + '<div class="bt-history-row__head"><span>' + esc(run.run_id) + '</span><span class="badge ' + (run.status === 'SUCCEEDED' ? 'badge--ok' : run.status === 'FAILED' ? 'badge--err' : '') + '">' + esc(run.status) + '</span></div>'
+        + '<div class="bt-history-row__meta">' + esc(strategyName || (s.template_id || '')) + ' · ' + esc(modeLabel)
+        + ' · 代码 ' + esc(codeLabel) + ' · 收益 ' + esc(total)
+        + (s.window_start ? ' · ' + esc(s.window_start) + ' ~ ' + esc(s.window_end) : '') + '</div></div>';
+    }).join('');
+  } catch (error) {
+    status.textContent = '读取历史失败：' + (error && error.message ? error.message : String(error));
+    return;
+  }
+  status.hidden = true;
 }
 
 /* 渲染门禁页的"本地数据库"选择区;canEnter=false(无已激活库)时不放行 */
@@ -1133,10 +1994,10 @@ function renderSyncStatus(s) {
     $('#sync-status-years-legend').hidden = false;
   }
 
-  // 门禁页/工作台切换:READY 才自动进工作台;有已激活库时允许在数据页
-  // 点选本地库后手动进入(数据截止日/覆盖见版本区提示)。
+  // 门禁页/工作台/回测系统三视图切换:显式视图互斥;'auto'(首次启动)按就绪态路由。
   const gate = $('#gate-view');
   const workbench = $('#workbench-view');
+  const backtest = $('#backtest-view');
   const readiness = s.readiness || {};
   const ready = readiness.status === 'READY';
   const canEnter = !!(s.can_enter && s.active_generation);
@@ -1151,12 +2012,31 @@ function renderSyncStatus(s) {
   if (state.uiView === 'workbench') {
     if (gate) gate.hidden = true;
     if (workbench) workbench.hidden = false;
+    if (backtest) backtest.hidden = true;
   } else if (state.uiView === 'gate') {
     if (gate) gate.hidden = false;
     if (workbench) workbench.hidden = true;
+    if (backtest) backtest.hidden = true;
+  } else if (state.uiView === 'backtest') {
+    if (gate) gate.hidden = true;
+    if (workbench) workbench.hidden = true;
+    if (backtest) backtest.hidden = false;
   } else if (gate && workbench) {
+    // auto:首次启动/刷新后尚未手动选视图,按数据就绪度决定入口
     gate.hidden = ready;
     workbench.hidden = !ready;
+    if (backtest) backtest.hidden = true;
+  }
+  const btHint = $('#bt-top-hint');
+  if (btHint) {
+    if (state.uiView === 'backtest') {
+      btHint.hidden = ready;
+      btHint.textContent = ready
+        ? ''
+        : '数据正在回补/同步中（回测依赖历史数据完整），可先前往「数据同步」查看进度。';
+    } else {
+      btHint.hidden = true;
+    }
   }
   if (gate && !ready) {
     const reason = readiness.reason || '数据未就绪';
@@ -2269,10 +3149,300 @@ window.addEventListener('resize', () => {
 
 /* ---------- event wiring ---------- */
 /** @returns {void} */
+/* ---------- 真实净值曲线(逐点 equity 分页拉取) ---------- */
+/**
+ * @param {string} runId @returns {Promise<Array<object>>}
+ */
+async function fetchBtEquity(runId) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const data = await api('GET', '/api/research/backtests/' + runId + '/equity?offset=' + offset + '&limit=1000');
+    const points = data.points || [];
+    out.push.apply(out, points);
+    if (points.length < 1000 || out.length > 20000) break;
+    offset += points.length;
+  }
+  return out;
+}
+
+/** @param {object} status @returns {Promise<void>} 回测净值曲线(逐点) */
+async function drawBtEquity(status) {
+  const canvas = $('#bt-equity-canvas');
+  const box = $('#bt-equity-chart');
+  if (!canvas || !box) return;
+  const points = await fetchBtEquity(status ? status.run_id || btActiveRun : btActiveRun);
+  const parent = canvas.parentNode;
+  const width = Math.max(320, parent.clientWidth || 640);
+  const height = 220;
+  canvas.width = width * 2;
+  canvas.height = height * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#fbfcfd';
+  ctx.fillRect(0, 0, width, height);
+  box.hidden = false;
+  if (!points.length) {
+    ctx.fillStyle = '#5c6b7a';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('(该运行无净值曲线)', 12, 24);
+    return;
+  }
+  const pad = { top: 14, right: 12, bottom: 20, left: 58 };
+  const values = points.map((p) => Number(p.equity));
+  let lo = Math.min.apply(null, values);
+  let hi = Math.max.apply(null, values);
+  if (hi - lo < 1e-9) { hi = lo * 1.001 + 1; lo = lo * 0.999 - 1; }
+  const xAt = (i) => pad.left + (width - pad.left - pad.right) * (i / Math.max(1, points.length - 1));
+  const yAt = (v) => pad.top + (height - pad.top - pad.bottom) * (1 - (v - lo) / (hi - lo));
+  // 参考网格与坐标
+  ctx.strokeStyle = '#e6ebf0';
+  ctx.fillStyle = '#5c6b7a';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  for (let g = 0; g <= 4; g += 1) {
+    const v = lo + (hi - lo) * (g / 4);
+    const y = yAt(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(v.toLocaleString('zh-CN', { maximumFractionDigits: 0 }), pad.left - 4, y + 3);
+  }
+  ctx.textAlign = 'left';
+  // 净值线
+  ctx.strokeStyle = '#1f6feb';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = xAt(i);
+    const y = yAt(Number(p.equity));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  // 首末标注
+  const label = (i, extra) => {
+    const p = points[i];
+    ctx.fillStyle = '#8a97a5';
+    ctx.fillText((p.trading_day || '') + '  ' + Number(p.equity).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + (extra || ''), xAt(i) - 30, yAt(Number(p.equity)) - 8);
+  };
+  label(0, ' 起点');
+  if (points.length > 1) label(points.length - 1, ' 终点');
+}
+
+/* ---------- 买卖点日 K 复盘浮层(P5C D29) ---------- */
+const btReplay = {
+  open: false, code: '', runId: '', bars: [], markers: [],
+  startIdx: 0, count: 60, loaded: false,
+};
+const BT_REPLAY_MAX = 40; // 一屏默认最多 K 根(可缩放)
+
+/** @param {string} code @param {string} runId @returns {Promise<void>} */
+async function openBtReplay(code, runId) {
+  const overlay = $('#bt-replay-overlay');
+  if (!overlay || !code) return;
+  overlay.hidden = false;
+  btReplay.open = true;
+  btReplay.code = code;
+  btReplay.runId = runId;
+  btReplay.loaded = false;
+  const title = $('#bt-replay-title');
+  if (title) title.textContent = '买卖点日K复盘 · ' + code;
+  const info = $('#bt-replay-info');
+  if (info) info.textContent = '正在加载本地日K与成交…';
+  try {
+    const ordersAll = await fetchAllBtOrders(runId);
+    const settings = btResultPayload && btResultPayload.settings ? btResultPayload.settings : {};
+    const start = settings.window_start || null;
+    const end = settings.window_end || null;
+    let bars = [];
+    if (start && end) {
+      const data = await api('GET', '/api/bars?code=' + encodeURIComponent(code) + '&adjustment=qfq&start=' + start + '&end=' + end);
+      bars = data.bars || [];
+    }
+    btReplay.bars = bars;
+    btReplay.markers = ordersAll
+      .filter((o) => o.code === code)
+      .map((o) => ({
+        day: o.trading_day || o.date || '',
+        side: o.side === 'BUY' ? 'buy' : 'sell',
+        price: o.price == null ? null : Number(o.price),
+        shares: o.shares == null ? null : Number(o.shares),
+      }));
+    btReplay.startIdx = Math.max(0, bars.length - BT_REPLAY_MAX);
+    btReplay.count = Math.min(bars.length, BT_REPLAY_MAX);
+    if (!bars.length) {
+      if (info) info.textContent = '本地无该股 ' + start + ' ~ ' + end + ' 的日K数据，无法绘制。';
+      return;
+    }
+    if (info) info.textContent = '共 ' + bars.length + ' 根日K，' + btReplay.markers.length + ' 个成交点。';
+    drawBtReplayKline();
+  } catch (error) {
+    if (info) info.textContent = '加载失败：' + (error && error.message ? error.message : String(error));
+  }
+}
+
+/** @param {string} runId @returns {Promise<Array<object>>} 分页拉全一次运行全部成交 */
+async function fetchAllBtOrders(runId) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const data = await api('GET', '/api/research/backtests/' + runId + '/orders?offset=' + offset + '&limit=1000');
+    const rows = data.orders || [];
+    out.push.apply(out, rows);
+    if (rows.length < 1000 || out.length > 20000) break;
+    offset += rows.length;
+  }
+  return out;
+}
+
+/** @returns {void} */
+function closeBtReplay() {
+  const overlay = $('#bt-replay-overlay');
+  if (overlay) overlay.hidden = true;
+  btReplay.open = false;
+  btReplay.bars = [];
+  btReplay.markers = [];
+}
+
+/** @param {string} action @returns {void} */
+function btReplayAction(action) {
+  if (!btReplay.open || !btReplay.bars.length) return;
+  const total = btReplay.bars.length;
+  const maxCount = Math.max(10, Math.min(400, total));
+  if (action === 'zoom-in') { btReplay.count = Math.max(10, Math.floor(btReplay.count / 1.4)); }
+  else if (action === 'zoom-out') { btReplay.count = Math.min(maxCount, Math.ceil(btReplay.count * 1.4)); }
+  else if (action === 'pan-left') { btReplay.startIdx = Math.max(0, btReplay.startIdx - Math.floor(btReplay.count / 3)); }
+  else if (action === 'pan-right') { btReplay.startIdx = Math.min(total - btReplay.count, btReplay.startIdx + Math.floor(btReplay.count / 3)); }
+  else if (action === 'reset') { btReplay.count = Math.min(maxCount, Math.max(10, Math.floor(total / 3) || BT_REPLAY_MAX)); btReplay.startIdx = Math.max(0, total - btReplay.count); }
+  btReplay.startIdx = Math.max(0, Math.min(Math.max(0, total - btReplay.count), btReplay.startIdx));
+  drawBtReplayKline();
+}
+
+/** @returns {void} */
+function drawBtReplayKline() {
+  const canvas = $('#bt-replay-canvas');
+  if (!canvas) return;
+  const parent = canvas.parentNode;
+  const width = Math.max(480, parent.clientWidth || 900);
+  const height = Math.max(320, Math.min(620, window.innerHeight * 0.55));
+  canvas.width = width * 2;
+  canvas.height = height * 2;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.fillStyle = '#fbfcfd';
+  ctx.fillRect(0, 0, width, height);
+  const bars = btReplay.bars;
+  const endIdx = Math.min(bars.length, btReplay.startIdx + btReplay.count);
+  const slice = bars.slice(btReplay.startIdx, endIdx);
+  if (!slice.length) return;
+  const pad = { top: 26, right: 12, bottom: 26, left: 12 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const step = plotW / slice.length;
+  const bodyW = Math.max(1.4, step * 0.62);
+  // 价格范围(纳入标记价格)
+  let lo = Infinity; let hi = -Infinity;
+  slice.forEach((b) => {
+    lo = Math.min(lo, Number(b.low));
+    hi = Math.max(hi, Number(b.high));
+  });
+  btReplay.markers.forEach((m) => {
+    if (!m.price) return;
+    if (btReplay.bars.some((b, idx) => idx >= btReplay.startIdx && idx < endIdx && b.trading_day === m.day)) {
+      lo = Math.min(lo, m.price);
+      hi = Math.max(hi, m.price);
+    }
+  });
+  if (hi - lo < 1e-9) { hi += 0.01; lo -= 0.01; }
+  const yAt = (v) => pad.top + (plotH * (hi - v)) / (hi - lo);
+  const xAt = (i) => pad.left + step * (i - btReplay.startIdx) + step / 2;
+  // 网格
+  ctx.strokeStyle = '#e6ebf0';
+  ctx.fillStyle = '#8a97a5';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'left';
+  for (let g = 0; g <= 5; g += 1) {
+    const v = lo + (hi - lo) * (g / 5);
+    const y = yAt(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(2), 2, y - 2);
+  }
+  // K 线
+  const dateLabels = new Set();
+  const labelEvery = Math.max(1, Math.floor(slice.length / 8));
+  slice.forEach((b, li) => {
+    const absIdx = btReplay.startIdx + li;
+    const open = Number(b.open); const close = Number(b.close);
+    const high = Number(b.high); const low = Number(b.low);
+    const x = xAt(absIdx);
+    const up = close >= open;
+    ctx.strokeStyle = up ? '#c0392b' : '#1e8449';
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yAt(high));
+    ctx.lineTo(x, yAt(low));
+    ctx.stroke();
+    const top = yAt(Math.max(open, close));
+    const bottom = yAt(Math.min(open, close));
+    const h = Math.max(1, bottom - top);
+    ctx.fillRect(x - bodyW / 2, top, bodyW, h);
+    if (li % labelEvery === 0) dateLabels.add(absIdx);
+  });
+  // 日期刻度
+  ctx.textAlign = 'center';
+  dateLabels.forEach((absIdx) => {
+    if (absIdx < btReplay.startIdx || absIdx >= endIdx) return;
+    ctx.fillText(bars[absIdx].trading_day.slice(5), xAt(absIdx), height - 8);
+  });
+  // 买卖点标记:买▲在 K 上方、卖▼在 K 下方,附价格×股数
+  const dayIndex = {};
+  bars.forEach((b, idx) => { dayIndex[b.trading_day] = idx; });
+  ctx.textAlign = 'left';
+  btReplay.markers.forEach((m) => {
+    const absIdx = dayIndex[m.day];
+    if (absIdx == null || absIdx < btReplay.startIdx || absIdx >= endIdx) return;
+    const x = xAt(absIdx);
+    const bar = bars[absIdx];
+    if (m.side === 'buy') {
+      const y = yAt(Number(bar.high)) - 2;
+      ctx.fillStyle = '#c0392b';
+      ctx.beginPath();
+      ctx.moveTo(x, y - 8); ctx.lineTo(x - 6, y + 2); ctx.lineTo(x + 6, y + 2);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#8c2f22';
+      ctx.fillText('B ' + (m.price == null ? '' : m.price.toFixed(2)) + (m.shares ? '×' + fmtShares(m.shares) : ''), x + 8, y - 1);
+    } else {
+      const y = yAt(Number(bar.low)) + 2;
+      ctx.fillStyle = '#1e8449';
+      ctx.beginPath();
+      ctx.moveTo(x, y + 8); ctx.lineTo(x - 6, y - 2); ctx.lineTo(x + 6, y - 2);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#1a5c33';
+      ctx.fillText('S ' + (m.price == null ? '' : m.price.toFixed(2)) + (m.shares ? '×' + fmtShares(m.shares) : ''), x + 8, y + 10);
+    }
+  });
+}
+
+/** @returns {Promise<void>} 取消当前回测任务 */
+async function cancelBtRun() {
+  if (!btRunId) return;
+  try {
+    await api('POST', '/api/research/backtests/' + btRunId + '/cancel', {});
+    setBtProgress('已请求取消任务…', null);
+  } catch (error) {
+    toast('取消失败：' + (error && error.message ? error.message : String(error)), 'err');
+  }
+}
+
 function bindEvents() {
   initializePanelToggles();
   initializeStockDetail();
-  $('#run-backtest').addEventListener('click', submitBacktest);
   $('#run-screen').addEventListener('click', runScreen);
   $('#shutdown-server').addEventListener('click', shutdownServer);
   const gateShutdown = $('#gate-shutdown');
@@ -2290,6 +3460,181 @@ function bindEvents() {
   if (enterBtn) enterBtn.addEventListener('click', () => setView('workbench'));
   const openDataBtn = $('#open-data-ui');
   if (openDataBtn) openDataBtn.addEventListener('click', () => setView('gate'));
+  const backtestOpenBtn = $('#backtest-open');
+  if (backtestOpenBtn) backtestOpenBtn.addEventListener('click', () => setView('backtest'));
+  const btBackWorkbench = $('#bt-back-workbench');
+  if (btBackWorkbench) btBackWorkbench.addEventListener('click', () => setView('workbench'));
+  const btOpenData = $('#bt-open-data');
+  if (btOpenData) btOpenData.addEventListener('click', () => setView('gate'));
+  const btHistoryList = $('#bt-history-list');
+  if (btHistoryList) {
+    btHistoryList.addEventListener('click', (event) => {
+      const row = event.target.closest('[data-run]');
+      if (row) openBacktestRun(row.dataset.run);
+    });
+  }
+  const btHistoryRefresh = $('#bt-history-refresh');
+  if (btHistoryRefresh) btHistoryRefresh.addEventListener('click', () => loadBacktestHistory());
+  const btFeeReset = $('#bt-fee-reset');
+  if (btFeeReset) btFeeReset.addEventListener('click', setBtFeeDefaults);
+  const btWindowPreset = $('#bt-window-preset');
+  if (btWindowPreset) btWindowPreset.addEventListener('change', () => {
+    const custom = $('#bt-window-custom');
+    if (custom) custom.hidden = btWindowPreset.value !== 'custom';
+  });
+  document.querySelectorAll('[data-bt-mode]').forEach((segment) => {
+    segment.addEventListener('click', () => setBtMode(segment.dataset.btMode));
+  });
+
+  const btStrategySelect = $('#bt-strategy-select');
+  if (btStrategySelect) {
+    btStrategySelect.addEventListener('change', (event) => {
+      if (event.target.value) loadBtStrategy(event.target.value);
+    });
+  }
+  const btNewStrategy = $('#bt-strategy-new');
+  if (btNewStrategy) btNewStrategy.addEventListener('click', () => {
+    btCurrentStrategy = null;
+    const nameInput = $('#bt-strategy-name');
+    const description = $('#bt-strategy-description');
+    if (nameInput) nameInput.value = '';
+    if (description) description.value = '';
+    btUseDefaultEditor();
+  });
+  const btSaveBtn = $('#bt-strategy-save');
+  if (btSaveBtn) btSaveBtn.addEventListener('click', () => btSaveStrategy(false));
+  const btSaveAsBtn = $('#bt-strategy-saveas');
+  if (btSaveAsBtn) btSaveAsBtn.addEventListener('click', () => btSaveStrategy(true));
+  const btValidateBtn = $('#bt-strategy-validate');
+  if (btValidateBtn) {
+    btValidateBtn.addEventListener('click', async () => {
+      try {
+        await btValidateLocal();
+        toast('校验通过：政策组合与止盈档合法。', 'ok');
+      } catch (error) {
+        toast('校验失败：' + (error && error.message ? error.message : String(error)), 'err');
+      }
+    });
+  }
+  const btDeleteBtn = $('#bt-strategy-delete');
+  if (btDeleteBtn) btDeleteBtn.addEventListener('click', btDeleteStrategy);
+  const btEntryAdd = $('#bt-entry-add');
+  if (btEntryAdd) {
+    btEntryAdd.addEventListener('click', () => {
+      if (btEditor.entry.length >= 5) { toast('入场组最多 5 个政策。', 'warn'); return; }
+      const policyId = btFirstPolicyId('entry');
+      if (policyId) { btEditor.entry.push({ policy_id: policyId, parameters: {} }); }
+      renderBtEditor();
+      markBtDirty(true);
+    });
+  }
+  const btExitAdd = $('#bt-exit-add');
+  if (btExitAdd) {
+    btExitAdd.addEventListener('click', () => {
+      if (btEditor.exit.length >= 5) { toast('退出组最多 5 个政策。', 'warn'); return; }
+      const policyId = btFirstPolicyId('exit');
+      if (policyId) { btEditor.exit.push({ policy_id: policyId, parameters: {} }); }
+      renderBtEditor();
+      markBtDirty(true);
+    });
+  }
+  const btTpAdd = $('#bt-tp-add');
+  if (btTpAdd) {
+    btTpAdd.addEventListener('click', () => {
+      if (btEditor.tiers.length >= 5) { toast('止盈档最多 5 个。', 'warn'); return; }
+      btEditor.tiers.push({});
+      renderBtEditor();
+      markBtDirty(true);
+    });
+  }
+  document.querySelectorAll('[data-bt-op-kind]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.btOpKind;
+      btEditor[kind + 'Operator'] = button.dataset.btOpValue;
+      renderBtOperatorButtons();
+      markBtDirty(true);
+    });
+  });
+  const btEditorRoot = $('#bt-strategy-content');
+  if (btEditorRoot) {
+    btEditorRoot.addEventListener('click', (event) => {
+      const remove = event.target.closest('[data-bt-remove]');
+      if (remove) {
+        const [kind, index] = remove.dataset.btRemove.split(':');
+        btEditor[kind].splice(Number(index), 1);
+        renderBtEditor();
+        markBtDirty(true);
+        return;
+      }
+      const tierRemove = event.target.closest('[data-bt-remove-tier]');
+      if (tierRemove) {
+        btEditor.tiers.splice(Number(tierRemove.dataset.btRemoveTier), 1);
+        renderBtEditor();
+        markBtDirty(true);
+        return;
+      }
+      const singleSelect = event.target.closest('select[data-single-kind]');
+      if (singleSelect) {
+        const kind = singleSelect.dataset.singleKind;
+        btEditor.singles[kind] = { policy_id: singleSelect.value, parameters: {} };
+        renderBtSingleParams(kind);
+        refreshBtSingleDesc(kind);
+        markBtDirty(true);
+        return;
+      }
+      const groupSelect = event.target.closest('[data-kind]');
+      if (groupSelect) {
+        const kind = groupSelect.dataset.kind;
+        const index = Number(groupSelect.dataset.index);
+        btEditor[kind][index] = { policy_id: groupSelect.value, parameters: {} };
+        renderBtPolicyParams(kind, index);
+        refreshBtPolicyDesc(kind, index);
+        markBtDirty(true);
+        return;
+      }
+    });
+    btEditorRoot.addEventListener('input', (event) => {
+      const tierInput = event.target.closest('[data-tier-index]');
+      if (tierInput) {
+        const index = Number(tierInput.dataset.tierIndex);
+        const field = tierInput.dataset.tierField;
+        // 小数比例口径:输入/显示/保存均为同一单位(如 0.02=2%),不做换算。
+        btEditor.tiers[index][field] = tierInput.value;
+        markBtDirty(true);
+        return;
+      }
+      const groupInput = event.target.closest('[data-policy-index]');
+      if (groupInput) { markBtDirty(true); return; }
+      const singleInput = event.target.closest('[data-single-kind]');
+      if (singleInput) { markBtDirty(true); }
+    });
+  }
+  const btRunBtn = $('#bt-run');
+  if (btRunBtn) btRunBtn.addEventListener('click', runNewBacktest);
+  const btCancelBtn = $('#bt-cancel');
+  if (btCancelBtn) btCancelBtn.addEventListener('click', cancelBtRun);
+  const btOrdersBox = $('#bt-orders');
+  if (btOrdersBox) {
+    btOrdersBox.addEventListener('click', (event) => {
+      const row = event.target.closest('[data-run][data-code]');
+      if (row && row.dataset.code) openBtReplay(row.dataset.code, row.dataset.run);
+    });
+  }
+  const btOrdersMore = $('#bt-orders-more-btn');
+  if (btOrdersMore) {
+    btOrdersMore.addEventListener('click', () => {
+      if (!btActiveRun) return;
+      btOrdersOffset += BT_ORDERS_PAGE;
+      loadBtOrders(btActiveRun, false);
+    });
+  }
+  const btReplayClose = $('#bt-replay-close');
+  if (btReplayClose) btReplayClose.addEventListener('click', closeBtReplay);
+  document.querySelectorAll('#bt-replay-overlay [data-kline-action]').forEach((button) => {
+    button.addEventListener('click', () => btReplayAction(button.dataset.klineAction));
+  });
+  const btCodesInput = $('#bt-codes');
+  if (btCodesInput) btCodesInput.addEventListener('input', updateBtSingleCodeState);
   const capmSyncButton = $('#capm-reference-sync');
   if (capmSyncButton) capmSyncButton.addEventListener('click', syncCapmReferenceData);
   $('#reload-template').addEventListener('click', () => {
