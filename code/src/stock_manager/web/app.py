@@ -278,7 +278,7 @@ class WebApp:
             research_match = self._research_run_id_from_path(path)
             if research_match is not None:
                 run_id, suffix = research_match
-                return self._handle_research_get(run_id, suffix)
+                return self._handle_research_get(run_id, suffix, query)
             if path == "/api/bars":
                 return self._handle_bars(query)
             match = self._template_id_from_path(path)
@@ -608,14 +608,20 @@ class WebApp:
             return None
         return Decimal(str(value))
 
-    def _handle_research_get(self, run_id: str, suffix: str | None) -> Response:
+    def _handle_research_get(
+        self, run_id: str, suffix: str | None, query: Mapping[str, list[str]]
+    ) -> Response:
         if self._research is None:
             return self._error(NotFoundError("research service unavailable"))
         if suffix == "equity":
-            points = self._research.equity(run_id)
+            offset = self._query_integer(query, "offset", default=0, minimum=0, maximum=100000)
+            limit = self._query_integer(query, "limit", default=500, minimum=1, maximum=5000)
+            points = self._research.equity(run_id, offset=offset, limit=limit)
             return self._json(200, {"run_id": run_id, "points": points, "count": len(points)})
         if suffix == "orders":
-            orders = self._research.orders(run_id)
+            offset = self._query_integer(query, "offset", default=0, minimum=0, maximum=100000)
+            limit = self._query_integer(query, "limit", default=100, minimum=1, maximum=5000)
+            orders = self._research.orders(run_id, offset=offset, limit=limit)
             return self._json(200, {"run_id": run_id, "orders": orders, "count": len(orders)})
         if suffix == "provenance":
             result = self._research.result(run_id)
