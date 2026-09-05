@@ -1,11 +1,24 @@
 ---
-date: 2026-09-02
+date: 2026-09-04
 purpose: 记录 StockManager P3 本地 Web 工作台的离线验收结果与浏览器交互验收记录。
 project: StockManager
 status: accepted
 ---
 
 # P3 本地 Web 工作台验收记录
+
+## 启动非阻塞化：取消「检查本地数据」加载关卡（2026-09-04）
+
+- 背景与根因：加载卡片第 3 步阻塞等待 `GET /api/sync/status`；在真实库（`code/data/market.sqlite3`，约 2.1 GB、日线千万行）上实测该请求纯 SQL 约 7.3 秒（多次全表索引扫描：无 `(adjustment, trading_day)` 可用索引、单请求重复扫描 20+ 次），成为启动瓶颈。
+- 已确认取舍：**不改后端、不加索引、不改 Schema**（避免影响用户已部署数据库）；采用纯前端方案把检查移出启动关键路径。
+- 实现（仅前端三件，`code/src/stock_manager/web/static/`）：
+  - `index.html`：移除 `#startup-view` 加载卡片；`#gate-view`（数据初始化与同步页）默认可见并带“数据状态：正在检查本地数据…”占位文案。
+  - `app.js`：`init()` 不再等待 `/api/sync/status`；`state.uiView` 缺省 `gate`，首屏即数据页，不再按就绪度自动跳转工作台；新增 `prepareWorkspaceResources()`（后台预取规则/模板/研究策略，失败允许重试）、`markServerOk()/markServerPartial()`（顶栏徽标）；进入筛选工作台前先等待资源就绪。
+  - `styles.css`：移除 `.startup*` 样式。
+- Python 回归：在 `code/` 执行 `.venv/bin/python -m pytest -q`，**724 passed, 11 warnings in 11.90s**。警告为既有模拟 Provider 场景；测试使用本地 fixtures，不访问上游数据源。
+- 前端行为：`node --test code/tests/frontend/startup.test.cjs code/tests/frontend/stock-detail.test.cjs`，**20 passed**（startup 6 项 + stock-detail 14 项），只使用 Node 内置测试工具。`startup.test.cjs` 已按新契约重写并覆盖：首屏即数据页且无加载遮罩、状态慢不阻塞首屏、READY 不自动跳转、状态/资源失败不清空界面且无整页重试、资源失败后可重试再进入工作台。
+- 说明：数据页色块与覆盖信息仍在首次请求 `/api/sync/status` 的耗时（后台异步填充，界面可先交互）；后端单次聚合与缓存优化未纳入本次范围（决策待定）。
+- 人工浏览器走查未执行（需本地启动验证）；使用手册 `usage/README.md` 已同步新的页面加载与首屏说明。
 
 ## Windows CI 进程列表测试修复（2026-09-02）
 
