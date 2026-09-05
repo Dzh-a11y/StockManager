@@ -327,6 +327,29 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 本次仅合并与验证，不启动 Web/数据同步服务，不执行真实行情数据库迁移或重新拉取数据；未执行浏览器人工验收、实网同步或 Windows 实机验收。
 - README 与 Vault 使用手册同步更新主分支版本及合并状态；原有未跟踪的架构图产物不纳入本次提交。本地合并不代表已推送远端或创建发布标签。
 
+## 14. 增量同步断点续传链（方案 A，1.17.0，2026-09-05，功能分支 feat/sync-resume-chain）
+
+需求与验收计划：[SYNC_RESUME_CHAIN_PLAN](../plan/SYNC_RESUME_CHAIN_PLAN.md)（active）。本记录为开发分支实现证据，**尚未合入本地 main，也未推送远端或打标签**；合入后如需可再按第 13 节补合并验收。
+
+### 14.1 目标与改动
+
+用户反馈增量同步网络掉线重开后“从 0 重拉”。根因核对（代码事实）：P5 pipeline 每个任务（20 只 × 区间）成功后批次是有持久化的（staging 行 + `ingest_batches` + 任务 SUCCESS 同事务），但 `plan_id/candidate_id/batch_id` 绑定目标窗口与 candidate；`startup_sync` 不检查在途未完成计划，重开时 `target_end` 前移即生成新计划，旧在途批次作废、整窗重拉。capm 数据集入口 `sync_capm_reference_data` 已有“先续在途计划、发布后再追平”的链式语义（含跨日测试），市场入口缺失该层。
+
+实现（纯编排层，不动 staging/committer/planner/verifier/`pipeline.execute` 语义与表结构）：
+
+- `DataSyncService.startup_sync`（pipeline 分支）改为链式：先 `_resume_pending_plan_for_startup` 续传“窗口冻结”的在途 BOOTSTRAP/INCREMENTAL 计划（`recover_interrupted` 后按状态 retry/execute，失败即停、保留 FAILED、显式重试），发布成功后再按当前 coverage 规划并执行尾差追平到最新已完成交易日。
+- 陈旧已覆盖计划跳过不续：在途计划 `target_end <= 当前 coverage_end` 判为已被更宽已发布数据取代；REPAIR/LEGACY_IMPORT 模式不进入自动续传链。
+- 已最新修复：published coverage 已达目标时返回可辨识的跳过结果（优先复用 SUCCEEDED/已发布 candidate 计划的 skip 语义，带 warning、零 Provider 调用），不再静默返回 `None`；`scripts/run_backfill_v2.py` 对 `None`/跳过结果判为 SUCCEEDED 并提示（原会把“已最新”误报为失败）。
+- 已确认决策（2026-09-05 用户确认）：只改 market `startup_sync` pipeline 入口；链上失败即停；陈旧计划跳过；已最新误报顺手修复；capm 与 legacy v2 fallback 路径不动。
+
+### 14.2 证据
+
+- 代码：`code/src/stock_manager/sync/data_sync_service.py`（`startup_sync` 及新增 `_resume_pending_plan_for_startup` / `_already_latest_result`）；`code/scripts/run_backfill_v2.py`（None/跳过判成功）。
+- 测试：新增 `code/tests/test_sync_resume_chain.py`（6 项，全离线 fixture）：跨日续传+追平且零重拉（SUCCESS 批次不重拉、仅掉线批与新增日拉取，fetch 调用集精确断言）、陈旧已覆盖 FAILED 计划跳过不续、已最新重入零 Provider 调用并返回跳过结果、显式重试与冷却（`RetryRequiredError`/`RetryCooldownError`，冷却后恢复）、REPAIR 计划不被自动续、首启 BOOTSTRAP 中断后先续旧窗再 INCREMENTAL 追平。
+- 回归：功能分支全量离线 `.venv/bin/python -m pytest -q`：**730 passed**（无回归）。前端 JS 未改动。
+- 版本：1.16.0 → 1.17.0（MINOR，同步恢复能力增强，向后兼容），已同步 `pyproject.toml`、`src/stock_manager/__init__.py`、`tests/test_package_structure.py`。
+- 待办（未做，不阻塞本期）：真实 Baostock 网络验证由用户本机执行并补记；watchdog 重启与冷却对齐、Web 冷却倒计时文案（计划 §3 明确不做）；方案 C（跨 plan 批次签名复用）待单独决策。
+
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考，不构成任何投资建议。项目禁止实现自动交易功能。
