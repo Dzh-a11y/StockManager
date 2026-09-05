@@ -1,5 +1,5 @@
 ---
-date: 2026-09-02
+date: 2026-09-05
 purpose: 记录 P5 DataSync 重构（P5-RD-0..10）的实现结果、组件接口、测试与验收证据，作为实现手册与验收记录。
 project: StockManager
 status: active
@@ -349,6 +349,41 @@ Web `/api/sync/status` 新增 `p5_plans`（plan/task_counts/candidate_status）�
 - 回归：功能分支全量离线 `.venv/bin/python -m pytest -q`：**730 passed**（无回归）。前端 JS 未改动。
 - 版本：1.16.0 → 1.17.0（MINOR，同步恢复能力增强，向后兼容），已同步 `pyproject.toml`、`src/stock_manager/__init__.py`、`tests/test_package_structure.py`。
 - 待办（未做，不阻塞本期）：真实 Baostock 网络验证由用户本机执行并补记；watchdog 重启与冷却对齐、Web 冷却倒计时文案（计划 §3 明确不做）；方案 C（跨 plan 批次签名复用）待单独决策。
+
+## 15. 2026-09-05 coverage_ratio 域校验放宽与真实库手动发布（修复）
+
+### 15.1 事故根因
+
+market INCREMENTAL 计划 `plan-2023af33f6d93396`（窗口 2026-09-02..2026-09-04，523 个任务全部 SUCCESS、staging 完整）在发布前的**验证阶段**抛出未分类的 `ValueError: coverage_ratio must be within [0, 1]`：
+
+- 比对对象：staged 2026-09-04 股票快照 **5,215 只**（含新上市扩容 1 只）vs 已发布池（`stocks` 最新 as_of=09-01）**5,214 只** → `coverage_ratio = 5215/5214 ≈ 1.0002 > 1`，被 `domain.CoverageVerification.__post_init__` 的 `[0, 1]` 域校验拒绝。
+- 异常路径缺陷：该 `ValueError` 不是 `VerificationError`，未被 `_verify_candidate` 归类；`pipeline.execute` 兜底只把 **plan 置 FAILED**，且只在 candidate 为 PLANNED/WRITING 时置 FAILED——当时 candidate 已是 **VERIFYING**，于是永久停在 VERIFYING、`coverage_verifications` 零证据。
+- 后果：`pipeline.retry()` 只认 NEEDS_REPAIR / VERIFICATION_FAILED / FAILED，四者皆非 → `nothing to retry`，每次启动 0 分钟放弃，market active generation 停留在 09-02（数据只到 09-01）。同日 CAPM 计划正常发布（走 `CapmVerifier`，股票池基准为 0），不受影响。
+
+### 15.2 修复（代码）
+
+`code/src/stock_manager/domain.py` `CoverageVerification.__post_init__`：coverage_ratio 合法区间由 `[0, 1]` 放宽为 **`[0, 2)`**（下界保持 0，保留低覆盖 → INCOMPLETE → NEEDS_REPAIR 修复闭环；上界 2.00 兜住股票池扩容等 staged > published 的合法场景，≥ 2.00 仍拒绝）。
+
+### 15.3 测试
+
+- `tests/test_p5_rd1_contracts.py`：契约拆分补充——ratio>1（1.5、1.0002）接受、ratio=2 拒绝、ratio>2（2.1）拒绝、负 ratio 拒绝。
+- `tests/test_p5_rd5_verifier.py`：新增 `test_stocks_snapshot_larger_than_pool_complete`——staged 5 只 > 池 4 只时验证返回 COMPLETE 且 `coverage_ratio == 1.25`，不再抛 ValueError。
+- 全量离线 `.venv/bin/python -m pytest -q`：**734 passed**，无回归。
+
+### 15.4 真实库手动发布（2026-09-05）
+
+已下载数据未丢失：15,642 bar 行 + 5,215 股票行 + 5,214 基本面行全部在 staging/`ingest_batches`（任务全 SUCCESS）。恢复走项目自身显式重试语义、零网络请求：
+
+1. 先在线备份：`data/market.manual-recovery-20260905_201923.sqlite3`（同尺寸，`integrity_check=ok`）。
+2. candidate `cand-2023af33f6d93396-20260905130947085941`：VERIFYING → **VERIFICATION_FAILED**（合法迁移，语义=验证崩溃未留证据）。
+3. CLI `sync-retry`：rerun_verification 分支重跑验证（复用已下载 staging）→ 通过 → 原子发布 → plan SUCCEEDED。
+4. 验收：`active_generations` market/qfq → `cand-2023af33f6d93396-20260905130947085941`（激活 20:22:54）；父代 `cand-28d8c00caaaf17b2-20260902005054614289` → SUPERSEDED；`daily_bars` 覆盖至 **2026-09-04**（5,214 只）、`stocks` 快照 as_of 09-04（5,215 只）；523 条验证证据落库；staging 发布后清空。
+
+### 15.5 版本与提交
+
+- 版本：1.17.0 → **1.17.1**（PATCH，数据校验口径修复，向后兼容），已同步 `pyproject.toml`、`src/stock_manager/__init__.py`、`tests/test_package_structure.py`。
+- Git 提交遵循 Conventional Commits（`fix:`），聚焦本次数据校验修复与真实库手动恢复。
+- 未推送远端、未打标签。
 
 ## 免责声明
 

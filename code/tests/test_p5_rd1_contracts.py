@@ -236,9 +236,24 @@ class TestCoverageVerificationContract:
     def test_valid_verification(self) -> None:
         assert _verification().coverage_ratio == Decimal("1")
 
-    def test_ratio_out_of_range_rejected(self) -> None:
+    def test_ratio_above_one_accepted(self) -> None:
+        # Staged universe can legitimately outgrow the published pool (e.g. a
+        # new listing between the published snapshot day and the target day),
+        # so coverage ratios above 1 are valid up to the 2.0 upper bound.
+        assert _verification(coverage_ratio=Decimal("1.5")).coverage_ratio == Decimal("1.5")
+        assert _verification(coverage_ratio=Decimal("1.0002")).coverage_ratio == Decimal("1.0002")
+
+    def test_ratio_at_two_rejected(self) -> None:
         with pytest.raises(ValueError):
-            _verification(coverage_ratio=Decimal("1.5"))
+            _verification(coverage_ratio=Decimal("2"))
+
+    def test_ratio_above_two_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _verification(coverage_ratio=Decimal("2.1"))
+
+    def test_negative_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            _verification(coverage_ratio=Decimal("-0.01"))
 
     def test_negative_counts_rejected(self) -> None:
         with pytest.raises(ValueError):
