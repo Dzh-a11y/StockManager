@@ -148,9 +148,20 @@ def _run_with_lock(
                 retry_failed=True,
             )
             elapsed_minutes = (time.monotonic() - started) / 60
+            if run is None:
+                # 数据已是最新:startup_sync 返回 None(无可用计划),跳过拉取视为成功。
+                print(
+                    "数据已是最新,跳过拉取(零 Provider 请求)",
+                    flush=True,
+                )
+                print(f"耗时 {elapsed_minutes:.1f} 分钟", flush=True)
+                repository.set_sync_runner(args.dataset, "SUCCEEDED", os.getpid(),
+                    datetime.now(SHANGHAI), "数据已是最新,跳过拉取")
+                return 0
             plan_status = getattr(run, "plan_status", None)
             published = getattr(run, "published", False)
             warning = getattr(run, "warning", None)
+            successful = published or getattr(plan_status, "value", None) == "SUCCEEDED"
             print(
                 f"回补结果: plan_status={plan_status} published={published}"
                 f"{' warning=' + warning if warning else ''}",
@@ -159,13 +170,14 @@ def _run_with_lock(
             print(f"耗时 {elapsed_minutes:.1f} 分钟", flush=True)
             if published:
                 print("generation 已原子发布,ReadinessGate 将返回 READY", flush=True)
+            elif successful:
+                print("无待同步缺口,本次跳过拉取。", flush=True)
             else:
                 print(
                     "数据已入库但 generation 未发布(验证未全通过);"
                     "可用 sync-status / sync-verify 查看原因",
                     flush=True,
                 )
-            successful = published or getattr(plan_status, "value", None) == "SUCCEEDED"
             repository.set_sync_runner(args.dataset, "SUCCEEDED" if successful else "FAILED",
                 os.getpid(), datetime.now(SHANGHAI), str(warning or (
                     "验证并发布完成" if successful else f"完整性校验未通过: {getattr(run, 'report_issues', 0)} 个问题")))
