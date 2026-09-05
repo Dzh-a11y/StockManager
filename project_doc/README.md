@@ -50,6 +50,7 @@ project_doc/
 阶段开发计划与迁移/清理计划：
 
 - [PB_DOCANDMAINTANENCE.md](development/plan/PB_DOCANDMAINTANENCE.md)（active）：当前项目文档与维护计划，包含文档修订管理、模块打磨、UI 小修及相关交付与验收建议。
+- [SYNC_RESUME_CHAIN_PLAN.md](development/plan/SYNC_RESUME_CHAIN_PLAN.md)（active，2026-09-05）：市场数据 P5 pipeline 增量/回补同步“在途窗口冻结 + 缺口追平”链式断点续传（方案 A）的需求、改动、边界与验收标准。
 
 - `PHASE_1_PLAN.md` ~ `PHASE_5_PLAN.md`：P1 至 P5 阶段计划与历史设计记录；当前维护方向见上文。
 - `P5A_PLAN.md`：P5A 历史筛选与 Backtrader 一体化回测方案（含阶段状态与验收记录）。
