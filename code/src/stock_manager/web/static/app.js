@@ -24,7 +24,7 @@ const state = {
   capmOptionsLoading: false,
   capmOptionsError: '',
   capmSettings: { benchmark_id: null, rate_term: null, periods_per_year: 252 },
-  uiView: 'auto',   // 'auto' | 'gate' | 'workbench' — 手动停留的数据页/工作台视图
+  uiView: 'gate',   // 'gate' | 'workbench' | 'backtest' — 当前停留的数据/工作台/回测视图(首屏=数据页)
 };
 
 let _klineBars = null;      // last full dataset drawn (for hover / zoom / resize)
@@ -1914,8 +1914,18 @@ function renderDbVersions(s, canEnter) {
 async function loadSyncStatus() {
   try {
     renderSyncStatus(await api('GET', '/api/sync/status'));
+    markServerOk();
   } catch (err) {
-    toast('数据状态更新失败：' + err.message, 'error');
+    // 失败不阻塞界面:数据页保持可用,标题给出可读的状态与重试提示。
+    const message = err && err.message ? err.message : String(err);
+    const title = $('#gate-title');
+    if (title && title.textContent === '数据状态：正在检查本地数据…') {
+      title.textContent = '数据状态获取失败';
+      const readiness = $('#gate-readiness');
+      if (readiness) readiness.textContent = '检查本地数据失败：' + message + '；其余功能不受影响，可重新进入「数据同步」页或刷新页面重试。';
+    }
+    markServerPartial();
+    toast('数据状态更新失败：' + message, 'error');
   }
 }
 
@@ -1994,7 +2004,8 @@ function renderSyncStatus(s) {
     $('#sync-status-years-legend').hidden = false;
   }
 
-  // 门禁页/工作台/回测系统三视图切换:显式视图互斥;'auto'(首次启动)按就绪态路由。
+  // 门禁(数据/同步)页/工作台/回测系统三视图切换:显式视图互斥。
+  // 首屏固定为数据页(gate),不再按就绪度自动跳转工作台。
   const gate = $('#gate-view');
   const workbench = $('#workbench-view');
   const backtest = $('#backtest-view');
@@ -2022,9 +2033,9 @@ function renderSyncStatus(s) {
     if (workbench) workbench.hidden = true;
     if (backtest) backtest.hidden = false;
   } else if (gate && workbench) {
-    // auto:首次启动/刷新后尚未手动选视图,按数据就绪度决定入口
-    gate.hidden = ready;
-    workbench.hidden = !ready;
+    // 兜底:异常/未定义 uiView 时也停靠数据页(不自动按就绪度跳转)。
+    gate.hidden = false;
+    workbench.hidden = true;
     if (backtest) backtest.hidden = true;
   }
   const btHint = $('#bt-top-hint');
@@ -3457,7 +3468,14 @@ function bindEvents() {
   const sourceSel = $('#bootstrap-source');
   if (sourceSel) sourceSel.addEventListener('change', toggleSeedField);
   const enterBtn = $('#gate-enter');
-  if (enterBtn) enterBtn.addEventListener('click', () => setView('workbench'));
+  if (enterBtn) {
+    // 进入筛选工作台前确保规则/模板已就绪(启动时已在后台预取;失败可点选重试)。
+    enterBtn.addEventListener('click', async () => {
+      await prepareWorkspaceResources();
+      if (_workspaceResourcesReady) setView('workbench');
+      else toast('筛选工作台资源尚未就绪，请稍后重试。', 'err');
+    });
+  }
   const openDataBtn = $('#open-data-ui');
   if (openDataBtn) openDataBtn.addEventListener('click', () => setView('gate'));
   const backtestOpenBtn = $('#backtest-open');
@@ -3702,132 +3720,72 @@ function bindEvents() {
 
 /* ---------- init ---------- */
 /**
- * Real completed tasks, independent of elapsed time. The first error is terminal;
- * manual retry reloads the document, so old requests cannot affect a new attempt.
- * @returns {{run: <T>(index: number, task: () => Promise<T>) => Promise<T>, finish: () => void, fail: (label: string, error: unknown) => void}}
+ * 启动不再阻塞在「检查本地数据」:首屏固定进入数据/同步页(gate),
+ * 规则/模板与数据状态全部在后台异步获取。任一后台任务失败只提示、
+ * 不清空界面;数据就绪后由用户在数据页点选数据库进入筛选工作台。
  */
-function createStartupProgress() {
-  const labels = ['加载规则', '读取模板', '加载策略', '检查本地数据', '准备工作台'];
-  const steps = labels.map(() => 'waiting');
-  const names = { waiting: '等待中', running: '进行中', done: '已完成', error: '失败', stopped: '未完成' };
-  const started = performance.now();
-  let terminal = false;
 
-  /** @returns {void} */
-  function render() {
-    const done = steps.filter((s) => s === 'done').length;
-    $('#startup-progress').value = done;
-    $('#startup-count').textContent = '已完成 ' + done + '/' + labels.length + ' 项';
-    labels.forEach((label, i) => {
-      const item = $('#startup-step-' + i);
-      item.dataset.status = steps[i];
-      item.textContent = label + ' · ' + names[steps[i]];
-    });
-    const active = labels.filter((_, i) => steps[i] === 'running');
-    $('#startup-message').textContent = active.length ? '正在' + active.join('、') + '…' : '正在准备下一步…';
-    tick();
+let _workspaceResourcesReady = false;  // 规则/模板/研究策略是否已就绪
+let _workspaceLoadPromise = null;      // 正在进行的预取任务(去重)
+
+/** 任一后台任务成功且徽标仍为“连接中…”时,把徽标转为“服务正常”。 */
+function markServerOk() {
+  const badge = $('#server-status');
+  if (badge && badge.textContent === '连接中…') {
+    badge.className = 'badge badge--ok';
+    badge.textContent = '服务正常';
   }
+}
 
-  /** @returns {void} */
-  function tick() {
-    if (terminal) return;
-    const seconds = Math.floor((performance.now() - started) / 1000);
-    $('#startup-elapsed').textContent = '已等待 ' + seconds + ' 秒';
-    const hint = $('#startup-hint');
-    hint.hidden = seconds < 10;
-    hint.textContent = steps[3] === 'running'
-      ? '检查本地数据耗时较长，仍在处理中，请稍候。'
-      : '加载比平时稍慢，仍在处理中，请稍候。';
-    if (seconds >= 60) {
-      hint.textContent += ' 你可以继续等待，或点击“重新加载”重试。';
-      $('#startup-retry').hidden = false;
-    }
+/** 后台任务失败且徽标仍为“连接中…”时,把徽标置为“部分加载失败”。 */
+function markServerPartial() {
+  const badge = $('#server-status');
+  if (badge && badge.textContent === '连接中…') {
+    badge.className = 'badge badge--err';
+    badge.textContent = '部分加载失败';
   }
+}
 
-  const timer = setInterval(tick, 1000);
-  $('#startup-retry').addEventListener('click', () => window.location.reload());
-  render();
-
-  /** @param {string} label @param {unknown} error @returns {void} */
-  function fail(label, error) {
-    if (terminal) return;
-    steps.forEach((status, i) => { if (status === 'running') steps[i] = 'stopped'; });
-    render();
-    terminal = true;
-    clearInterval(timer);
-    $('#startup-view').dataset.status = 'error';
-    $('#startup-view').setAttribute('aria-busy', 'false');
-    $('#startup-title').textContent = '工作台加载失败';
-    const reason = error instanceof Error ? error.message : String(error);
-    $('#startup-message').textContent = label + '失败：' + reason;
-    $('#startup-hint').hidden = false;
-    $('#startup-hint').textContent = '请确认本地服务正在运行，再点击“重新加载”重试。';
-    $('#startup-retry').hidden = false;
-    $('#gate-view').hidden = true;
-    $('#workbench-view').hidden = true;
-  }
-
-  /** @template T @param {number} index @param {() => Promise<T>} task @returns {Promise<T>} */
-  async function run(index, task) {
-    steps[index] = 'running';
-    render();
-    try {
-      const result = await task();
-      if (!terminal) { steps[index] = 'done'; render(); }
-      return result;
-    } catch (error) {
-      if (!terminal) {
-        steps[index] = 'error';
-        render();
-        fail(labels[index], error);
+/** @returns {Promise<void>} 规则/模板/研究策略预取并准备默认模板(失败允许下次重试)。 */
+function prepareWorkspaceResources() {
+  if (_workspaceResourcesReady) return Promise.resolve();
+  if (!_workspaceLoadPromise) {
+    _workspaceLoadPromise = (async () => {
+      try {
+        const [rulesData, templatesData] = await Promise.all([
+          api('GET', '/api/rules'),
+          api('GET', '/api/templates'),
+          loadResearchPolicies(),
+        ]);
+        state.rules = rulesData.rules;
+        state.templates = templatesData.templates;
+        const preferred = state.templates.find((t) => t.is_system) || state.templates[0];
+        if (preferred) await loadTemplate(preferred.template_id, { propagateError: true });
+        else { renderTemplateSelect(); toast('未发现任何模板。', 'warn'); }
+        _workspaceResourcesReady = true;
+        markServerOk();
+      } catch (error) {
+        _workspaceLoadPromise = null; // 允许进入工作台时再次尝试
+        markServerPartial();
+        toast('工作台资源加载失败：' + (error && error.message ? error.message : String(error)), 'err');
       }
-      throw error;
-    }
+    })();
   }
-
-  /** @returns {void} */
-  function finish() {
-    if (terminal) return;
-    terminal = true;
-    clearInterval(timer);
-    $('#startup-view').setAttribute('aria-busy', 'false');
-    $('#startup-view').hidden = true;
-  }
-  return { run, finish, fail };
+  return _workspaceLoadPromise;
 }
 
 /** @returns {Promise<void>} */
 async function init() {
-  const progress = createStartupProgress();
-  try {
-    bindEvents();
-    const today = new Date();
-    /** @param {number} n @returns {string} */
-    const pad = (n) => String(n).padStart(2, '0');
-    $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
-    const [rulesData, templatesData, , syncStatus] = await Promise.all([
-      progress.run(0, () => api('GET', '/api/rules')),
-      progress.run(1, () => api('GET', '/api/templates')),
-      progress.run(2, loadResearchPolicies),
-      progress.run(3, () => api('GET', '/api/sync/status')),
-    ]);
-    await progress.run(4, async () => {
-      state.rules = rulesData.rules;
-      state.templates = templatesData.templates;
-      const preferred = state.templates.find((t) => t.is_system) || state.templates[0];
-      if (preferred) await loadTemplate(preferred.template_id, { propagateError: true });
-      else { renderTemplateSelect(); toast('未发现任何模板。', 'warn'); }
-      renderSyncStatus(syncStatus);
-    });
-    $('#server-status').className = 'badge badge--ok';
-    $('#server-status').textContent = '服务正常';
-    progress.finish();
-  } catch (err) {
-    progress.fail('准备工作台', err);
-    $('#server-status').className = 'badge badge--err';
-    $('#server-status').textContent = '加载失败';
-    return;
-  }
+  bindEvents();
+  const today = new Date();
+  /** @param {number} n @returns {string} */
+  const pad = (n) => String(n).padStart(2, '0');
+  $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
+  // 首屏固定为「数据/同步」视图;数据库状态等后台任务异步填充,不再阻塞进入界面。
+  state.uiView = 'gate';
+  applyView();
+  loadSyncStatus();
+  prepareWorkspaceResources();
   startSyncPolling();
   loadInstances();
   loadVersion();
