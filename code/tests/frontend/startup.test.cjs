@@ -1,4 +1,7 @@
 // Offline browser orchestration tests, using only Node's built-in test runner.
+//
+// 启动不再阻塞在「检查本地数据」:首屏固定进入数据/同步页(gate),
+// 规则/模板/研究策略与数据状态全部在后台异步获取,失败只提示、不清空界面。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,6 +30,10 @@ function browser(responses = {}) {
       addEventListener(name, listener) { this.listeners[name] = listener; },
     });
   }
+  // 反映 HTML 中的初始文案(测试断言依赖)。
+  nodes.get('#gate-title').textContent = '数据状态：正在检查本地数据…';
+  nodes.get('#server-status').textContent = '连接中…';
+
   const intervals = new Map();
   const calls = [];
   let now = 0, reloads = 0, sequence = 0;
@@ -55,10 +62,7 @@ function browser(responses = {}) {
     bindEvents = () => {};
     renderTemplateSelect = renderMeta = renderRules = renderGroups = syncComposeSegments = () => {};
     renderStrategyPolicies = () => {};
-    renderSyncStatus = (s) => {
-      $('#gate-view').hidden = s.readiness.status === 'READY';
-      $('#workbench-view').hidden = s.readiness.status !== 'READY';
-    };
+    renderSyncStatus = (s) => { __lastSyncStatus = s; };
     startSyncPolling = () => {};
     loadInstances = loadVersion = () => {};
     toast = () => {};
@@ -66,10 +70,14 @@ function browser(responses = {}) {
   return {
     context, nodes, calls, intervals,
     init: () => vm.runInContext('init()', context),
-    progress: () => vm.runInContext('createStartupProgress()', context),
-    tick(ms) { now = ms; for (const fn of intervals.values()) fn(); },
+    run: (expr) => vm.runInContext(expr, context),
     get reloads() { return reloads; },
   };
+}
+
+/** 排空微任务队列,让链式 async/await(含已 resolve 的请求)依次落定。 */
+async function drain(n = 40) {
+  for (let i = 0; i < n; i += 1) await Promise.resolve();
 }
 
 /** @returns {object} */
@@ -81,138 +89,115 @@ function fixtures() {
   };
 }
 
-test('loading card is visible before JavaScript, both application views are hidden', () => {
+test('首屏即数据/同步页:已移除加载遮罩,工作台与回测视图初始隐藏', () => {
   const b = browser();
-  assert.equal(b.nodes.get('#startup-view').hidden, false);
-  assert.equal(b.nodes.get('#gate-view').hidden, true);
+  assert.equal(b.nodes.has('#startup-view'), false);
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
   assert.equal(b.nodes.get('#workbench-view').hidden, true);
-  assert.match(html, /<progress[^>]+max="5"[^>]+value="0"/);
+  assert.equal(b.nodes.get('#backtest-view').hidden, true);
+  assert.match(html, /正在检查本地数据/);
+  assert.doesNotMatch(html, /id="startup-view"/);
 });
 
-test('out-of-order completions count real work; 10/60 second boundaries never retry automatically', async () => {
-  const b = browser();
-  const progress = b.progress();
-  const slow = deferred();
-  const waiting = progress.run(3, () => slow.promise);
-  await progress.run(1, async () => ({}));
-  await progress.run(0, async () => ({}));
-  assert.equal(b.nodes.get('#startup-progress').value, 2);
-  b.tick(9999);
-  assert.equal(b.nodes.get('#startup-hint').hidden, true);
-  b.tick(10000);
-  assert.match(b.nodes.get('#startup-hint').textContent, /检查本地数据/);
-  b.tick(59999);
-  assert.equal(b.nodes.get('#startup-retry').hidden, true);
-  b.tick(60000);
-  assert.equal(b.nodes.get('#startup-retry').hidden, false);
-  assert.match(b.nodes.get('#startup-elapsed').textContent, /60/);
+test('进入数据页后立即后台并行拉取规则/模板/策略/状态;状态慢不阻塞首屏,READY 也不自动跳转', async () => {
+  const data = fixtures();
+  const status = deferred();
+  data['/api/sync/status'] = status.promise;
+  const b = browser(data);
+  b.init();
+  await drain();
+  // 数据状态尚未返回时,界面已停在数据页,其余三个请求全部发出。
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
+  assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  assert.deepEqual(b.calls.map(([, method]) => method), ['GET', 'GET', 'GET', 'GET']);
+  assert.deepEqual(
+    b.calls.map(([url]) => url).sort(),
+    ['/api/research/policies', '/api/rules', '/api/sync/status', '/api/templates'],
+  );
+  // 状态返回 READY 也只是填充状态,不把用户从数据页拽走。
+  status.resolve({ readiness: { status: 'READY' }, active_generation: null, can_enter: false });
+  await drain();
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
+  assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  assert.equal(b.context.__lastSyncStatus.readiness.status, 'READY');
+  assert.equal(b.nodes.get('#server-status').textContent, '服务正常');
+});
+
+test('数据状态失败不阻塞界面:停留数据页,服务徽标置为部分失败,无整页重试', async () => {
+  const data = fixtures();
+  const status = deferred();
+  const rules = deferred(); // 保持未决:让状态失败先于资源成功落定,徽标结果确定。
+  data['/api/sync/status'] = status.promise;
+  data['/api/rules'] = rules.promise;
+  const b = browser(data);
+  b.init();
+  await drain();
+  status.reject(new Error('本地数据检查失败'));
+  await drain();
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
+  assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  assert.equal(b.nodes.get('#server-status').textContent, '部分加载失败');
+  assert.match(b.nodes.get('#gate-title').textContent, /数据状态获取失败/);
+  assert.match(b.nodes.get('#gate-readiness').textContent, /本地数据检查失败/);
   assert.equal(b.reloads, 0);
-  b.nodes.get('#startup-retry').listeners.click();
-  assert.equal(b.reloads, 1);
-  slow.resolve({});
-  await waiting;
-  assert.equal(b.nodes.get('#startup-progress').value, 3);
-  progress.finish();
-  assert.equal(b.intervals.size, 0);
 });
 
-test('failure is persistent, stops the clock, and late responses cannot replace it', async () => {
-  const b = browser();
-  const progress = b.progress();
-  const slow = deferred();
-  const waiting = progress.run(3, () => slow.promise);
-  await assert.rejects(progress.run(0, async () => { throw new Error('<服务离线>'); }), /服务离线/);
-  assert.match(b.nodes.get('#startup-message').textContent, /加载规则.*<服务离线>/);
-  const message = b.nodes.get('#startup-message').textContent;
-  assert.equal(b.nodes.get('#startup-retry').hidden, false);
-  assert.equal(b.intervals.size, 0);
-  assert.equal(b.nodes.get('#startup-step-3').dataset.status, 'stopped');
-  slow.resolve({});
-  await waiting;
-  b.tick(60000);
-  assert.equal(b.nodes.get('#startup-message').textContent, message);
-  assert.equal(b.nodes.get('#startup-progress').value, 0);
-  assert.equal(b.nodes.get('#startup-view').hidden, false);
-});
-
-for (const readiness of ['READY', 'INCOMPLETE']) {
-  test('empty template catalog completes and preserves data readiness: ' + readiness, async () => {
-    const data = fixtures();
-    data['/api/sync/status'].readiness.status = readiness;
-    const b = browser(data);
-    await b.init();
-    assert.equal(b.nodes.get('#startup-view').hidden, true);
-    assert.equal(b.nodes.get('#startup-progress').value, 5);
-    assert.equal(b.nodes.get('#gate-view').hidden, readiness === 'READY');
-    assert.equal(b.nodes.get('#workbench-view').hidden, readiness !== 'READY');
-    assert.equal(b.intervals.size, 0);
-    assert.equal(b.calls.length, 4);
-    assert.ok(b.calls.every(([, method]) => method === 'GET'));
-  });
-}
-
-test('local data check failure must not leave a blank main view or claim service success', async () => {
+test('规则/模板等工作台资源失败只提示,数据页仍可用', async () => {
   const data = fixtures();
-  const sync = deferred();
-  data['/api/sync/status'] = sync.promise;
+  const rules = deferred();
+  const status = deferred();
+  data['/api/rules'] = rules.promise;
+  data['/api/sync/status'] = status.promise;
   const b = browser(data);
-  const init = b.init();
-  sync.reject(new Error('本地数据检查失败'));
-  await init;
-  assert.equal(b.nodes.get('#startup-view').hidden, false);
-  assert.match(b.nodes.get('#startup-message').textContent, /检查本地数据.*本地数据检查失败/);
-  assert.equal(b.nodes.get('#server-status').textContent, '加载失败');
-  assert.equal(b.nodes.get('#startup-retry').hidden, false);
-  assert.equal(b.nodes.get('#gate-view').hidden, true);
+  b.init();
+  await drain();
+  // 先让资源失败、再让状态成功:徽标保持“部分加载失败”,界面不清空。
+  rules.reject(new Error('服务暂时不可用'));
+  await drain();
+  assert.equal(b.nodes.get('#server-status').textContent, '部分加载失败');
+  status.resolve({ readiness: { status: 'READY' }, active_generation: null, can_enter: false });
+  await drain();
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
   assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  assert.equal(b.nodes.get('#server-status').textContent, '部分加载失败');
+  assert.equal(b.reloads, 0);
 });
 
-test('default template detail remains a required step and reports a failure', async () => {
-  const data = fixtures();
-  data['/api/templates'].templates = [
-    { template_id: 'user' }, { template_id: 'system', is_system: true },
-  ];
-  const detail = deferred();
-  data['/api/templates/system'] = detail.promise;
-  const b = browser(data);
-  const init = b.init();
-  // Drain async request/JSON parsing without wall-clock sleeps.
-  for (let i = 0; i < 20; i += 1) await Promise.resolve();
-  assert.equal(b.nodes.get('#startup-progress').value, 4);
-  assert.equal(b.nodes.get('#startup-view').hidden, false);
-  assert.equal(b.nodes.get('#workbench-view').hidden, true);
-  detail.reject(new Error('模板已被删除'));
-  await init;
-  assert.match(b.nodes.get('#startup-message').textContent, /准备工作台.*模板已被删除/);
-  assert.equal(b.nodes.get('#startup-retry').hidden, false);
-});
-
-for (const [endpoint, label] of [
-  ['/api/rules', '加载规则'], ['/api/templates', '读取模板'], ['/api/research/policies', '加载策略'],
-]) {
-  test('required catalog errors remain visible: ' + endpoint, async () => {
-    const data = fixtures();
-    const request = deferred();
-    data[endpoint] = request.promise;
-    const b = browser(data);
-    const init = b.init();
-    request.reject(new Error('服务暂时不可用'));
-    await init;
-    assert.ok(b.nodes.get('#startup-message').textContent.includes(label + '失败'));
-    assert.equal(b.nodes.get('#startup-view').hidden, false);
-    assert.equal(b.nodes.get('#startup-retry').hidden, false);
-    assert.equal(b.intervals.size, 0);
-  });
-}
-
-test('rendering failure hides partially prepared workspace and never reaches 5/5', async () => {
+test('后台预取完成(徽标转正常)后可手动进入筛选工作台', async () => {
   const b = browser(fixtures());
-  vm.runInContext(`renderSyncStatus = () => {
-    $('#workbench-view').hidden = false;
-    throw new Error('页面准备失败');
-  };`, b.context);
-  await b.init();
-  assert.equal(b.nodes.get('#startup-progress').value, 4);
+  b.init();
+  await drain();
+  // 后台资源(规则/模板/策略)与状态都已成功落地。
+  assert.equal(b.nodes.get('#server-status').textContent, '服务正常');
   assert.equal(b.nodes.get('#workbench-view').hidden, true);
-  assert.match(b.nodes.get('#startup-message').textContent, /准备工作台失败.*页面准备失败/);
+  b.run('setView("workbench")');
+  assert.equal(b.nodes.get('#workbench-view').hidden, false);
+  assert.equal(b.nodes.get('#gate-view').hidden, true);
+});
+
+test('资源失败后再试成功,仍可进入工作台;失败期间停留在数据页', async () => {
+  const data = fixtures();
+  const rules = deferred();
+  data['/api/rules'] = rules.promise;
+  const b = browser(data);
+  b.init();
+  await drain();
+  // 规则尚未返回:即使用户触发进入,也需等资源就绪,工作台保持隐藏。
+  b.run('(async () => { await prepareWorkspaceResources(); if (_workspaceResourcesReady) setView("workbench"); })()');
+  await drain();
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
+  assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  // 首次失败:仍停在数据页,徽标部分失败;允许再次预取。
+  rules.reject(new Error('服务暂时不可用'));
+  await drain();
+  assert.equal(b.nodes.get('#gate-view').hidden, false);
+  b.run('(async () => { await prepareWorkspaceResources(); if (_workspaceResourcesReady) setView("workbench"); })()');
+  await drain();
+  assert.equal(b.nodes.get('#workbench-view').hidden, true);
+  // 资源恢复后,再次触发进入即可切换。
+  data['/api/rules'] = { rules: [] };
+  b.run('(async () => { await prepareWorkspaceResources(); if (_workspaceResourcesReady) setView("workbench"); })()');
+  await drain();
+  assert.equal(b.nodes.get('#server-status').textContent, '服务正常');
+  assert.equal(b.nodes.get('#workbench-view').hidden, false);
 });
