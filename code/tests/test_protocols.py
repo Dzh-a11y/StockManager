@@ -64,6 +64,7 @@ class EmptyRepository:
     def get_latest_sync_record(self, dataset_id: str) -> SyncRecord | None: return None
     def get_dataset_metadata(self, dataset_id: str, trading_day: date, adjustment: AdjustmentMethod) -> DatasetMetadata | None: return None
     def get_latest_dataset_metadata(self, dataset_id: str, adjustment: AdjustmentMethod) -> DatasetMetadata | None: return None
+    def list_dataset_metadata(self, dataset_id: str, adjustment: AdjustmentMethod, *, limit: int = 10) -> Sequence[DatasetMetadata]: return ()
     def get_trading_days(self, start: date, end: date) -> Sequence[date]: return ()
     def prune_before(self, cutoff: date) -> None: ...
 

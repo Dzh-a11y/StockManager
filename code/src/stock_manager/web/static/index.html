@@ -127,8 +127,11 @@
               <input id="dataset" class="input" type="text" value="market" autocomplete="off">
             </label>
             <label class="field">
-              <span class="field__label">交易日</span>
-              <input id="trading-day" class="input" type="date">
+              <span class="field__label">交易日（as_of，已登记快照）</span>
+              <select id="trading-day" class="select">
+                <option value="">选择已登记快照日…</option>
+              </select>
+              <span class="field__hint">仅列出本地已登记的快照日；未登记的交易日不可作为 as_of。</span>
             </label>
             <label class="field">
               <span class="field__label">复权方式</span>

@@ -494,7 +494,12 @@ class ResearchBacktestService:
         cache_key = "" if run is None else run.cache_key
         cached = self._store.find_cached(cache_key)
         if cached is not None:
-            days = self._repository.list_eligibility_days(cached.run_id)
+            # Issue 2026-09-06-eligibility-cache-limit-truncation:
+            # 缓存命中必须读完整资格日;limit=None 表示全量,避免默认 100 截断
+            # 长窗口(>100 交易日)导致结果与全新自算不一致。
+            days = self._repository.list_eligibility_days(
+                cached.run_id, limit=None
+            )
             if days:
                 return _CachedTimeline(
                     cached.run_id,

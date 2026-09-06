@@ -24,6 +24,8 @@ const state = {
   capmOptionsLoading: false,
   capmOptionsError: '',
   capmSettings: { benchmark_id: null, rate_term: null, periods_per_year: 252 },
+  selectedSnapshotDay: null, // gate 选择的已登记快照交易日（as_of）
+  registeredDays: [],        // /api/sync/status 返回的已登记快照日（倒序，最多10）
   uiView: 'gate',   // 'gate' | 'workbench' | 'backtest' — 当前停留的数据/工作台/回测视图(首屏=数据页)
 };
 
@@ -1870,45 +1872,100 @@ async function loadBacktestHistory() {
   status.hidden = true;
 }
 
-/* 渲染门禁页的"本地数据库"选择区;canEnter=false(无已激活库)时不放行 */
+/* 渲染门禁页的"本地数据库/已登记快照"选择区。
+ * 候选 = dataset_metadata 已登记的快照交易日(倒序最近10个,后端 registered_days),
+ * 每个交易日一行单选,副行标注该快照的同步源与时间;generation 为当前激活代。
+ * 不掺入任何未登记交易日。canEnter=false(无已激活库)时不放行。 */
 function renderDbVersions(s, canEnter) {
   const box = $('#db-versions');
   const title = $('#db-select-title');
   const hint = $('#db-cutoff-hint');
   const enter = $('#gate-enter');
   if (!box) return;
-  if (!canEnter || !s.active_generation || !s.active_generation.generation) {
+  const days = Array.isArray(s.registered_days) ? s.registered_days : [];
+  if (!canEnter || !s.active_generation || !s.active_generation.generation || days.length === 0) {
     box.innerHTML = '';
     if (title) title.hidden = true;
     if (hint) hint.hidden = true;
     if (enter) enter.hidden = true;
+    state.registeredDays = [];
     return;
   }
-  if (title) title.hidden = false;
+  state.registeredDays = days;
+  if (title) {
+    title.hidden = false;
+    title.textContent = '本地已登记快照 · 进入前请选择 as_of';
+  }
   const gen = String(s.active_generation.generation);
   const activated = s.active_generation.activated_at || '';
-  box.innerHTML =
-    '<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;cursor:pointer">' +
-      '<input type="radio" name="db-version" value="' + esc(gen) + '">' +
-      '<span>generation：' + esc(gen) +
-        (activated ? '<br><span style="opacity:.7">激活于 ' + esc(activated) + '</span>' : '') +
+  // 默认选最新已登记快照(registered_days[0]);保留用户之前的选择(若仍已登记)。
+  const preferred = days.some((d) => d.trading_day === state.selectedSnapshotDay)
+    ? state.selectedSnapshotDay
+    : days[0].trading_day;
+  state.selectedSnapshotDay = preferred;
+  box.innerHTML = days.map((d, index) => {
+    const isLatest = index === 0;
+    const checked = d.trading_day === preferred ? ' checked' : '';
+    return '<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;cursor:pointer">' +
+      '<input type="radio" name="db-version" value="' + esc(d.trading_day) + '"' + checked + '>' +
+      '<span>' + esc(d.trading_day) + (isLatest ? ' <span style="opacity:.7">(最新)</span>' : '') +
+        '<br><span style="opacity:.7">source ' + esc(d.source || '-') + ' · 登记于 ' +
+          esc(String(d.synced_at || '').slice(0, 19).replace('T', ' ')) +
+          '<br>generation ' + esc(gen) +
+          (activated ? ' · 激活于 ' + esc(activated) : '') +
+        '</span>' +
       '</span>' +
     '</label>';
-  box.querySelector('input[name="db-version"]').addEventListener('change', () => {
-    if (enter) enter.disabled = false;
+  }).join('');
+  box.querySelectorAll('input[name="db-version"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      state.selectedSnapshotDay = radio.value;
+      fillTradingDayOptions(radio.value);
+      if (enter) enter.disabled = false;
+    });
   });
   if (hint) {
     hint.hidden = false;
-    hint.textContent = '数据截至 ' + (s.latest_synced_trading_day || '-') +
-      ' · ' + (s.stocks_count || 0) + ' 只股票 · 覆盖 ' +
-      (s.coverage_start || '-') + ' ~ ' + (s.coverage_end || '-') +
-      '。本地仅保留最新一代数据；未覆盖的交易日做筛选会被拒绝。';
+    hint.textContent = '已登记快照交易日共 ' + days.length + ' 个（最新 ' +
+      (s.latest_synced_trading_day || '-') + ' · ' + (s.stocks_count || 0) + ' 只股票）' +
+      '。只列本地已登记快照；未登记的交易日不可作为 as_of。';
   }
   if (enter) {
     enter.hidden = false;
-    enter.disabled = true;   // 需先点选上面的版本(即使只有一项)
+    // 默认已勾选最新已登记快照 → 可直接进入;换选其它行也保持可用。
+    enter.disabled = false;
   }
+  fillTradingDayOptions();
 }
+
+/* 把「交易日(as_of)」下拉的候选同步为已登记快照日(倒序,最多10个)。
+ * preferredDay(可选)用于门禁 radio 点选后的强制同步;否则保留当前选择;
+ * 再退回门禁所选,最后用最新已登记。 */
+function fillTradingDayOptions(preferredDay) {
+  const select = $('#trading-day');
+  if (!select) return;
+  const days = state.registeredDays || [];
+  const keep = select.value;
+  if (!days.length) {
+    select.innerHTML = '<option value="">选择已登记快照日…</option>';
+    select.value = '';
+    return;
+  }
+  const inDays = (day) => days.some((d) => d.trading_day === day);
+  const preferred =
+    (preferredDay && inDays(preferredDay)) ? preferredDay :
+    inDays(keep) ? keep :
+    inDays(state.selectedSnapshotDay) ? state.selectedSnapshotDay :
+    days[0].trading_day;
+  state.selectedSnapshotDay = preferred;
+  select.innerHTML = days.map((d) =>
+    '<option value="' + esc(d.trading_day) + '">' + esc(d.trading_day) +
+    (d === days[0] ? '（最新）' : '') + '</option>'
+  ).join('');
+  select.value = preferred;
+}
+
+
 
 /** @returns {Promise<void>} */
 async function loadSyncStatus() {
@@ -3777,10 +3834,6 @@ function prepareWorkspaceResources() {
 /** @returns {Promise<void>} */
 async function init() {
   bindEvents();
-  const today = new Date();
-  /** @param {number} n @returns {string} */
-  const pad = (n) => String(n).padStart(2, '0');
-  $('#trading-day').value = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
   // 首屏固定为「数据/同步」视图;数据库状态等后台任务异步填充,不再阻塞进入界面。
   state.uiView = 'gate';
   applyView();

@@ -170,6 +170,14 @@ class LocalRepositoryProtocol(Protocol):
         adjustment: AdjustmentMethod,
     ) -> DatasetMetadata | None: ...
 
+    def list_dataset_metadata(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        limit: int = 10,
+    ) -> Sequence[DatasetMetadata]: ...
+
     def get_trading_days(self, start: date, end: date) -> Sequence[date]: ...
 
     def prune_before(self, cutoff: date) -> None: ...

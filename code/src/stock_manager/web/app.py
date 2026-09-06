@@ -1152,6 +1152,7 @@ class WebApp:
         repo = self._services.repository
         qfq = AdjustmentMethod.QFQ
         latest_meta = repo.get_latest_dataset_metadata("market", qfq)
+        registered = self._registered_snapshot_days()
         if latest_meta is None:
             return {
                 "latest_synced_trading_day": None,
@@ -1159,6 +1160,7 @@ class WebApp:
                 "coverage_end": None,
                 "bars_count": 0,
                 "stocks_count": 0,
+                "registered_days": registered,
                 "recent_days": [],
                 "older_bands": [],
                 "p5_plans": self._p5_plan_state(),
@@ -1262,6 +1264,7 @@ class WebApp:
             "coverage_start": start.isoformat(),
             "coverage_end": anchor.isoformat(),
             "stocks_count": stocks_count,
+            "registered_days": registered,
             "recent_days": recent,
             "older_bands": bands,
             "year_bands": year_bands,
@@ -1270,6 +1273,26 @@ class WebApp:
             "readiness": self._readiness_state(),
             "can_enter": self._active_generation_state() is not None,
         }
+
+    def _registered_snapshot_days(self) -> list[dict[str, object]]:
+        """Recently registered market(qfq) snapshot days, newest first.
+
+        Only days present in ``dataset_metadata`` are publishable as an
+        ``as_of`` for single-day screening; other trading days with bars but
+        no registered snapshot are intentionally excluded so the UI never
+        offers a snapshot the engine would reject.
+        """
+        meta_rows = self._services.repository.list_dataset_metadata(
+            "market", AdjustmentMethod.QFQ, limit=10
+        )
+        return [
+            {
+                "trading_day": item.trading_day.isoformat(),
+                "source": item.source,
+                "synced_at": item.synced_at.isoformat(),
+            }
+            for item in meta_rows
+        ]
 
     def _p5_plan_state(self) -> list[dict[str, object]]:
         """P5 plan/task/candidate state for the sync page (P5-RD-8)."""

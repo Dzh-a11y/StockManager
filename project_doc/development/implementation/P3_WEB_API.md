@@ -1,5 +1,5 @@
 ---
-date: 2026-09-03
+date: 2026-09-06
 purpose: 记录 StockManager P3 本地 Web 工作台的启动方式、接口契约与错误映射。
 project: StockManager
 status: active
@@ -198,10 +198,13 @@ stock-manager web \
   "coverage_start": "2025-08-31",
   "coverage_end": "2026-08-25",
   "stocks_count": 2,
+  "registered_days": [{"trading_day": "2026-08-25", "source": "fixture", "synced_at": "..."}],
   "recent_days": [{"day": "2026-08-25", "status": "synced"}, ...],
   "older_bands": [{"start": "2026-06-27", "end": "2026-07-26", "coverage": 0.0, "incomplete": false}, ...]
 }
 ```
+
+`registered_days`（1.17.2 起）列出最近 10 个**已登记快照交易日**（倒序，来源 `dataset_metadata` 中 dataset_id=`market`、adjustment=`qfq` 的行；含 `trading_day`/`source`/`synced_at`）。只有出现在这里的日期才可作为单日筛选的 `as_of`（`POST /api/screen` 的 `trading_day`）；仅有日线数据但未登记的快照日（如只经 generation 重算写入、未经 DataSync 登记发布的历史日）**不会**出现在该列表，界面也不得提供为候选。门禁页「进入前选择」与工作台「交易日」下拉均以此列表为唯一候选源，默认选中最新已登记日（列表首项）。
 
 `recent_days` 给出最近 30 个自然日逐日的状态（`synced`/`running`/`incomplete`/`missing`/`failed`/`nontrading`），前端据此渲染逐日色块：`synced`=绿、`running`=Orange（拉取中）、`incomplete`=Orange（未完全同步）、`failed`=红、`missing`=灰、`nontrading`=浅。日常判定以该日 `sync_record` 的实际状态为准；对无记录的历史交易日，若当日 bar 的不同股票数 < 股票池规模的 95%（如首次启动只同步了一部分），则视为 `incomplete`（未完全同步，橙色），否则为 `synced`。`older_bands` 给出近 360 天窗口内更早的 11 段（每段约 30 天）的覆盖率，`incomplete` 表示该段存在未完全同步的天。最新交易日不存在时返回全 `null`/空数组。
 
