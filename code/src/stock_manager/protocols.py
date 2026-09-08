@@ -178,6 +178,16 @@ class LocalRepositoryProtocol(Protocol):
         limit: int = 10,
     ) -> Sequence[DatasetMetadata]: ...
 
+    def register_snapshot_day(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+        *,
+        source: str,
+        synced_at: datetime,
+    ) -> bool: ...
+
     def get_trading_days(self, start: date, end: date) -> Sequence[date]: ...
 
     def prune_before(self, cutoff: date) -> None: ...

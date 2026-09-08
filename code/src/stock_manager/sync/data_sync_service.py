@@ -27,6 +27,7 @@ from stock_manager.domain import (
     ProviderSmokeOutcome,
     StockIdentity,
     SyncOutcome,
+    SyncPlanStatus,
     SyncRecord,
     SyncStatus,
     SyncTaskStatus,
@@ -1475,7 +1476,15 @@ class DataSyncService:
         with self._provider_process_lock, persistent_file_lock(
             self._provider_file_lock
         ):
-            return pipeline.execute(plan_id)
+            run = pipeline.execute(plan_id)
+        if (
+            plan.dataset_id == "market"
+            and (run.published or run.plan_status is SyncPlanStatus.SUCCEEDED)
+        ):
+            self._register_published_market_snapshot_days(
+                plan.dataset_id, plan.adjustment
+            )
+        return run
 
     def run_pipeline_retry(self, plan_id: str) -> PipelineRun:
         """Retry either dataset through the same provider channel protection."""
@@ -1484,7 +1493,62 @@ class DataSyncService:
             raise ValueError(f"sync plan not found: {plan_id}")
         pipeline = self.build_pipeline(dataset_id=plan.dataset_id)
         with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
-            return pipeline.retry(plan_id)
+            run = pipeline.retry(plan_id)
+        if (
+            plan.dataset_id == "market"
+            and (run.published or run.plan_status is SyncPlanStatus.SUCCEEDED)
+        ):
+            self._register_published_market_snapshot_days(
+                plan.dataset_id, plan.adjustment
+            )
+        return run
+
+    def _register_published_market_snapshot_days(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> int:
+        """Register published market snapshot days in ``dataset_metadata``.
+
+        The pipeline publishes into shared tables and the generation manifest
+        but never writes the legacy registry rows the Web UI and screening
+        read as "registered snapshot days" / ``as_of`` candidates. This
+        reconciles the registry with the active generation's stocks partition
+        days (insert-if-missing, idempotent), covering both a fresh publish
+        and the "data already latest / skip" self-heal of DBs that were
+        published before this fix. Returns how many rows were added.
+        """
+        if dataset_id != "market":
+            return 0
+        active = self._repository.get_active_generation(dataset_id, adjustment)
+        if active is None:
+            return 0
+        days: set[date] = set()
+        for partition in self._repository.list_generation_partitions(
+            active.generation
+        ):
+            if partition.data_type != "stocks":
+                continue
+            try:
+                days.add(date.fromisoformat(partition.partition_key))
+            except ValueError:
+                continue
+        if not days:
+            return 0
+        now = self._now()
+        source = self._provider.source_name
+        added = 0
+        for day in sorted(days):
+            if self._repository.get_dataset_metadata(
+                dataset_id, day, adjustment
+            ) is None:
+                if self._repository.register_snapshot_day(
+                    dataset_id,
+                    day,
+                    adjustment,
+                    source=source,
+                    synced_at=now,
+                ):
+                    added += 1
+        return added
 
     def startup_sync(
         self,
@@ -1536,6 +1600,9 @@ class DataSyncService:
                 adjustment, "daily_bars"
             )
             if coverage_end is None or coverage_end >= target:
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
                 return resumed  # 旧窗口发布后已是最新,无需再追平。
 
         active = self._repository.get_active_generation(dataset_id, adjustment)
@@ -1599,9 +1666,13 @@ class DataSyncService:
                 )
             if coverage_end >= target:
                 # 数据已是最新:跳过拉取并给出可见提示(零 Provider 调用)。
-                return self._already_latest_result(
+                run = self._already_latest_result(
                     pipeline, dataset_id, adjustment
                 )
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
+                return run
             output = pipeline.plan(
                 mode=SyncPlanMode.INCREMENTAL,
                 dataset_id=dataset_id,
@@ -1625,15 +1696,27 @@ class DataSyncService:
                 failed = self._repository.tasks_by_status(
                     output.plan.plan_id, (SyncTaskStatus.FAILED,)
                 )
-                if failed or (
+            else:
+                candidate = None
+                failed = ()
+            if retry_failed and (
+                failed
+                or (
                     candidate is not None
                     and candidate.status in (
                         CandidateGenerationStatus.NEEDS_REPAIR,
                         CandidateGenerationStatus.VERIFICATION_FAILED,
                     )
-                ):
-                    return pipeline.retry(output.plan.plan_id)
-            return pipeline.execute(output.plan.plan_id)
+                )
+            ):
+                run = pipeline.retry(output.plan.plan_id)
+            else:
+                run = pipeline.execute(output.plan.plan_id)
+            if run.published or run.plan_status is SyncPlanStatus.SUCCEEDED:
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
+            return run
 
     def _resume_pending_plan_for_startup(
         self,
@@ -1878,6 +1961,7 @@ class DataSyncService:
             verifications=outcome.records,
             partitions=partitions,
         )
+        self._register_published_market_snapshot_days(dataset_id, adjustment)
         return {
             "candidate_id": candidate_id,
             "status": published.status.value,

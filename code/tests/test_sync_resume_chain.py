@@ -433,3 +433,71 @@ def test_fresh_bootstrap_interrupted_then_catches_up(tmp_path: Path) -> None:
     assert (SyncPlanMode.BOOTSTRAP, date(2026, 9, 2)) in succeeded  # 旧窗冻结,未扩成 09-04
     assert (SyncPlanMode.INCREMENTAL, date(2026, 9, 4)) in succeeded  # 追平到最新
     assert repo.actual_coverage(AdjustmentMethod.QFQ, "daily_bars")[1] == date(2026, 9, 4)
+
+
+# ---------------------------------------------------------------------------
+# T8: P5 发布后自动把发布日登记进 dataset_metadata（注册快照日），
+#     已发布但缺登记行的旧库在下次“数据已最新”启动时自愈（零 Provider 调用）。
+# ---------------------------------------------------------------------------
+
+
+def test_incremental_publish_registers_snapshot_day_in_metadata(
+    tmp_path: Path,
+) -> None:
+    """增量 P5 发布(已有 active generation)后，market/qfq 的 dataset_metadata
+    自动登记新快照日。
+
+    回归：发布走 GenerationCommitter 只写 generation 表、不写 legacy 注册表，
+    导致 registered_days / as_of 候选缺少新发布日(真实库 09-07 缺行)。BOOTSTRAP
+    首启因 universe 预写(service 内 save_stocks)碰巧有行,这里用纯增量路径复现。
+    """
+    service, provider, repo, clock = make_env(tmp_path)
+    _succeed_through(service, provider, clock, date(2026, 9, 1))  # BOOTSTRAP 09-01
+    _succeed_through(service, provider, clock, date(2026, 9, 4))  # INCREMENTAL 追平
+    metadata = repo.get_dataset_metadata(
+        "market", date(2026, 9, 4), AdjustmentMethod.QFQ
+    )
+    assert metadata is not None
+    assert metadata.trading_day == date(2026, 9, 4)
+    days = [
+        m.trading_day
+        for m in repo.list_dataset_metadata("market", AdjustmentMethod.QFQ)
+    ]
+    assert date(2026, 9, 4) in days
+
+
+def test_already_latest_heals_missing_registered_day_without_provider(
+    tmp_path: Path,
+) -> None:
+    """已发布但未登记（旧代码产物）时，下次启动自愈补登记，且零 Provider 调用。"""
+    service, provider, repo, clock = make_env(tmp_path)
+    _succeed_through(service, provider, clock, date(2026, 9, 4))
+    # 模拟旧代码产物：数据已发布但没有 dataset_metadata 登记行。
+    with sqlite3.connect(repo.database_path) as connection:
+        connection.execute(
+            "DELETE FROM dataset_metadata WHERE dataset_id = ? AND adjustment = ?",
+            ("market", AdjustmentMethod.QFQ.value),
+        )
+    assert (
+        repo.get_dataset_metadata("market", date(2026, 9, 4), AdjustmentMethod.QFQ)
+        is None
+    )
+
+    daily_before = list(provider.daily_calls)
+    stock_before = provider.stock_calls
+    fund_before = provider.fund_calls
+    trading_before = provider.trading_calls
+    run = service.startup_sync("market", AdjustmentMethod.QFQ, batch_size=1)
+    assert isinstance(run, PipelineRun)
+    assert run.published is False
+    assert run.warning is not None  # 数据已最新，跳过拉取
+    # 自愈只做本地登记，不触碰 Provider。
+    assert provider.daily_calls == daily_before
+    assert provider.stock_calls == stock_before
+    assert provider.fund_calls == fund_before
+    assert provider.trading_calls == trading_before
+    metadata = repo.get_dataset_metadata(
+        "market", date(2026, 9, 4), AdjustmentMethod.QFQ
+    )
+    assert metadata is not None
+    assert metadata.trading_day == date(2026, 9, 4)
