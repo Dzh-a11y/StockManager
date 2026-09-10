@@ -1,18 +1,35 @@
 ---
-date: 2026-09-03
-purpose: StockManager 项目文档中心索引：说明 project_doc 的目录组织与各文档归属。
+date: 2026-09-07
+purpose: StockManager 项目文档中心索引：提供当前架构、API、数据计算能力入口，并区分历史阶段文档。
 project: StockManager
 status: active
+code_version: 1.17.2
+verified_on: 2026-09-06
 ---
 
 # StockManager 项目文档中心
 
-本目录（`project_doc`）是 StockManager 的 Obsidian Vault 与默认项目知识源，存放全部项目资料、设计、需求、决策和开发记录。文档按「开发手册」与「使用手册」两类组织，目录名均为英文：
+## 当前源码阅读入口（1.17.2，2026-09-06 核验）
+
+本次按源码提交 `9322845` 整理以下入口；版本适用范围不代表远端发布或全量测试验收。读文档先核对 `date`、适用版本和正文历史时点，详见 [AGENTS 日期与版本规定](AGENTS.md#15-项目文档的日期与版本核对)。
+
+| 需要的信息 | 当前维护入口 | 内容 |
+| --- | --- | --- |
+| 项目与启动 | [根 README](../README.md)、[使用手册](usage/README.md) | 功能概览、目录、平台启动、页面操作 |
+| 当前架构 | [CURRENT_ARCHITECTURE.md](development/architecture/CURRENT_ARCHITECTURE.md) | 模块职责、四条调用链、数据边界、源码/测试导航及差异清单 |
+| 可用 API | [P3_WEB_API.md](development/implementation/P3_WEB_API.md) | 完整 HTTP 路由、参数/响应、分页、副作用、15 个 CLI 命令和示例 |
+| 可计算的数据 | [DATA_CAPABILITIES.md](usage/DATA_CAPABILITIES.md) | 已存字段、12 条规则及默认参数、13 个政策、CAPM、回测指标和未实现项 |
+| 本轮整理与验证 | [维护计划第 3 节](development/plan/PB_DOCANDMAINTANENCE.md#3-当前文档整理2026-09-06) | 已授权范围、交付、实际检查与后续待统一项 |
+
+这些入口描述当前实现；下方计划、ADR 和阶段验收保留各自历史时点。特别是旧文件名中含 `current` 的架构图和旧手册的“当前/已通过”，不能单凭名称或修改日期视为1.17.2的实现及验收证据。本轮未重绘旧架构图，也未批量重写所有历史计划。
+
+本目录（`project_doc`）是 StockManager 的 Obsidian Vault 与默认项目知识源，存放项目资料、设计、需求、决策和开发记录。文档按「开发手册」与「使用手册」两类组织，目录名均为英文：
 
 ```text
 project_doc/
 ├── README.md                # 本文档（索引）
 ├── AGENTS.md                # 项目开发规定（与仓库根 AGENTS.md 同步）
+├── Issue/                   # Alpha 研究（stock-alpha-research 输入端）指标/能力缺口登记
 ├── development/             # 开发手册
 │   ├── plan/                #   计划手册：阶段计划、迁移计划、删除清单
 │   ├── architecture/        #   架构手册与架构图（同属一个文件夹）
@@ -69,7 +86,8 @@ project_doc/
 
 总体架构决策、ADR 与架构图（HTML/JSON 图表与手册同属一个文件夹）：
 
-- `ADR_OVERVIEW.md`：汇总 P1 至 P3 全部已接受架构决策的总 ADR。
+- [CURRENT_ARCHITECTURE.md](development/architecture/CURRENT_ARCHITECTURE.md)：当前源码架构阅读入口（1.17.2）。
+- `ADR_OVERVIEW.md`：总 ADR，保留 P1–P5 阶段决策和2026-09-03架构收口决定；不是当前实现的完整审计报告。
 - `ADR_P2_RULE_EXECUTION.md`、`ADR_P3_LOCAL_WEB_UI.md`、`ADR_P4_READ_LAYER.md`：分阶段架构决策记录。
 - `ADR_P5A_BACKTEST_ENGINE.md`（Backtrader 选型与 GPLv3）、`ADR_P5A_SEED_DISTRIBUTION.md`（八年数据种子,accepted）：P5A 架构决策。
 - `ADR_P5_DATASYNC_DATABASE.md`（accepted）：P5 DataSync 重构的数据库 schema、批次/分区 manifest、active generation 指针与真实库迁移基准。
@@ -84,7 +102,7 @@ project_doc/
 - `P1_1_EXECUTION_REPORT.md`：P1-1 工程骨架重建与清理执行记录。
 - `P1_2_DOMAIN_PROTOCOLS.md` ~ `P1_7_E2E_ACCEPTANCE.md`：P1 各任务实现与验收文档。
 - `P2_PARAMETERIZED_RULES.md`、`P3_RULE_EXTENSION.md`：P2/P3 实现文档。
-- `P3_WEB_ACCEPTANCE.md`、`P3_WEB_API.md`：Web 验收与 Web API 接口文档。
+- `P3_WEB_ACCEPTANCE.md`：P3 历史 Web 验收；[P3_WEB_API.md](development/implementation/P3_WEB_API.md) 沿用文件名维护当前完整 API。
 - `P4_READ_LAYER.md`：P4 可替换数据库只读访问、并发读取与分片筛选基础设施实现手册。
 - `P5A_1_HISTORY_V2.md` ~ `P5A_9_ACCEPTANCE.md`：P5A 各阶段实现手册（八年覆盖、PIT 契约、策略规格、历史筛选、运行存储、回测适配器、执行模型、研究 API、最终验收）。
 - `P5_RECONSTRUCT_DATASYNC_IMPLEMENTATION.md`：P5 DataSync 重构实现手册（Planner/Worker/Staging/Verifier/Committer/Gate、种子与迁移工具、CLI、验收记录）。
@@ -93,8 +111,9 @@ project_doc/
 
 ## usage（使用文档）
 
+- [DATA_CAPABILITIES.md](usage/DATA_CAPABILITIES.md)：当前已存数据、计算公式、输出含义、访问入口和能力缺口（1.17.2）。
 - `README.md`：用户使用手册，说明功能、内置筛选规则、回测策略（P5A）以及 macOS / Windows 下本地 Web 工作台的安装与启动方式。
-- [STOCK_TEMPLATE_ALPHA_SEARCH.md](usage/STOCK_TEMPLATE_ALPHA_SEARCH.md)：个人稳健 Alpha 模板搜索技能的调用、maximin 目标、代码只读边界与辅助脚本验证记录；先不用回测系统。
+- [STOCK_ALPHA_RESEARCH.md](usage/STOCK_ALPHA_RESEARCH.md)：Alpha 研究与模板搜索技能（`stock-alpha-research`，2026-09-05 由 `stock-template-alpha-search` 更名）的输入端五问/运行端筛选+回测/输出端 Alpha_Mining_V0 三段式说明、可用指标与辅助脚本验证记录。
 - [Alpha Mining的优化建模.md](usage/Alpha%20Mining的优化建模.md)：记录 Alpha Mining 的候选目标函数、MDD/CVaR 硬约束、优化算法分层与待确认参数。
 
 ## 元数据要求
