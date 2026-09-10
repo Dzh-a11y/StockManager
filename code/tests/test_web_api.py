@@ -878,6 +878,12 @@ def test_sync_status_endpoint_summarizes_local_coverage(tmp_path: Path) -> None:
     assert payload["coverage_end"] == TARGET_DAY.isoformat()
     assert payload["coverage_start"] == (TARGET_DAY - timedelta(days=359)).isoformat()
     assert payload["stocks_count"] == 2
+    # 已登记快照日:seed 只登记了 TARGET_DAY,recent_days 的自然日不等同登记日。
+    assert [d["trading_day"] for d in payload["registered_days"]] == [
+        TARGET_DAY.isoformat()
+    ]
+    assert payload["registered_days"][0]["source"] == "fixture"
+    assert "synced_at" in payload["registered_days"][0]
     # 最近 30 自然日:每个 1 项。
     assert len(payload["recent_days"]) == 30
     for entry in payload["recent_days"][:6]:

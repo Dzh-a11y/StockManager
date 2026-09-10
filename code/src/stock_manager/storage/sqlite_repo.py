@@ -918,6 +918,66 @@ class SQLiteRepository:
             ).fetchone()
         return None if row is None else self._metadata_from_row(row)
 
+    def list_dataset_metadata(
+        self,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        limit: int = 10,
+    ) -> Sequence[DatasetMetadata]:
+        """Return registered snapshot metadata, newest trading day first.
+
+        ``dataset_metadata`` rows are the platform's registry of published
+        dataset days. They are written by DataSync/legacy-publish paths and —
+        since 1.17.3 — automatically reconciled after each P5 publish (see
+        ``DataSyncService._register_published_market_snapshot_days``). Only
+        rows present here are usable as an ``as_of`` for single-day screening.
+        ``limit`` must be positive.
+        """
+        if limit < 1:
+            raise ValueError("limit must be a positive integer")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM dataset_metadata
+                   WHERE dataset_id = ? AND adjustment = ?
+                   ORDER BY trading_day DESC LIMIT ?""",
+                (dataset_id, adjustment.value, limit),
+            ).fetchall()
+        return tuple(self._metadata_from_row(row) for row in rows)
+
+    def register_snapshot_day(
+        self,
+        dataset_id: str,
+        trading_day: date,
+        adjustment: AdjustmentMethod,
+        *,
+        source: str,
+        synced_at: datetime,
+    ) -> bool:
+        """Register one published snapshot day if it is not yet present.
+
+        P5 publish completes data for a day in the shared tables; the legacy
+        registry row (dataset_metadata) is what makes that day usable as an
+        ``as_of`` candidate. Insert-if-missing so an already-registered day
+        keeps its original registration timestamp.
+        """
+        if not dataset_id.strip():
+            raise ValueError("dataset_id must not be empty")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO dataset_metadata
+                   (dataset_id, trading_day, source, synced_at, adjustment)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    dataset_id,
+                    trading_day.isoformat(),
+                    source,
+                    synced_at.isoformat(),
+                    adjustment.value,
+                ),
+            )
+            return cursor.rowcount > 0
+
     @staticmethod
     def _metadata_from_row(row: sqlite3.Row) -> DatasetMetadata:
         return DatasetMetadata(
@@ -1426,15 +1486,33 @@ class SQLiteRepository:
             )
 
     def list_eligibility_days(
-        self, run_id: str, *, offset: int = 0, limit: int = 100
+        self,
+        run_id: str,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> tuple[tuple[date, int], ...]:
-        if offset < 0 or limit <= 0:
-            raise ValueError("offset must be non-negative and limit positive")
+        """List persisted eligibility days for one run, ascending by day.
+
+        Returns every persisted day by default; pass an explicit ``limit`` to
+        page. A ``limit=None`` also means unlimited. The previous default of
+        100 silently truncated windows longer than 100 trading days on the
+        backtest cache-hit path (Issue
+        2026-09-06-eligibility-cache-limit-truncation), so the default was
+        changed to unlimited and the service passes ``limit=None`` explicitly.
+        SQLite treats a negative LIMIT as unlimited (same convention as
+        ``prune_historical_runs``).
+        """
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be positive or None (unlimited)")
+        effective_limit = -1 if limit is None else limit
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT trading_day, selected_count FROM eligibility_days
                    WHERE run_id = ? ORDER BY trading_day LIMIT ? OFFSET ?""",
-                (run_id, limit, offset),
+                (run_id, effective_limit, offset),
             ).fetchall()
         return tuple(
             (date.fromisoformat(row["trading_day"]), int(row["selected_count"]))

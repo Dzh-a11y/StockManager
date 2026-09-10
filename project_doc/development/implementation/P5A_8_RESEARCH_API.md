@@ -1,11 +1,13 @@
 ---
-date: 2026-09-02
+date: 2026-09-06
 purpose: 记录 StockManager P5A-8 研究回测异步 API、有界 job runner 与统一前端工作台接入的实现与离线验收结果。
 project: StockManager
 status: active
 ---
 
 # P5A-8 异步 API 与统一前端工作台
+
+> 本文保留 P5A-8 阶段的设计和当时验收记录。1.17.2 已有独立回测视图、多项政策组合、策略模板和扩展运行参数，当前完整契约以 [API 手册](P3_WEB_API.md) 为入口；模块调用链见 [当前架构](../architecture/CURRENT_ARCHITECTURE.md)。下文368项测试是原记录，不是本次重跑结果。
 
 ## 阶段定位
 
@@ -63,4 +65,3 @@ python3 -m pytest:**368 passed**(P5A-8 新增 7 项;无回归)。覆盖:提交�
 ## 免责声明
 
 所有筛选与回测结果仅供研究参考,不构成任何投资建议。项目禁止实现自动交易功能。
-

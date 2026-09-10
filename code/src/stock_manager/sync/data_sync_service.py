@@ -27,6 +27,7 @@ from stock_manager.domain import (
     ProviderSmokeOutcome,
     StockIdentity,
     SyncOutcome,
+    SyncPlanStatus,
     SyncRecord,
     SyncStatus,
     SyncTaskStatus,
@@ -1475,7 +1476,15 @@ class DataSyncService:
         with self._provider_process_lock, persistent_file_lock(
             self._provider_file_lock
         ):
-            return pipeline.execute(plan_id)
+            run = pipeline.execute(plan_id)
+        if (
+            plan.dataset_id == "market"
+            and (run.published or run.plan_status is SyncPlanStatus.SUCCEEDED)
+        ):
+            self._register_published_market_snapshot_days(
+                plan.dataset_id, plan.adjustment
+            )
+        return run
 
     def run_pipeline_retry(self, plan_id: str) -> PipelineRun:
         """Retry either dataset through the same provider channel protection."""
@@ -1484,7 +1493,62 @@ class DataSyncService:
             raise ValueError(f"sync plan not found: {plan_id}")
         pipeline = self.build_pipeline(dataset_id=plan.dataset_id)
         with self._provider_process_lock, persistent_file_lock(self._provider_file_lock):
-            return pipeline.retry(plan_id)
+            run = pipeline.retry(plan_id)
+        if (
+            plan.dataset_id == "market"
+            and (run.published or run.plan_status is SyncPlanStatus.SUCCEEDED)
+        ):
+            self._register_published_market_snapshot_days(
+                plan.dataset_id, plan.adjustment
+            )
+        return run
+
+    def _register_published_market_snapshot_days(
+        self, dataset_id: str, adjustment: AdjustmentMethod
+    ) -> int:
+        """Register published market snapshot days in ``dataset_metadata``.
+
+        The pipeline publishes into shared tables and the generation manifest
+        but never writes the legacy registry rows the Web UI and screening
+        read as "registered snapshot days" / ``as_of`` candidates. This
+        reconciles the registry with the active generation's stocks partition
+        days (insert-if-missing, idempotent), covering both a fresh publish
+        and the "data already latest / skip" self-heal of DBs that were
+        published before this fix. Returns how many rows were added.
+        """
+        if dataset_id != "market":
+            return 0
+        active = self._repository.get_active_generation(dataset_id, adjustment)
+        if active is None:
+            return 0
+        days: set[date] = set()
+        for partition in self._repository.list_generation_partitions(
+            active.generation
+        ):
+            if partition.data_type != "stocks":
+                continue
+            try:
+                days.add(date.fromisoformat(partition.partition_key))
+            except ValueError:
+                continue
+        if not days:
+            return 0
+        now = self._now()
+        source = self._provider.source_name
+        added = 0
+        for day in sorted(days):
+            if self._repository.get_dataset_metadata(
+                dataset_id, day, adjustment
+            ) is None:
+                if self._repository.register_snapshot_day(
+                    dataset_id,
+                    day,
+                    adjustment,
+                    source=source,
+                    synced_at=now,
+                ):
+                    added += 1
+        return added
 
     def startup_sync(
         self,
@@ -1498,10 +1562,15 @@ class DataSyncService:
         """Startup sync through the P5 pipeline (default entry when enabled).
 
         When ``config.pipeline_default`` or ``force_pipeline`` is true,
-        startup auto-sync plans an INCREMENTAL (or first-time BOOTSTRAP) run
-        to the latest completed trading day and executes it through
-        SyncPipeline; the result is a PipelineRun. Otherwise it falls back to
-        the legacy ``backfill_on_startup_v2`` path so current behavior is
+        startup auto-sync runs SyncPipeline with a resume chain: it first
+        resumes any unfinished in-flight plan (BOOTSTRAP/INCREMENTAL) with
+        its original window frozen, and only after that plan is published
+        does it plan and execute the remaining gap up to the latest completed
+        trading day, so interrupted batch progress is never discarded just
+        because the target window moved on. When published data already
+        reaches the target it returns a skip result (visible warning, zero
+        provider calls) instead of ``None``. Otherwise it falls back to the
+        legacy ``backfill_on_startup_v2`` path so current behavior is
         unchanged. ``batch_size`` sets the code-batch granularity (default 20,
         matching the legacy v2 bulk path); the pipeline planner chunks codes
         by this size and covers the whole target range per request.
@@ -1510,10 +1579,33 @@ class DataSyncService:
             if self._config.history is not None:
                 return self.backfill_on_startup_v2(dataset_id, adjustment)
             return self.backfill_on_startup(dataset_id, adjustment)
-        target = self._latest_completed_trading_day()
-        active = self._repository.get_active_generation(dataset_id, adjustment)
-        from stock_manager.domain import SyncPlanMode
+        from stock_manager.domain import SyncPlanMode, SyncPlanStatus
 
+        target = self._latest_completed_trading_day()
+        pipeline = self.build_pipeline()
+
+        # 1) 续传在途计划(窗口冻结):先把旧窗口做完,再追平新缺口(方案 A)。
+        #    中断批次断点因此不会因 target_end 前移而作废。
+        resumed = self._resume_pending_plan_for_startup(
+            pipeline, dataset_id, adjustment, retry_failed=retry_failed
+        )
+        if resumed is not None:
+            if not (
+                resumed.published
+                or resumed.plan_status is SyncPlanStatus.SUCCEEDED
+            ):
+                # 失败即停:保留 FAILED,显式重试/下次启动续传,不跳过缺口。
+                return resumed
+            _coverage_start, coverage_end = self._repository.actual_coverage(
+                adjustment, "daily_bars"
+            )
+            if coverage_end is None or coverage_end >= target:
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
+                return resumed  # 旧窗口发布后已是最新,无需再追平。
+
+        active = self._repository.get_active_generation(dataset_id, adjustment)
         if active is None:
             if not self._repository.get_stocks(target):
                 with self._provider_process_lock, persistent_file_lock(
@@ -1537,7 +1629,6 @@ class DataSyncService:
                         adjustment,
                     ),
                 )
-            pipeline = self.build_pipeline()
             # 首次启动:无 active generation → BOOTSTRAP。
             # 八年 = 终点向前 2080 个交易日(P5A 决策),禁止用自然日推算。
             from stock_manager.sync.history_plan import trading_day_lookback
@@ -1566,7 +1657,6 @@ class DataSyncService:
                 batch_size=batch_size,
             )
         else:
-            pipeline = self.build_pipeline()
             _coverage_start, coverage_end = self._repository.actual_coverage(
                 adjustment, "daily_bars"
             )
@@ -1575,7 +1665,14 @@ class DataSyncService:
                     "active generation has no daily_bars coverage; repair it first"
                 )
             if coverage_end >= target:
-                return None
+                # 数据已是最新:跳过拉取并给出可见提示(零 Provider 调用)。
+                run = self._already_latest_result(
+                    pipeline, dataset_id, adjustment
+                )
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
+                return run
             output = pipeline.plan(
                 mode=SyncPlanMode.INCREMENTAL,
                 dataset_id=dataset_id,
@@ -1599,15 +1696,107 @@ class DataSyncService:
                 failed = self._repository.tasks_by_status(
                     output.plan.plan_id, (SyncTaskStatus.FAILED,)
                 )
-                if failed or (
+            else:
+                candidate = None
+                failed = ()
+            if retry_failed and (
+                failed
+                or (
                     candidate is not None
                     and candidate.status in (
                         CandidateGenerationStatus.NEEDS_REPAIR,
                         CandidateGenerationStatus.VERIFICATION_FAILED,
                     )
-                ):
-                    return pipeline.retry(output.plan.plan_id)
-            return pipeline.execute(output.plan.plan_id)
+                )
+            ):
+                run = pipeline.retry(output.plan.plan_id)
+            else:
+                run = pipeline.execute(output.plan.plan_id)
+            if run.published or run.plan_status is SyncPlanStatus.SUCCEEDED:
+                self._register_published_market_snapshot_days(
+                    dataset_id, adjustment
+                )
+            return run
+
+    def _resume_pending_plan_for_startup(
+        self,
+        pipeline: SyncPipeline,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+        *,
+        retry_failed: bool,
+    ) -> PipelineRun | None:
+        """Resume the newest unfinished plan whose window is not yet covered.
+
+        Frozen-window resume (方案 A): an interrupted BOOTSTRAP/INCREMENTAL
+        plan keeps its original ``target_end`` even when the latest completed
+        trading day has moved on; only after it publishes does the caller
+        plan the remaining gap. Plans already fully covered by published data
+        (superseded) and REPAIR/LEGACY_IMPORT plans are never resumed here.
+        Returns ``None`` when there is nothing to resume. FAILED plans are
+        only reopened through an explicit retry (cooldown-guarded) when
+        ``retry_failed`` is true; otherwise ``RetryRequiredError`` is raised.
+        """
+        from stock_manager.domain import SyncPlanMode, SyncPlanStatus
+
+        _coverage_start, coverage_end = self._repository.actual_coverage(
+            adjustment, "daily_bars"
+        )
+        pending = None
+        for plan in self._repository.list_sync_plans(dataset_id, adjustment):
+            if plan.status is SyncPlanStatus.SUCCEEDED:
+                continue
+            if plan.mode not in (
+                SyncPlanMode.BOOTSTRAP,
+                SyncPlanMode.INCREMENTAL,
+            ):
+                continue
+            if coverage_end is not None and plan.target_end <= coverage_end:
+                # 窗口已被更宽的已发布数据覆盖:陈旧失败计划跳过不续。
+                continue
+            pending = plan
+            break
+        if pending is None:
+            return None
+        with self._provider_process_lock, persistent_file_lock(
+            self._provider_file_lock
+        ):
+            pipeline.recover_interrupted(pending.plan_id)
+            if pending.status is SyncPlanStatus.FAILED:
+                if not retry_failed:
+                    raise RetryRequiredError(
+                        f"{pending.plan_id}: explicit retry required"
+                    )
+                return pipeline.retry(pending.plan_id)
+            return pipeline.execute(pending.plan_id)
+
+    def _already_latest_result(
+        self,
+        pipeline: SyncPipeline,
+        dataset_id: str,
+        adjustment: AdjustmentMethod,
+    ) -> PipelineRun | None:
+        """Skip result when published data already reaches the target.
+
+        Prefers the pipeline's own skip/repair semantics on the newest
+        SUCCEEDED (or published-candidate) plan so stored plan status stays
+        truthful; makes zero provider requests. Returns ``None`` when no plan
+        exists at all (the caller then reports a skip without a plan id).
+        """
+        from stock_manager.domain import SyncPlanStatus
+
+        for plan in self._repository.list_sync_plans(dataset_id, adjustment):
+            if plan.status is SyncPlanStatus.SUCCEEDED:
+                return pipeline.execute(plan.plan_id)
+            candidate = self._repository.get_candidate_generation(
+                plan.candidate_generation_id
+            )
+            if (
+                candidate is not None
+                and candidate.status is CandidateGenerationStatus.PUBLISHED
+            ):
+                return pipeline.execute(plan.plan_id)
+        return None
 
     def publish_legacy_generation(
         self,
@@ -1772,6 +1961,7 @@ class DataSyncService:
             verifications=outcome.records,
             partitions=partitions,
         )
+        self._register_published_market_snapshot_days(dataset_id, adjustment)
         return {
             "candidate_id": candidate_id,
             "status": published.status.value,

@@ -826,8 +826,8 @@ class CoverageVerification:
         )
         if any(count < 0 for count in counts):
             raise ValueError("verification counts must be non-negative")
-        if self.coverage_ratio < Decimal("0") or self.coverage_ratio > Decimal("1"):
-            raise ValueError("coverage_ratio must be within [0, 1]")
+        if self.coverage_ratio < Decimal("0") or self.coverage_ratio >= Decimal("2"):
+            raise ValueError("coverage_ratio must be within [0, 2)")
         if self.verified_revision < 0:
             raise ValueError("verified_revision must be non-negative")
         _require_aware(self.verified_at, "verified_at")

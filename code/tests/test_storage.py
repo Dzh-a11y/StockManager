@@ -94,6 +94,49 @@ def test_atomic_snapshot_round_trip(tmp_path: Path) -> None:
     assert repository.get_dataset_metadata("market", DAY, AdjustmentMethod.QFQ) == _metadata()
 
 
+def test_list_dataset_metadata_orders_registered_days_newest_first(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "market.sqlite3")
+    # 用逐日 snapshot 登记三个交易日(倒序应最新在前)。
+    days = (
+        date(2026, 9, 1),
+        date(2026, 9, 3),
+        date(2026, 9, 4),
+    )
+    for day in days:
+        metadata = DatasetMetadata(
+            "market", day, "fixture", NOW, AdjustmentMethod.QFQ
+        )
+        success = SyncRecord(
+            "market", day, SyncStatus.SUCCESS, "fixture", AdjustmentMethod.QFQ, NOW, NOW, None
+        )
+        repository.save_market_snapshot(
+            (_stock(),), (_bar(),), (), (), (day,), metadata, success
+        )
+    listed = repository.list_dataset_metadata(
+        "market", AdjustmentMethod.QFQ, limit=10
+    )
+    assert tuple(item.trading_day for item in listed) == days[::-1]
+    # limit 截断生效。
+    limited = repository.list_dataset_metadata(
+        "market", AdjustmentMethod.QFQ, limit=2
+    )
+    assert tuple(item.trading_day for item in limited) == days[::-1][:2]
+    # 不同 adjustment 不混入。
+    assert (
+        repository.list_dataset_metadata(
+            "market", AdjustmentMethod.HFQ, limit=10
+        )
+        == ()
+    )
+    # 非法 limit 拒绝。
+    try:
+        repository.list_dataset_metadata("market", AdjustmentMethod.QFQ, limit=0)
+    except ValueError as error:
+        assert "positive" in str(error)
+    else:
+        raise AssertionError("limit=0 must be rejected")
+
+
 def test_repository_keeps_adjustments_separate(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "market.sqlite3")
     repository.save_daily_bars((_bar(),), _metadata())

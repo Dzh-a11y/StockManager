@@ -285,6 +285,33 @@ class TestCoverageVerifier:
             for i in outcome.report.issues
         )
 
+    def test_stocks_snapshot_larger_than_pool_complete(
+        self, writer: StagingWriter, repo: SQLiteRepository, verifier: CoverageVerifier
+    ) -> None:
+        # 池扩容/新上市场景:staged 快照(5 只)比已发布池(4 只)多 1 只,
+        # coverage_ratio = 1.25 > 1 必须判 COMPLETE,而不是域校验 ValueError。
+        pool = (*CODES, "sh.688001")
+        writer.begin_candidate(_candidate(status=CandidateGenerationStatus.PLANNED), "fake")
+        candidate = repo.get_candidate_generation("cand-1")
+        assert candidate is not None
+        writer.write_batch(
+            candidate, _task("stocks", codes=pool), [_stock(code) for code in pool],
+            source="fake",
+        )
+        writer.finish_candidate(candidate)
+        loaded = repo.get_candidate_generation("cand-1")
+        assert loaded is not None
+        outcome = verifier.verify(
+            loaded,
+            adjustment=AdjustmentMethod.QFQ,
+            target_start=DAY,
+            target_end=DAY,
+            tasks=(_task("stocks", codes=pool),),
+        )
+        assert outcome.report.issues == ()
+        assert outcome.records[0].status is VerificationStatus.COMPLETE
+        assert outcome.records[0].coverage_ratio == Decimal("1.25")
+
     def test_dividends_unavailable_is_not_refetch(self, verifier: CoverageVerifier) -> None:
         candidate = _candidate(status=CandidateGenerationStatus.VERIFYING)
         outcome = verifier.verify(
